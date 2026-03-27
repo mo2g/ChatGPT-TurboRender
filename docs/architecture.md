@@ -29,7 +29,7 @@ TurboRender treats this primarily as a rendering-pressure problem, not a prompt-
 - A custom full-screen reader mode
 - Cross-device sync
 - Export and search tooling
-- Request interception or response rewriting
+- Background-level network middleware or backend proxying
 - Persisting complete transcript snapshots
 
 ## Runtime architecture
@@ -39,10 +39,12 @@ flowchart LR
   A["Popup / Options"] --> B["Background Service"]
   B --> C["Storage.local"]
   B --> D["Content Script on chatgpt.com"]
-  D --> E["ChatGPT DOM Adapter"]
-  D --> F["Parking Engine"]
-  D --> G["In-page Status Bar"]
-  F --> H["Cold Turn Placeholders"]
+  D --> E["MAIN-world Bootstrap"]
+  D --> F["ChatGPT DOM Adapter"]
+  D --> G["Parking Engine"]
+  D --> H["History Shelf"]
+  E --> I["Initial conversation trim"]
+  G --> J["Cold Turn Placeholders"]
 ```
 
 ## Main subsystems
@@ -59,11 +61,12 @@ The adapter identifies:
 
 It is deliberately layered and conservative. If the page structure does not fit the expected shape, the extension marks the page unsupported instead of forcing a brittle transform.
 
-## 2. Activation heuristics
+## 2. Initial trim + activation heuristics
 
-TurboRender does not immediately rewrite every ChatGPT page.
+TurboRender now has two layers of intervention.
 
-It watches for:
+- First, a `document_start` main-world bootstrap watches the initial `conversation/:id` payload. If the session is already very long, it trims the active branch down to a hot window before the official ChatGPT renderer mounts the full history.
+- Second, the content script still watches for:
 
 - finalized turn count
 - live descendant count
@@ -104,16 +107,16 @@ If TurboRender detects that:
 
 it flips the session to soft-fold mode. Soft-fold keeps the nodes in the DOM and only applies a reversible collapse style.
 
-## Why not intercept network traffic?
+## Why intercept the initial payload at all?
 
-Because it is the wrong boundary for v1.
+Because DOM-only parking still pays the cost of the first huge render.
 
-- Network interception makes the extension more invasive
-- It expands privacy and compatibility risk
-- It couples the project to unstable transport details
-- The original bottleneck is already visible at the rendering layer
+- Trimming the initial conversation payload reduces the official first render cost
+- Doing it in the page main world avoids MV3 backend body-rewrite limits
+- The extension still stays local-only and does not proxy requests through any remote service
+- Ongoing history management still happens at the DOM layer for safer rollback
 
-TurboRender stays on the page layer and leaves ChatGPT’s request/response flow untouched.
+So TurboRender touches only the initial page-side conversation payload, not the broader transport stack.
 
 ## Why not just hide old nodes with CSS?
 

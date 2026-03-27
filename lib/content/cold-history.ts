@@ -1,35 +1,36 @@
-import { PLACEHOLDER_TEXT, UI_CLASS_NAMES } from '../shared/constants';
-import type { CachedConversationTurn, ColdRestoreMode, InitialTrimSession } from '../shared/types';
+import { UI_CLASS_NAMES } from '../shared/constants';
+import { createTranslator, type Translator } from '../shared/i18n';
+import type { CachedConversationTurn, InitialTrimSession } from '../shared/types';
 
-const COLD_HISTORY_PLACEHOLDER_ATTRIBUTE = 'data-turbo-render-initial-cold';
-const COLD_HISTORY_TURNS_ATTRIBUTE = 'data-turbo-render-initial-cold-turns';
+const COLD_HISTORY_RENDERED_ATTRIBUTE = 'data-turbo-render-initial-cold-turns';
+const HISTORY_SHELF_ATTRIBUTE = 'data-turbo-render-history-shelf';
 
-function getRoleLabel(role: CachedConversationTurn['role']): string {
+function getRoleLabel(t: Translator, role: CachedConversationTurn['role']): string {
   switch (role) {
     case 'user':
-      return 'You';
+      return t('roleUser');
     case 'assistant':
-      return 'Assistant';
+      return t('roleAssistant');
     case 'system':
-      return 'System';
+      return t('roleSystem');
     case 'tool':
-      return 'Tool';
+      return t('roleTool');
     default:
-      return 'Message';
+      return t('roleUnknown');
   }
 }
 
-function renderColdTurn(doc: Document, turn: CachedConversationTurn): HTMLElement {
+function renderColdTurn(doc: Document, t: Translator, turn: CachedConversationTurn): HTMLElement {
   const article = doc.createElement('article');
   article.className = UI_CLASS_NAMES.coldHistoryTurn;
   article.setAttribute('data-message-author-role', turn.role);
 
   const header = doc.createElement('header');
-  header.textContent = getRoleLabel(turn.role);
+  header.textContent = getRoleLabel(t, turn.role);
   article.append(header);
 
   const body = doc.createElement('div');
-  body.className = 'turbo-render-cold-history__body';
+  body.className = UI_CLASS_NAMES.coldHistoryBody;
   for (const part of turn.parts) {
     const paragraph = doc.createElement('p');
     paragraph.textContent = part;
@@ -42,54 +43,30 @@ function renderColdTurn(doc: Document, turn: CachedConversationTurn): HTMLElemen
 export class ColdHistoryManager {
   private turnContainer: HTMLElement | null = null;
   private session: InitialTrimSession | null = null;
-  private placeholder: HTMLElement | null = null;
   private renderedTurns: HTMLElement | null = null;
   private restored = false;
-  private restoreMode: ColdRestoreMode = 'placeholder';
+  private t: Translator = createTranslator('en');
 
-  sync(
-    turnContainer: HTMLElement | null,
-    session: InitialTrimSession | null,
-    restoreMode: ColdRestoreMode,
-  ): void {
-    const nextColdTurns = session?.applied ? session.coldTurns : [];
+  setTranslator(translator: Translator): void {
+    this.t = translator;
+    this.renderVisibleSection();
+  }
+
+  sync(turnContainer: HTMLElement | null, session: InitialTrimSession | null): void {
     const sessionChanged = session?.chatId !== this.session?.chatId;
-
     this.turnContainer = turnContainer;
     this.session = session;
-    this.restoreMode = restoreMode;
 
     if (sessionChanged) {
       this.restored = false;
     }
 
-    if (turnContainer == null || nextColdTurns.length === 0) {
+    if (turnContainer == null || session?.applied !== true || session.coldTurns.length === 0) {
       this.destroy();
       return;
     }
 
-    this.ensurePlaceholder(turnContainer);
-    this.updatePlaceholder(nextColdTurns.length);
-
-    if (this.restored) {
-      this.ensureRenderedTurns(turnContainer, nextColdTurns);
-    } else {
-      this.renderedTurns?.remove();
-      this.renderedTurns = null;
-    }
-  }
-
-  handleAction(target: Element | null): boolean {
-    const action = target
-      ?.closest<HTMLElement>('[data-turbo-render-action="restore-initial-cold"]')
-      ?.getAttribute('data-turbo-render-action');
-
-    if (action !== 'restore-initial-cold') {
-      return false;
-    }
-
-    this.restore();
-    return true;
+    this.renderVisibleSection();
   }
 
   restore(): boolean {
@@ -98,10 +75,17 @@ export class ColdHistoryManager {
     }
 
     this.restored = true;
-    this.ensurePlaceholder(this.turnContainer);
-    this.updatePlaceholder(this.session.coldTurns.length);
-    this.ensureRenderedTurns(this.turnContainer, this.session.coldTurns);
+    this.renderVisibleSection();
     return true;
+  }
+
+  collapse(): void {
+    this.restored = false;
+    this.renderVisibleSection();
+  }
+
+  isRestored(): boolean {
+    return this.restored;
   }
 
   getTotalColdTurns(): number {
@@ -113,83 +97,52 @@ export class ColdHistoryManager {
   }
 
   destroy(): void {
-    this.placeholder?.remove();
     this.renderedTurns?.remove();
-    this.placeholder = null;
     this.renderedTurns = null;
     this.restored = false;
   }
 
-  private ensurePlaceholder(turnContainer: HTMLElement): void {
-    if (this.placeholder != null && this.placeholder.isConnected) {
+  private renderVisibleSection(): void {
+    if (
+      this.turnContainer == null ||
+      this.session?.applied !== true ||
+      this.session.coldTurns.length === 0 ||
+      !this.restored
+    ) {
+      this.renderedTurns?.remove();
+      this.renderedTurns = null;
       return;
     }
 
-    const placeholder = turnContainer.ownerDocument.createElement('div');
-    placeholder.className = `${UI_CLASS_NAMES.placeholder} ${UI_CLASS_NAMES.coldHistory}`;
-    placeholder.setAttribute(COLD_HISTORY_PLACEHOLDER_ATTRIBUTE, 'true');
-
-    const summary = turnContainer.ownerDocument.createElement('div');
-    summary.className = UI_CLASS_NAMES.placeholderSummary;
-    placeholder.append(summary);
-
-    const actions = turnContainer.ownerDocument.createElement('div');
-    actions.className = UI_CLASS_NAMES.placeholderActions;
-    const restoreButton = turnContainer.ownerDocument.createElement('button');
-    restoreButton.type = 'button';
-    restoreButton.setAttribute('data-turbo-render-action', 'restore-initial-cold');
-    actions.append(restoreButton);
-    placeholder.append(actions);
-
-    turnContainer.insertBefore(placeholder, turnContainer.firstChild);
-    this.placeholder = placeholder;
-  }
-
-  private ensureRenderedTurns(turnContainer: HTMLElement, turns: CachedConversationTurn[]): void {
     if (this.renderedTurns == null || !this.renderedTurns.isConnected) {
-      const container = turnContainer.ownerDocument.createElement('section');
+      const container = this.turnContainer.ownerDocument.createElement('section');
       container.className = UI_CLASS_NAMES.coldHistoryTurns;
-      container.setAttribute(COLD_HISTORY_TURNS_ATTRIBUTE, 'true');
+      container.setAttribute(COLD_HISTORY_RENDERED_ATTRIBUTE, 'true');
       this.renderedTurns = container;
-      if (this.placeholder?.nextSibling != null) {
-        turnContainer.insertBefore(container, this.placeholder.nextSibling);
+      const shelf = this.turnContainer.querySelector<HTMLElement>(`[${HISTORY_SHELF_ATTRIBUTE}="true"]`);
+      if (shelf?.nextSibling != null) {
+        this.turnContainer.insertBefore(container, shelf.nextSibling);
       } else {
-        turnContainer.append(container);
+        this.turnContainer.insertBefore(container, this.turnContainer.firstChild);
       }
     }
 
-    if (this.renderedTurns.childElementCount === turns.length) {
-      return;
-    }
-
     this.renderedTurns.innerHTML = '';
-    for (const turn of turns) {
-      this.renderedTurns.append(renderColdTurn(turnContainer.ownerDocument, turn));
-    }
-  }
 
-  private updatePlaceholder(turnCount: number): void {
-    if (this.placeholder == null) {
-      return;
-    }
+    const header = this.turnContainer.ownerDocument.createElement('div');
+    header.className = UI_CLASS_NAMES.coldHistoryHeader;
 
-    const summary = this.placeholder.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.placeholderSummary}`);
-    const button = this.placeholder.querySelector<HTMLButtonElement>(
-      '[data-turbo-render-action="restore-initial-cold"]',
-    );
+    const title = this.turnContainer.ownerDocument.createElement('strong');
+    title.textContent = this.t('coldHistoryTitle');
+    header.append(title);
 
-    if (summary != null) {
-      summary.textContent = this.restored
-        ? `Restored ${turnCount} trimmed turns in read-only mode.`
-        : `Initial trim moved ${turnCount} older turns out of the official render path.`;
-    }
+    const copy = this.turnContainer.ownerDocument.createElement('p');
+    copy.textContent = this.t('coldHistorySummary', { count: this.session.coldTurns.length });
+    header.append(copy);
 
-    if (button != null) {
-      button.disabled = this.restored;
-      button.textContent =
-        this.restoreMode === 'readOnly'
-          ? `${PLACEHOLDER_TEXT.restoreHistory} (read-only)`
-          : PLACEHOLDER_TEXT.restoreHistory;
+    this.renderedTurns.append(header);
+    for (const turn of this.session.coldTurns) {
+      this.renderedTurns.append(renderColdTurn(this.turnContainer.ownerDocument, this.t, turn));
     }
   }
 }

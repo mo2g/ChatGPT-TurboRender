@@ -13,6 +13,7 @@ export const STORAGE_KEYS = {
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   autoEnable: true,
+  language: 'auto',
   mode: 'performance',
   minFinalizedBlocks: 120,
   minDescendants: 2500,
@@ -31,20 +32,19 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const UI_CLASS_NAMES = {
   statusBar: 'turbo-render-status-bar',
+  statusBarTop: 'turbo-render-status-bar__top',
+  statusBarSummary: 'turbo-render-status-bar__summary',
+  statusBarPrimary: 'turbo-render-status-bar__primary',
+  statusBarDetails: 'turbo-render-status-bar__details',
+  statusBarMeta: 'turbo-render-status-bar__meta',
+  statusBarActions: 'turbo-render-status-bar__actions',
   placeholder: 'turbo-render-placeholder',
   placeholderSummary: 'turbo-render-placeholder__summary',
   placeholderActions: 'turbo-render-placeholder__actions',
   coldHistory: 'turbo-render-cold-history',
   coldHistoryTurns: 'turbo-render-cold-history__turns',
   coldHistoryTurn: 'turbo-render-cold-history__turn',
+  coldHistoryBody: 'turbo-render-cold-history__body',
+  coldHistoryHeader: 'turbo-render-cold-history__header',
   softFolded: 'turbo-render-soft-folded',
-} as const;
-
-export const PLACEHOLDER_TEXT = {
-  restore: 'Restore',
-  restoreHistory: 'Restore history',
-  restoreNearby: 'Restore nearby',
-  restoreAll: 'Restore all',
-  pause: 'Pause chat',
-  resume: 'Resume chat',
 } as const;

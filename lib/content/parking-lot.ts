@@ -1,4 +1,5 @@
-import { PLACEHOLDER_GROUP_ATTRIBUTE, PLACEHOLDER_TEXT, UI_CLASS_NAMES } from '../shared/constants';
+import { PLACEHOLDER_GROUP_ATTRIBUTE, UI_CLASS_NAMES } from '../shared/constants';
+import { createTranslator, type Translator } from '../shared/i18n';
 import type { ParkingMode, ParkedGroup, ParkedGroupSummary } from '../shared/types';
 
 export interface ParkRequest {
@@ -13,6 +14,14 @@ export interface ParkRequest {
 
 export class ParkingLot {
   private groups = new Map<string, ParkedGroup>();
+  private t: Translator = createTranslator('en');
+
+  setTranslator(translator: Translator): void {
+    this.t = translator;
+    for (const group of this.groups.values()) {
+      this.updatePlaceholderCopy(group);
+    }
+  }
 
   park(request: ParkRequest): ParkedGroup | null {
     if (this.groups.has(request.id) || request.nodes.length === 0) {
@@ -137,15 +146,38 @@ export class ParkingLot {
     placeholder.dataset.turboRenderStart = String(request.startIndex);
     placeholder.dataset.turboRenderEnd = String(request.endIndex);
     placeholder.innerHTML = `
-      <div class="${UI_CLASS_NAMES.placeholderSummary}">
-        Folded ${request.turnIds.length} turns • #${request.startIndex + 1}-${request.endIndex + 1}
-      </div>
+      <div class="${UI_CLASS_NAMES.placeholderSummary}"></div>
       <div class="${UI_CLASS_NAMES.placeholderActions}">
-        <button type="button" data-turbo-render-action="restore-group" data-group-id="${request.id}">
-          ${PLACEHOLDER_TEXT.restore}
-        </button>
+        <button type="button" data-turbo-render-action="restore-group" data-group-id="${request.id}"></button>
       </div>
     `;
+    this.updatePlaceholderCopy({
+      id: request.id,
+      mode: request.mode,
+      startIndex: request.startIndex,
+      endIndex: request.endIndex,
+      turnIds: [...request.turnIds],
+      nodes: [...request.nodes],
+      parent: request.parent,
+      placeholder,
+    });
     return placeholder;
+  }
+
+  private updatePlaceholderCopy(group: Pick<ParkedGroup, 'placeholder' | 'turnIds' | 'startIndex' | 'endIndex'>): void {
+    const summary = group.placeholder.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.placeholderSummary}`);
+    const button = group.placeholder.querySelector<HTMLButtonElement>('[data-turbo-render-action="restore-group"]');
+
+    if (summary != null) {
+      summary.textContent = this.t('placeholderFoldedTurns', {
+        count: group.turnIds.length,
+        start: group.startIndex + 1,
+        end: group.endIndex + 1,
+      });
+    }
+
+    if (button != null) {
+      button.textContent = this.t('actionRestore');
+    }
   }
 }

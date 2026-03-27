@@ -1,102 +1,107 @@
 import { browser } from 'wxt/browser';
 
+import { createTranslator, getExtensionLanguage, normalizeLanguagePreference } from '../../lib/shared/i18n';
 import type { TabStatusResponse } from '../../lib/shared/types';
 import './style.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 
-function renderShell(): void {
+function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typeof createTranslator>): string {
+  if (status == null) {
+    return t('statusUnavailable');
+  }
+  if (!status.supported) {
+    return t('stateUnsupported');
+  }
+  if (status.historyInspectionActive) {
+    return t('stateInspecting');
+  }
+  if (status.paused) {
+    return t('statePaused');
+  }
+  if (status.active) {
+    return status.softFallback ? t('stateActiveSoft') : t('stateActive');
+  }
+  return t('stateMonitoring');
+}
+
+function render(status: TabStatusResponse): void {
   if (app == null) {
     return;
   }
 
+  const language = getExtensionLanguage(status.settings);
+  const t = createTranslator(language);
+  const runtime = status.runtime;
+  const initialTrim = runtime?.initialTrimApplied
+    ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
+    : t('statusHistoryNo');
+  const inspection = runtime?.historyInspectionActive ? t('statusInspectionOpen') : t('statusInspectionClosed');
+
   app.innerHTML = `
     <section class="popup-card">
-      <h1>ChatGPT TurboRender</h1>
-      <p class="popup-status" id="status-copy">Loading…</p>
+      <h1>${t('appName')}</h1>
+      <p class="popup-status" id="status-copy">${
+        runtime == null
+          ? t('statusNoSupportedTab')
+          : `${getRuntimeLabel(runtime, t)} • ${runtime.chatId}`
+      }</p>
       <div class="popup-row">
         <label>
-          <input type="checkbox" id="enabled-toggle" />
-          Enable TurboRender
+          <input type="checkbox" id="enabled-toggle" ${status.settings.enabled ? 'checked' : ''} />
+          ${t('actionEnableTurboRender')}
+        </label>
+        <label>
+          <span>${t('actionLanguage')}</span>
+          <select id="language-select">
+            <option value="auto" ${status.settings.language === 'auto' ? 'selected' : ''}>${t('languageAuto')}</option>
+            <option value="en" ${status.settings.language === 'en' ? 'selected' : ''}>${t('languageEnglish')}</option>
+            <option value="zh-CN" ${status.settings.language === 'zh-CN' ? 'selected' : ''}>${t('languageChinese')}</option>
+          </select>
         </label>
       </div>
     </section>
     <section class="popup-card">
-      <h2>Current tab</h2>
-      <div class="popup-grid" id="runtime-grid"></div>
+      <h2>${t('labelCurrentTab')}</h2>
+      <p class="popup-status">${t('statusPopupTopShelfHint')}</p>
+      <div class="popup-grid">
+        ${
+          runtime == null
+            ? `<span>${t('labelCurrentTab')}</span><span>${t('statusUnavailable')}</span>`
+            : `
+              <span>${t('labelTotalTurns')}</span><span>${runtime.totalTurns}</span>
+              <span>${t('labelFinalized')}</span><span>${runtime.finalizedTurns}</span>
+              <span>${t('labelInitialTrim')}</span><span>${initialTrim}</span>
+              <span>${t('labelHandledHistory')}</span><span>${runtime.handledTurnsTotal}</span>
+              <span>${t('labelHistoryInspection')}</span><span>${inspection}</span>
+              <span>${t('labelParkedTurns')}</span><span>${runtime.parkedTurns}</span>
+              <span>${t('labelParkedGroups')}</span><span>${runtime.parkedGroups}</span>
+              <span>${t('labelLiveDomNodes')}</span><span>${runtime.liveDescendantCount}</span>
+              <span>${t('labelMappingNodes')}</span><span>${runtime.totalMappingNodes}</span>
+              <span>${t('labelFrameSpikes')}</span><span>${runtime.spikeCount}</span>
+            `
+        }
+      </div>
       <div class="popup-actions">
-        <button id="pause-chat"></button>
-        <button id="restore-nearby">Restore nearby</button>
-        <button id="restore-all">Restore all</button>
+        <button id="pause-chat" ${runtime == null || !runtime.supported ? 'disabled' : ''}>
+          ${status.paused ? t('actionResumeChat') : t('actionPauseChat')}
+        </button>
+        <button id="restore-nearby" ${runtime == null || runtime.parkedGroups === 0 ? 'disabled' : ''}>
+          ${t('actionRestoreNearby')}
+        </button>
+        <button id="restore-all" ${runtime == null || runtime.parkedGroups === 0 ? 'disabled' : ''}>
+          ${t('actionRestoreAll')}
+        </button>
       </div>
     </section>
     <section class="popup-card">
-      <h2>Settings</h2>
-      <p class="popup-status">Fine-tune thresholds and fallback behavior.</p>
+      <h2>${t('labelSettings')}</h2>
+      <p class="popup-status">${t('statusPopupSettingsHint')}</p>
       <div class="popup-actions">
-        <button data-variant="primary" id="open-options">Open options</button>
+        <button data-variant="primary" id="open-options">${t('actionOpenOptions')}</button>
       </div>
     </section>
   `;
-}
-
-function renderRuntime(status: TabStatusResponse): void {
-  const statusCopy = document.querySelector<HTMLElement>('#status-copy');
-  const enabledToggle = document.querySelector<HTMLInputElement>('#enabled-toggle');
-  const runtimeGrid = document.querySelector<HTMLElement>('#runtime-grid');
-  const pauseButton = document.querySelector<HTMLButtonElement>('#pause-chat');
-  const restoreNearbyButton = document.querySelector<HTMLButtonElement>('#restore-nearby');
-  const restoreAllButton = document.querySelector<HTMLButtonElement>('#restore-all');
-
-  if (
-    statusCopy == null ||
-    enabledToggle == null ||
-    runtimeGrid == null ||
-    pauseButton == null ||
-    restoreNearbyButton == null ||
-    restoreAllButton == null
-  ) {
-    return;
-  }
-
-  enabledToggle.checked = status.settings.enabled;
-
-  if (status.runtime == null) {
-    statusCopy.textContent = 'No supported ChatGPT tab was found in the active window.';
-    runtimeGrid.innerHTML = '<span>State</span><span>Unavailable</span>';
-    pauseButton.disabled = true;
-    restoreNearbyButton.disabled = true;
-    restoreAllButton.disabled = true;
-    return;
-  }
-
-  const runtime = status.runtime;
-  const label = !runtime.supported
-    ? 'Unsupported'
-    : runtime.paused
-      ? 'Paused'
-      : runtime.active
-        ? runtime.softFallback
-          ? 'Active (soft fallback)'
-          : 'Active'
-        : 'Monitoring';
-
-  statusCopy.textContent = `${label} on ${runtime.chatId} (${runtime.mode} mode)`;
-  runtimeGrid.innerHTML = `
-    <span>Total turns</span><span>${runtime.totalTurns}</span>
-    <span>Finalized</span><span>${runtime.finalizedTurns}</span>
-    <span>Initial trim</span><span>${runtime.initialTrimApplied ? `Yes (${runtime.initialTrimmedTurns} cold)` : 'No'}</span>
-    <span>Parked turns</span><span>${runtime.parkedTurns}</span>
-    <span>Parked groups</span><span>${runtime.parkedGroups}</span>
-    <span>Live DOM nodes</span><span>${runtime.liveDescendantCount}</span>
-    <span>Mapping nodes</span><span>${runtime.totalMappingNodes}</span>
-    <span>Frame spikes</span><span>${runtime.spikeCount}</span>
-  `;
-
-  pauseButton.disabled = !runtime.supported;
-  pauseButton.textContent = status.paused ? 'Resume this chat' : 'Pause this chat';
-  restoreNearbyButton.disabled = runtime.parkedGroups === 0;
-  restoreAllButton.disabled = runtime.parkedGroups === 0;
 }
 
 async function fetchStatus(): Promise<TabStatusResponse> {
@@ -104,23 +109,29 @@ async function fetchStatus(): Promise<TabStatusResponse> {
 }
 
 async function refresh(): Promise<void> {
-  renderRuntime(await fetchStatus());
+  render(await fetchStatus());
 }
 
-renderShell();
 void refresh();
 
 document.addEventListener('change', async (event) => {
   const target = event.target as HTMLElement | null;
-  if (!(target instanceof HTMLInputElement) || target.id !== 'enabled-toggle') {
+  if (target instanceof HTMLInputElement && target.id === 'enabled-toggle') {
+    await browser.runtime.sendMessage({
+      type: 'TOGGLE_GLOBAL',
+      enabled: target.checked,
+    });
+    await refresh();
     return;
   }
 
-  await browser.runtime.sendMessage({
-    type: 'TOGGLE_GLOBAL',
-    enabled: target.checked,
-  });
-  await refresh();
+  if (target instanceof HTMLSelectElement && target.id === 'language-select') {
+    await browser.runtime.sendMessage({
+      type: 'UPDATE_SETTINGS',
+      patch: { language: normalizeLanguagePreference(target.value) },
+    });
+    await refresh();
+  }
 });
 
 document.addEventListener('click', async (event) => {

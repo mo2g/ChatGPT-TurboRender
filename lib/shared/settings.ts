@@ -2,6 +2,7 @@ import { browser } from 'wxt/browser';
 
 import { DEFAULT_SETTINGS, STORAGE_KEYS } from './constants';
 import { getChatIdFromPathname } from './chat-id';
+import { normalizeLanguagePreference } from './i18n';
 import type { Settings } from './types';
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -16,6 +17,7 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
   return {
     enabled: candidate?.enabled ?? DEFAULT_SETTINGS.enabled,
     autoEnable: candidate?.autoEnable ?? DEFAULT_SETTINGS.autoEnable,
+    language: normalizeLanguagePreference(candidate?.language),
     mode:
       candidate?.mode === 'compatibility' || candidate?.mode === 'performance'
         ? candidate.mode

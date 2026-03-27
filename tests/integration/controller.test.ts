@@ -80,10 +80,11 @@ describe('TurboRenderController', () => {
     controller.stop();
   });
 
-  it('tracks initially trimmed cold history outside the official DOM', async () => {
+  it('mounts a top history shelf and lets users inspect managed history', async () => {
     const controller = new TurboRenderController({
       settings: {
         ...DEFAULT_SETTINGS,
+        language: 'en',
         minFinalizedBlocks: 10,
         minDescendants: 100,
         keepRecentTurns: 6,
@@ -92,7 +93,7 @@ describe('TurboRenderController', () => {
         groupSize: 5,
       },
       paused: false,
-      mountUi: false,
+      mountUi: true,
     });
 
     controller.start();
@@ -123,14 +124,30 @@ describe('TurboRenderController', () => {
       initialTrimApplied: true,
       initialTrimmedTurns: 6,
       totalTurns: 46,
+      handledTurnsTotal: 6,
+      historyInspectionActive: false,
       parkedTurns: 6,
     });
-    expect(document.querySelector('[data-turbo-render-initial-cold="true"]')).not.toBeNull();
 
-    controller.restoreAll();
+    const shelf = document.querySelector<HTMLElement>('[data-turbo-render-history-shelf="true"]');
+    expect(shelf).not.toBeNull();
+    expect(shelf?.parentElement?.getAttribute('data-testid')).toBe('conversation-transcript');
+    expect(document.querySelector('[data-turbo-render-initial-cold-turns="true"]')).toBeNull();
+
+    shelf?.querySelector<HTMLButtonElement>('button[data-action="inspect-history"]')?.click();
     await flush();
 
+    expect(controller.getStatus()).toMatchObject({
+      historyInspectionActive: true,
+      handledTurnsTotal: 6,
+      parkedTurns: 0,
+    });
     expect(document.querySelector('[data-turbo-render-initial-cold-turns="true"]')).not.toBeNull();
+
+    shelf?.querySelector<HTMLButtonElement>('button[data-action="inspect-history"]')?.click();
+    await flush();
+
+    expect(controller.getStatus().historyInspectionActive).toBe(false);
     controller.stop();
   });
 });

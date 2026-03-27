@@ -3,10 +3,12 @@ export type TurnRole = 'user' | 'assistant' | 'system' | 'tool' | 'unknown';
 export type ParkingMode = 'hard' | 'soft';
 export type TurboRenderMode = 'performance' | 'compatibility';
 export type ColdRestoreMode = 'placeholder' | 'readOnly';
+export type LanguagePreference = 'auto' | 'en' | 'zh-CN';
 
 export interface Settings {
   enabled: boolean;
   autoEnable: boolean;
+  language: LanguagePreference;
   mode: TurboRenderMode;
   minFinalizedBlocks: number;
   minDescendants: number;
@@ -94,6 +96,8 @@ export interface TabRuntimeStatus {
   activeBranchLength: number;
   totalTurns: number;
   finalizedTurns: number;
+  handledTurnsTotal: number;
+  historyInspectionActive: boolean;
   parkedTurns: number;
   parkedGroups: number;
   liveDescendantCount: number;

@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, TURN_ID_DATASET } from '../shared/constants';
+import { createTranslator, getContentLanguage, type Translator, type UiLanguage } from '../shared/i18n';
 import type {
   IndexRange,
   InitialTrimSession,
@@ -92,6 +93,12 @@ export class TurboRenderController {
   private lastInteractionNode: Node | null = null;
   private lastInteractionAt = 0;
   private manualRestoreHoldUntil = 0;
+  private historyInspectionActive = false;
+  private historyInspectionHandledTurns = 0;
+  private historyInspectionHoldUntil = 0;
+  private historyInspectionStartedDuringStreaming = false;
+  private uiLanguage: UiLanguage = 'en';
+  private t: Translator = createTranslator('en');
   private readonly records = new Map<string, TurnRecord>();
   private readonly handleScroll = () => this.scheduleRefresh();
 
@@ -135,10 +142,18 @@ export class TurboRenderController {
           void this.onPauseToggle?.(next, this.chatId);
           this.setPaused(next);
         },
+        onInspectHistory: () => {
+          this.inspectHistory();
+          this.scheduleRefresh();
+        },
+        onCloseHistory: () => {
+          this.closeHistoryInspection();
+          this.scheduleRefresh();
+        },
       });
-      this.statusBar.mount();
     }
 
+    this.refreshLanguage();
     this.frameSpikeMonitor.start();
     this.bindEvents();
     this.scheduleRefresh();
@@ -174,6 +189,7 @@ export class TurboRenderController {
 
   setSettings(settings: Settings): void {
     this.settings = settings;
+    this.refreshLanguage();
     this.scheduleRefresh();
   }
 
@@ -189,18 +205,45 @@ export class TurboRenderController {
     this.paused = paused;
     if (paused) {
       this.active = false;
+      this.closeHistoryInspection();
       this.restoreAll();
     }
     this.scheduleRefresh();
   }
 
   restoreAll(): void {
+    this.restoreAllInternal(5000);
+  }
+
+  inspectHistory(): void {
+    const handledTurns = this.getHandledTurnsTotal();
+    if (handledTurns === 0) {
+      return;
+    }
+
+    this.historyInspectionActive = true;
+    this.historyInspectionHandledTurns = Math.max(this.historyInspectionHandledTurns, handledTurns);
+    this.historyInspectionHoldUntil = this.win.performance.now() + 30_000;
+    this.historyInspectionStartedDuringStreaming = [...this.records.values()].some((record) => record.isStreaming);
+    this.restoreAllInternal(30_000);
+  }
+
+  closeHistoryInspection(): void {
+    this.historyInspectionActive = false;
+    this.historyInspectionHandledTurns = 0;
+    this.historyInspectionHoldUntil = 0;
+    this.historyInspectionStartedDuringStreaming = false;
+    this.manualRestoreHoldUntil = 0;
+    this.coldHistory.collapse();
+  }
+
+  private restoreAllInternal(holdMs: number): void {
     this.parkingLot.restoreAll();
     this.coldHistory.restore();
     for (const record of this.records.values()) {
       record.parked = false;
     }
-    this.manualRestoreHoldUntil = this.win.performance.now() + 5000;
+    this.manualRestoreHoldUntil = this.win.performance.now() + holdMs;
     this.runtimeStatus = this.buildStatus({
       supported: this.runtimeStatus.supported,
       reason: this.runtimeStatus.reason,
@@ -209,7 +252,7 @@ export class TurboRenderController {
       liveDescendantCount: countLiveDescendants(this.turnContainer),
       visibleRange: this.runtimeStatus.visibleRange,
     });
-    this.statusBar?.update(this.runtimeStatus);
+    this.statusBar?.update(this.runtimeStatus, this.turnContainer);
   }
 
   restoreNearby(): void {
@@ -244,11 +287,6 @@ export class TurboRenderController {
       'click',
       (event) => {
         const target = event.target as Element | null;
-        if (this.coldHistory.handleAction(target)) {
-          this.scheduleRefresh();
-          return;
-        }
-
         const groupId =
           target?.closest<HTMLElement>('[data-turbo-render-action="restore-group"]')?.dataset.groupId ??
           this.parkingLot.findGroupIdByPlaceholder(target);
@@ -286,6 +324,7 @@ export class TurboRenderController {
     this.softFallbackSession = false;
     this.lastError = null;
     this.initialTrimSession = null;
+    this.closeHistoryInspection();
     this.setObservedMutationRoot(this.doc.body);
     this.setScrollTarget(null);
     this.scheduleRefresh();
@@ -303,6 +342,7 @@ export class TurboRenderController {
   }
 
   private refreshNow(): void {
+    this.refreshLanguage();
     for (const group of this.parkingLot.getDisconnectedHardGroups()) {
       this.lastError = `host-rerender-lost-${group.id}`;
       this.softFallbackSession = true;
@@ -332,17 +372,19 @@ export class TurboRenderController {
         liveDescendantCount: snapshot.descendantCount,
         visibleRange: null,
       });
-      this.statusBar?.update(this.runtimeStatus);
+      this.statusBar?.update(this.runtimeStatus, null);
       return;
     }
 
     this.turnContainer = snapshot.turnContainer;
     this.setObservedMutationRoot(snapshot.turnContainer.parentElement ?? snapshot.turnContainer);
     this.setScrollTarget(snapshot.scrollContainer);
-    this.coldHistory.sync(snapshot.turnContainer, this.initialTrimSession, this.settings.coldRestoreMode);
+    this.coldHistory.sync(snapshot.turnContainer, this.initialTrimSession);
     const orderedRecords = this.reconcileTurns(snapshot.turnNodes, snapshot.stopButtonVisible);
     const visibleRange = this.computeVisibleRange(snapshot.scrollContainer);
     const coldTurnCount = this.coldHistory.getTotalColdTurns();
+    const hasStreamingTurns = orderedRecords.some((record) => record.isStreaming);
+    this.syncHistoryInspection(hasStreamingTurns);
     const finalizedTurns = orderedRecords.filter((record) => !record.isStreaming).length + coldTurnCount;
     const totalTurns = orderedRecords.length + coldTurnCount;
     const spikeCount = this.frameSpikeMonitor.getSpikeCount();
@@ -374,7 +416,7 @@ export class TurboRenderController {
       liveDescendantCount: snapshot.descendantCount,
       visibleRange,
     });
-    this.statusBar?.update(this.runtimeStatus);
+    this.statusBar?.update(this.runtimeStatus, this.turnContainer);
 
     if (!this.active || this.paused || this.win.performance.now() < this.manualRestoreHoldUntil) {
       return;
@@ -456,7 +498,7 @@ export class TurboRenderController {
         liveDescendantCount: countLiveDescendants(this.turnContainer),
         visibleRange,
       });
-      this.statusBar?.update(this.runtimeStatus);
+      this.statusBar?.update(this.runtimeStatus, this.turnContainer);
     });
   }
 
@@ -663,6 +705,10 @@ export class TurboRenderController {
       activeBranchLength: this.initialTrimSession?.activeBranchLength ?? 0,
       totalTurns: input.totalTurns,
       finalizedTurns: input.finalizedTurns,
+      handledTurnsTotal: this.historyInspectionActive
+        ? Math.max(this.historyInspectionHandledTurns, this.getHandledTurnsTotal())
+        : this.getHandledTurnsTotal(),
+      historyInspectionActive: this.historyInspectionActive,
       parkedTurns: this.parkingLot.getTotalParkedTurns() + collapsedColdTurns,
       parkedGroups: this.parkingLot.getSummaries().length + this.coldHistory.getCollapsedGroupCount(),
       liveDescendantCount: input.liveDescendantCount,
@@ -695,5 +741,31 @@ export class TurboRenderController {
     this.scrollTarget?.removeEventListener('scroll', this.handleScroll);
     this.scrollTarget = target;
     this.scrollTarget?.addEventListener('scroll', this.handleScroll, { passive: true });
+  }
+
+  private getHandledTurnsTotal(): number {
+    return (this.initialTrimSession?.coldVisibleTurns ?? 0) + this.parkingLot.getTotalParkedTurns();
+  }
+
+  private syncHistoryInspection(hasStreamingTurns: boolean): void {
+    if (!this.historyInspectionActive) {
+      return;
+    }
+
+    const now = this.win.performance.now();
+    const shouldCloseByStream =
+      this.historyInspectionStartedDuringStreaming && !hasStreamingTurns;
+
+    if (shouldCloseByStream || now >= this.historyInspectionHoldUntil) {
+      this.closeHistoryInspection();
+    }
+  }
+
+  private refreshLanguage(): void {
+    this.uiLanguage = getContentLanguage(this.settings, this.doc);
+    this.t = createTranslator(this.uiLanguage);
+    this.parkingLot.setTranslator(this.t);
+    this.coldHistory.setTranslator(this.t);
+    this.statusBar?.setTranslator(this.t);
   }
 }
