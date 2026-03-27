@@ -7,6 +7,8 @@ import './style.css';
 const FIELDS = [
   'minFinalizedBlocks',
   'minDescendants',
+  'initialHotTurns',
+  'liveHotTurns',
   'keepRecentTurns',
   'viewportBufferTurns',
   'groupSize',
@@ -25,14 +27,31 @@ function render(): void {
     <div class="options-shell">
       <section class="options-card">
         <h1>ChatGPT TurboRender</h1>
-        <p>Adjust activation thresholds, viewport retention, and the fallback mode used when the host page re-renders aggressively.</p>
+        <p>Adjust the early trim policy, hot-window retention, and the fallback mode used when the host page re-renders aggressively.</p>
       </section>
       <section class="options-card">
         <h2>Behavior</h2>
         <div class="toggle-row">
           <label><input type="checkbox" id="enabled" /> Enabled</label>
           <label><input type="checkbox" id="autoEnable" /> Auto-enable when thresholds trip</label>
+          <label><input type="checkbox" id="initialTrimEnabled" /> Trim long conversations before the official render</label>
           <label><input type="checkbox" id="softFallback" /> Start in soft-fold mode</label>
+        </div>
+        <div class="options-grid">
+          <label>
+            Mode
+            <select id="mode">
+              <option value="performance">Performance</option>
+              <option value="compatibility">Compatibility</option>
+            </select>
+          </label>
+          <label>
+            Cold restore mode
+            <select id="coldRestoreMode">
+              <option value="placeholder">Placeholder first</option>
+              <option value="readOnly">Read-only restore</option>
+            </select>
+          </label>
         </div>
       </section>
       <section class="options-card">
@@ -40,6 +59,8 @@ function render(): void {
         <div class="options-grid">
           <label>Finalized turns before activation<input type="number" id="minFinalizedBlocks" min="10" /></label>
           <label>Live descendants before activation<input type="number" id="minDescendants" min="100" /></label>
+          <label>Initial hot turns for payload trim<input type="number" id="initialHotTurns" min="4" /></label>
+          <label>Live hot turns after initial load<input type="number" id="liveHotTurns" min="4" /></label>
           <label>Recent turns to keep hot<input type="number" id="keepRecentTurns" min="4" /></label>
           <label>Viewport buffer turns<input type="number" id="viewportBufferTurns" min="0" /></label>
           <label>Turns per cold group<input type="number" id="groupSize" min="2" /></label>
@@ -63,7 +84,10 @@ async function loadSettingsIntoForm(): Promise<void> {
   const settings = await getSettings();
   (document.querySelector<HTMLInputElement>('#enabled')!).checked = settings.enabled;
   (document.querySelector<HTMLInputElement>('#autoEnable')!).checked = settings.autoEnable;
+  (document.querySelector<HTMLInputElement>('#initialTrimEnabled')!).checked = settings.initialTrimEnabled;
   (document.querySelector<HTMLInputElement>('#softFallback')!).checked = settings.softFallback;
+  (document.querySelector<HTMLSelectElement>('#mode')!).value = settings.mode;
+  (document.querySelector<HTMLSelectElement>('#coldRestoreMode')!).value = settings.coldRestoreMode;
 
   for (const field of FIELDS) {
     (document.querySelector<HTMLInputElement>(`#${field}`)!).value = String(settings[field]);
@@ -74,9 +98,14 @@ function readPatchFromForm() {
   return {
     enabled: document.querySelector<HTMLInputElement>('#enabled')!.checked,
     autoEnable: document.querySelector<HTMLInputElement>('#autoEnable')!.checked,
+    mode: document.querySelector<HTMLSelectElement>('#mode')!.value,
+    initialTrimEnabled: document.querySelector<HTMLInputElement>('#initialTrimEnabled')!.checked,
+    coldRestoreMode: document.querySelector<HTMLSelectElement>('#coldRestoreMode')!.value,
     softFallback: document.querySelector<HTMLInputElement>('#softFallback')!.checked,
     minFinalizedBlocks: Number(document.querySelector<HTMLInputElement>('#minFinalizedBlocks')!.value),
     minDescendants: Number(document.querySelector<HTMLInputElement>('#minDescendants')!.value),
+    initialHotTurns: Number(document.querySelector<HTMLInputElement>('#initialHotTurns')!.value),
+    liveHotTurns: Number(document.querySelector<HTMLInputElement>('#liveHotTurns')!.value),
     keepRecentTurns: Number(document.querySelector<HTMLInputElement>('#keepRecentTurns')!.value),
     viewportBufferTurns: Number(document.querySelector<HTMLInputElement>('#viewportBufferTurns')!.value),
     groupSize: Number(document.querySelector<HTMLInputElement>('#groupSize')!.value),

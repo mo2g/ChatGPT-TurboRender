@@ -1,15 +1,22 @@
 export type TurnRole = 'user' | 'assistant' | 'system' | 'tool' | 'unknown';
 
 export type ParkingMode = 'hard' | 'soft';
+export type TurboRenderMode = 'performance' | 'compatibility';
+export type ColdRestoreMode = 'placeholder' | 'readOnly';
 
 export interface Settings {
   enabled: boolean;
   autoEnable: boolean;
+  mode: TurboRenderMode;
   minFinalizedBlocks: number;
   minDescendants: number;
   keepRecentTurns: number;
   viewportBufferTurns: number;
   groupSize: number;
+  initialTrimEnabled: boolean;
+  initialHotTurns: number;
+  liveHotTurns: number;
+  coldRestoreMode: ColdRestoreMode;
   softFallback: boolean;
   frameSpikeThresholdMs: number;
   frameSpikeCount: number;
@@ -49,18 +56,47 @@ export interface ParkedGroupSummary {
   count: number;
 }
 
+export interface CachedConversationTurn {
+  id: string;
+  role: TurnRole;
+  parts: string[];
+  createTime: number | null;
+}
+
+export interface InitialTrimSession {
+  chatId: string;
+  conversationId: string | null;
+  applied: boolean;
+  reason: string | null;
+  mode: TurboRenderMode;
+  totalMappingNodes: number;
+  totalVisibleTurns: number;
+  activeBranchLength: number;
+  hotVisibleTurns: number;
+  coldVisibleTurns: number;
+  initialHotTurns: number;
+  activeNodeId: string | null;
+  coldTurns: CachedConversationTurn[];
+  capturedAt: number;
+}
+
 export interface TabRuntimeStatus {
   supported: boolean;
   chatId: string;
   reason: string | null;
   active: boolean;
   paused: boolean;
+  mode: TurboRenderMode;
   softFallback: boolean;
+  initialTrimApplied: boolean;
+  initialTrimmedTurns: number;
+  totalMappingNodes: number;
+  activeBranchLength: number;
   totalTurns: number;
   finalizedTurns: number;
   parkedTurns: number;
   parkedGroups: number;
-  descendantCount: number;
+  liveDescendantCount: number;
   visibleRange: IndexRange | null;
   spikeCount: number;
   lastError: string | null;

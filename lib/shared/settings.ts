@@ -16,6 +16,10 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
   return {
     enabled: candidate?.enabled ?? DEFAULT_SETTINGS.enabled,
     autoEnable: candidate?.autoEnable ?? DEFAULT_SETTINGS.autoEnable,
+    mode:
+      candidate?.mode === 'compatibility' || candidate?.mode === 'performance'
+        ? candidate.mode
+        : DEFAULT_SETTINGS.mode,
     minFinalizedBlocks: clampNumber(
       candidate?.minFinalizedBlocks,
       DEFAULT_SETTINGS.minFinalizedBlocks,
@@ -41,6 +45,18 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
       50,
     ),
     groupSize: clampNumber(candidate?.groupSize, DEFAULT_SETTINGS.groupSize, 2, 100),
+    initialTrimEnabled: candidate?.initialTrimEnabled ?? DEFAULT_SETTINGS.initialTrimEnabled,
+    initialHotTurns: clampNumber(
+      candidate?.initialHotTurns,
+      DEFAULT_SETTINGS.initialHotTurns,
+      4,
+      200,
+    ),
+    liveHotTurns: clampNumber(candidate?.liveHotTurns, DEFAULT_SETTINGS.liveHotTurns, 4, 200),
+    coldRestoreMode:
+      candidate?.coldRestoreMode === 'readOnly' || candidate?.coldRestoreMode === 'placeholder'
+        ? candidate.coldRestoreMode
+        : DEFAULT_SETTINGS.coldRestoreMode,
     softFallback: candidate?.softFallback ?? DEFAULT_SETTINGS.softFallback,
     frameSpikeThresholdMs: clampNumber(
       candidate?.frameSpikeThresholdMs,

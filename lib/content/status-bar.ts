@@ -85,6 +85,30 @@ const STYLES = `
   font: 12px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+.${UI_CLASS_NAMES.coldHistoryTurns} {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.${UI_CLASS_NAMES.coldHistoryTurn} {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.88);
+}
+
+.${UI_CLASS_NAMES.coldHistoryTurn} header {
+  font-weight: 600;
+}
+
+.${UI_CLASS_NAMES.coldHistoryTurn} p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .${UI_CLASS_NAMES.softFolded} {
   content-visibility: auto;
   contain: layout style paint;
@@ -181,10 +205,10 @@ export class StatusBar {
       !status.supported ? 'unsupported' : status.paused ? 'paused' : status.active ? 'active' : 'monitoring';
     this.root.dataset.state = state;
 
-    this.metrics.textContent = `${getStateLabel(status)} • ${status.parkedTurns}/${status.totalTurns} parked • ${status.descendantCount} live nodes`;
+    this.metrics.textContent = `${getStateLabel(status)} • ${status.parkedTurns}/${status.totalTurns} parked • ${status.liveDescendantCount} live nodes`;
     this.meta.textContent = status.reason
       ? `Reason: ${status.reason}`
-      : `Chat ${status.chatId} • ${status.parkedGroups} groups • ${status.spikeCount} recent frame spikes`;
+      : `Chat ${status.chatId} • ${status.mode} mode • ${status.parkedGroups} groups • ${status.spikeCount} recent frame spikes`;
 
     this.pauseButton.textContent = status.paused ? PLACEHOLDER_TEXT.resume : PLACEHOLDER_TEXT.pause;
     this.pauseButton.disabled = !status.supported;

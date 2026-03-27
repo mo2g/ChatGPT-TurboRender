@@ -59,7 +59,7 @@ function refreshStatus(): void {
     return;
   }
   const status = controller.getStatus();
-  statusEl.textContent = `${status.active ? 'Active' : 'Monitoring'} • ${status.parkedTurns}/${status.totalTurns} parked • ${status.descendantCount} live descendants`;
+  statusEl.textContent = `${status.active ? 'Active' : 'Monitoring'} • ${status.parkedTurns}/${status.totalTurns} parked • ${status.liveDescendantCount} live descendants`;
 }
 
 boot(180);

@@ -79,4 +79,58 @@ describe('TurboRenderController', () => {
     expect(document.querySelectorAll('.turbo-render-soft-folded').length).toBeGreaterThan(0);
     controller.stop();
   });
+
+  it('tracks initially trimmed cold history outside the official DOM', async () => {
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentTurns: 6,
+        liveHotTurns: 60,
+        viewportBufferTurns: 1,
+        groupSize: 5,
+      },
+      paused: false,
+      mountUi: false,
+    });
+
+    controller.start();
+    controller.setInitialTrimSession({
+      chatId: 'chat:home',
+      conversationId: 'abc',
+      applied: true,
+      reason: 'trimmed',
+      mode: 'performance',
+      totalMappingNodes: 80,
+      totalVisibleTurns: 46,
+      activeBranchLength: 46,
+      hotVisibleTurns: 40,
+      coldVisibleTurns: 6,
+      initialHotTurns: 6,
+      activeNodeId: 'assistant-40',
+      coldTurns: Array.from({ length: 6 }, (_, index) => ({
+        id: `cold-${index}`,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        parts: [`Cold turn ${index}`],
+        createTime: index,
+      })),
+      capturedAt: Date.now(),
+    });
+    await flush();
+
+    expect(controller.getStatus()).toMatchObject({
+      initialTrimApplied: true,
+      initialTrimmedTurns: 6,
+      totalTurns: 46,
+      parkedTurns: 6,
+    });
+    expect(document.querySelector('[data-turbo-render-initial-cold="true"]')).not.toBeNull();
+
+    controller.restoreAll();
+    await flush();
+
+    expect(document.querySelector('[data-turbo-render-initial-cold-turns="true"]')).not.toBeNull();
+    controller.stop();
+  });
 });

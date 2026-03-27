@@ -1,7 +1,14 @@
 import { DEFAULT_SETTINGS, TURN_ID_DATASET } from '../shared/constants';
-import type { IndexRange, Settings, TabRuntimeStatus, TurnRecord } from '../shared/types';
+import type {
+  IndexRange,
+  InitialTrimSession,
+  Settings,
+  TabRuntimeStatus,
+  TurnRecord,
+} from '../shared/types';
 
 import { detectTurnRole, isStreamingTurn, isTurnNode, scanChatPage } from './chatgpt-adapter';
+import { ColdHistoryManager } from './cold-history';
 import { FrameSpikeMonitor } from './frame-spike-monitor';
 import { computeHotRange, planTurnGroups, shouldAutoActivate } from './layout';
 import { ParkingLot } from './parking-lot';
@@ -49,6 +56,14 @@ function rangesIntersect(left: IndexRange, right: IndexRange): boolean {
   return left.start <= right.end && right.start <= left.end;
 }
 
+function countLiveDescendants(root: ParentNode | null): number {
+  if (root == null || !('querySelectorAll' in root)) {
+    return 0;
+  }
+
+  return root.querySelectorAll('*').length;
+}
+
 export class TurboRenderController {
   private readonly doc: Document;
   private readonly win: Window;
@@ -59,21 +74,26 @@ export class TurboRenderController {
   private statusBar: StatusBar | null = null;
   private readonly frameSpikeMonitor: FrameSpikeMonitor;
   private readonly parkingLot = new ParkingLot();
+  private readonly coldHistory = new ColdHistoryManager();
   private mutationObserver: MutationObserver | null = null;
+  private observedMutationRoot: Node | null = null;
   private refreshHandle: number | null = null;
   private idleHandle: number | null = null;
   private routePollHandle: number | null = null;
+  private scrollTarget: HTMLElement | null = null;
   private turnContainer: HTMLElement | null = null;
   private lastHref: string;
   private active = false;
   private softFallbackSession = false;
   private lastError: string | null = null;
   private chatId: string;
+  private initialTrimSession: InitialTrimSession | null = null;
   private runtimeStatus: TabRuntimeStatus;
   private lastInteractionNode: Node | null = null;
   private lastInteractionAt = 0;
   private manualRestoreHoldUntil = 0;
   private readonly records = new Map<string, TurnRecord>();
+  private readonly handleScroll = () => this.scheduleRefresh();
 
   constructor(options: TurboRenderControllerOptions = {}) {
     this.doc = options.document ?? document;
@@ -94,7 +114,7 @@ export class TurboRenderController {
       reason: 'not-started',
       totalTurns: 0,
       finalizedTurns: 0,
-      descendantCount: 0,
+      liveDescendantCount: 0,
       visibleRange: null,
     });
   }
@@ -125,10 +145,12 @@ export class TurboRenderController {
   }
 
   stop(): void {
-    this.restoreAll();
+    this.parkingLot.restoreAll();
+    this.coldHistory.destroy();
     this.frameSpikeMonitor.stop();
     this.mutationObserver?.disconnect();
     this.mutationObserver = null;
+    this.observedMutationRoot = null;
     if (this.refreshHandle != null) {
       this.win.cancelAnimationFrame?.(this.refreshHandle) ?? this.win.clearTimeout(this.refreshHandle);
       this.refreshHandle = null;
@@ -141,6 +163,7 @@ export class TurboRenderController {
       this.win.clearInterval(this.routePollHandle);
       this.routePollHandle = null;
     }
+    this.setScrollTarget(null);
     this.statusBar?.destroy();
     this.statusBar = null;
   }
@@ -151,6 +174,14 @@ export class TurboRenderController {
 
   setSettings(settings: Settings): void {
     this.settings = settings;
+    this.scheduleRefresh();
+  }
+
+  setInitialTrimSession(session: InitialTrimSession | null): void {
+    this.initialTrimSession = session;
+    if (session?.applied === true && this.settings.enabled && !this.paused) {
+      this.active = true;
+    }
     this.scheduleRefresh();
   }
 
@@ -165,6 +196,7 @@ export class TurboRenderController {
 
   restoreAll(): void {
     this.parkingLot.restoreAll();
+    this.coldHistory.restore();
     for (const record of this.records.values()) {
       record.parked = false;
     }
@@ -174,7 +206,7 @@ export class TurboRenderController {
       reason: this.runtimeStatus.reason,
       totalTurns: this.runtimeStatus.totalTurns,
       finalizedTurns: this.runtimeStatus.finalizedTurns,
-      descendantCount: this.runtimeStatus.descendantCount,
+      liveDescendantCount: countLiveDescendants(this.turnContainer),
       visibleRange: this.runtimeStatus.visibleRange,
     });
     this.statusBar?.update(this.runtimeStatus);
@@ -212,6 +244,11 @@ export class TurboRenderController {
       'click',
       (event) => {
         const target = event.target as Element | null;
+        if (this.coldHistory.handleAction(target)) {
+          this.scheduleRefresh();
+          return;
+        }
+
         const groupId =
           target?.closest<HTMLElement>('[data-turbo-render-action="restore-group"]')?.dataset.groupId ??
           this.parkingLot.findGroupIdByPlaceholder(target);
@@ -227,24 +264,11 @@ export class TurboRenderController {
       true,
     );
 
-    this.doc.addEventListener(
-      'scroll',
-      () => {
-        this.scheduleRefresh();
-      },
-      true,
-    );
-
     this.win.addEventListener('resize', () => this.scheduleRefresh(), { passive: true });
     this.win.addEventListener('pagehide', () => this.stop(), { once: true });
 
     this.mutationObserver = new MutationObserver(() => this.scheduleRefresh());
-    this.mutationObserver.observe(this.doc.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['aria-busy', 'data-testid', 'data-message-author-role'],
-    });
+    this.setObservedMutationRoot(this.doc.body);
 
     this.routePollHandle = this.win.setInterval(() => {
       if (this.doc.location?.href !== this.lastHref) {
@@ -255,11 +279,15 @@ export class TurboRenderController {
   }
 
   private handleRouteChange(): void {
-    this.restoreAll();
+    this.parkingLot.restoreAll();
+    this.coldHistory.destroy();
     this.records.clear();
     this.active = false;
     this.softFallbackSession = false;
     this.lastError = null;
+    this.initialTrimSession = null;
+    this.setObservedMutationRoot(this.doc.body);
+    this.setScrollTarget(null);
     this.scheduleRefresh();
   }
 
@@ -285,16 +313,23 @@ export class TurboRenderController {
 
     const snapshot = scanChatPage(this.doc);
     this.chatId = snapshot.chatId;
+    if (this.initialTrimSession != null && this.initialTrimSession.chatId !== this.chatId) {
+      this.initialTrimSession = null;
+      this.coldHistory.destroy();
+    }
 
     if (!snapshot.supported || snapshot.turnContainer == null) {
       this.turnContainer = null;
       this.active = false;
+      this.setObservedMutationRoot(this.doc.body);
+      this.setScrollTarget(null);
+      this.coldHistory.destroy();
       this.runtimeStatus = this.buildStatus({
         supported: false,
         reason: snapshot.reason ?? 'unsupported',
         totalTurns: 0,
         finalizedTurns: 0,
-        descendantCount: snapshot.descendantCount,
+        liveDescendantCount: snapshot.descendantCount,
         visibleRange: null,
       });
       this.statusBar?.update(this.runtimeStatus);
@@ -302,19 +337,28 @@ export class TurboRenderController {
     }
 
     this.turnContainer = snapshot.turnContainer;
+    this.setObservedMutationRoot(snapshot.turnContainer.parentElement ?? snapshot.turnContainer);
+    this.setScrollTarget(snapshot.scrollContainer);
+    this.coldHistory.sync(snapshot.turnContainer, this.initialTrimSession, this.settings.coldRestoreMode);
     const orderedRecords = this.reconcileTurns(snapshot.turnNodes, snapshot.stopButtonVisible);
     const visibleRange = this.computeVisibleRange(snapshot.scrollContainer);
-    const finalizedTurns = orderedRecords.filter((record) => !record.isStreaming).length;
+    const coldTurnCount = this.coldHistory.getTotalColdTurns();
+    const finalizedTurns = orderedRecords.filter((record) => !record.isStreaming).length + coldTurnCount;
+    const totalTurns = orderedRecords.length + coldTurnCount;
     const spikeCount = this.frameSpikeMonitor.getSpikeCount();
 
     if (!this.paused && this.settings.enabled && this.settings.autoEnable) {
       const activate = shouldAutoActivate({
-        finalizedTurns,
+        finalizedTurns: orderedRecords.filter((record) => !record.isStreaming).length,
         descendantCount: snapshot.descendantCount,
         spikeCount,
         settings: this.settings,
       });
       this.active = this.active || activate;
+    }
+
+    if (!this.paused && this.settings.enabled && this.initialTrimSession?.applied === true) {
+      this.active = true;
     }
 
     if (!this.settings.enabled || this.paused) {
@@ -325,9 +369,9 @@ export class TurboRenderController {
     this.runtimeStatus = this.buildStatus({
       supported: true,
       reason: null,
-      totalTurns: orderedRecords.length,
+      totalTurns,
       finalizedTurns,
-      descendantCount: snapshot.descendantCount,
+      liveDescendantCount: snapshot.descendantCount,
       visibleRange,
     });
     this.statusBar?.update(this.runtimeStatus);
@@ -349,7 +393,11 @@ export class TurboRenderController {
       parentKey: record.node?.parentElement?.dataset.turboRenderParentKey ?? 'root',
     }));
 
-    const hotRange = computeHotRange(orderedRecords.length, visibleRange, this.settings);
+    const hotRange = computeHotRange(orderedRecords.length, visibleRange, {
+      keepRecentTurns:
+        this.settings.mode === 'performance' ? this.settings.liveHotTurns : this.settings.keepRecentTurns,
+      viewportBufferTurns: this.settings.viewportBufferTurns,
+    });
 
     this.idleHandle = requestIdleCallbackCompat(this.win, () => {
       this.idleHandle = null;
@@ -403,9 +451,9 @@ export class TurboRenderController {
       this.runtimeStatus = this.buildStatus({
         supported: true,
         reason: null,
-        totalTurns: orderedRecords.length,
+        totalTurns,
         finalizedTurns,
-        descendantCount: snapshot.descendantCount,
+        liveDescendantCount: countLiveDescendants(this.turnContainer),
         visibleRange,
       });
       this.statusBar?.update(this.runtimeStatus);
@@ -596,24 +644,56 @@ export class TurboRenderController {
     reason: string | null;
     totalTurns: number;
     finalizedTurns: number;
-    descendantCount: number;
+    liveDescendantCount: number;
     visibleRange: IndexRange | null;
   }): TabRuntimeStatus {
+    const collapsedColdTurns =
+      this.coldHistory.getCollapsedGroupCount() > 0 ? this.coldHistory.getTotalColdTurns() : 0;
     return {
       supported: input.supported,
       chatId: this.chatId,
       reason: input.reason,
       active: this.active,
       paused: this.paused,
+      mode: this.settings.mode,
       softFallback: this.softFallbackSession || this.settings.softFallback,
+      initialTrimApplied: this.initialTrimSession?.applied ?? false,
+      initialTrimmedTurns: this.initialTrimSession?.coldVisibleTurns ?? 0,
+      totalMappingNodes: this.initialTrimSession?.totalMappingNodes ?? 0,
+      activeBranchLength: this.initialTrimSession?.activeBranchLength ?? 0,
       totalTurns: input.totalTurns,
       finalizedTurns: input.finalizedTurns,
-      parkedTurns: this.parkingLot.getTotalParkedTurns(),
-      parkedGroups: this.parkingLot.getSummaries().length,
-      descendantCount: input.descendantCount,
+      parkedTurns: this.parkingLot.getTotalParkedTurns() + collapsedColdTurns,
+      parkedGroups: this.parkingLot.getSummaries().length + this.coldHistory.getCollapsedGroupCount(),
+      liveDescendantCount: input.liveDescendantCount,
       visibleRange: input.visibleRange,
       spikeCount: this.frameSpikeMonitor.getSpikeCount(),
       lastError: this.lastError,
     };
+  }
+
+  private setObservedMutationRoot(root: Node | null): void {
+    if (this.mutationObserver == null || root == null || this.observedMutationRoot === root) {
+      return;
+    }
+
+    this.mutationObserver.disconnect();
+    this.observedMutationRoot = root;
+    this.mutationObserver.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-busy', 'data-testid', 'data-message-author-role'],
+    });
+  }
+
+  private setScrollTarget(target: HTMLElement | null): void {
+    if (this.scrollTarget === target) {
+      return;
+    }
+
+    this.scrollTarget?.removeEventListener('scroll', this.handleScroll);
+    this.scrollTarget = target;
+    this.scrollTarget?.addEventListener('scroll', this.handleScroll, { passive: true });
   }
 }

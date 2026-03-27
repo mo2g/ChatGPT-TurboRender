@@ -81,13 +81,15 @@ function renderRuntime(status: TabStatusResponse): void {
           : 'Active'
         : 'Monitoring';
 
-  statusCopy.textContent = `${label} on ${runtime.chatId}`;
+  statusCopy.textContent = `${label} on ${runtime.chatId} (${runtime.mode} mode)`;
   runtimeGrid.innerHTML = `
     <span>Total turns</span><span>${runtime.totalTurns}</span>
     <span>Finalized</span><span>${runtime.finalizedTurns}</span>
+    <span>Initial trim</span><span>${runtime.initialTrimApplied ? `Yes (${runtime.initialTrimmedTurns} cold)` : 'No'}</span>
     <span>Parked turns</span><span>${runtime.parkedTurns}</span>
     <span>Parked groups</span><span>${runtime.parkedGroups}</span>
-    <span>Live descendants</span><span>${runtime.descendantCount}</span>
+    <span>Live DOM nodes</span><span>${runtime.liveDescendantCount}</span>
+    <span>Mapping nodes</span><span>${runtime.totalMappingNodes}</span>
     <span>Frame spikes</span><span>${runtime.spikeCount}</span>
   `;
 
