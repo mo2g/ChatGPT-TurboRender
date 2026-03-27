@@ -40,8 +40,8 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 ## Quick start
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm build
 ```
 
 Load the generated extension from `.output/chrome-mv3` in Chrome or Edge.
@@ -49,10 +49,10 @@ Load the generated extension from `.output/chrome-mv3` in Chrome or Edge.
 Useful commands:
 
 ```bash
-npm run dev
-npm test
-npm run test:all
-npm run zip
+pnpm dev
+pnpm test
+pnpm test:all
+pnpm zip
 ```
 
 ## Repository map

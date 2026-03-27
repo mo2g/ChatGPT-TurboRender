@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A Chromium-first extension that keeps long ChatGPT conversations responsive by parking cold DOM nodes.",
+  "packageManager": "pnpm@9.14.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -11,10 +12,10 @@
     "build:edge": "wxt build -b edge",
     "zip": "wxt zip -b chrome",
     "zip:edge": "wxt zip -b edge",
-    "test": "npm run test:unit",
-    "test:all": "npm run test:unit && npm run test:e2e",
+    "test": "pnpm test:unit",
+    "test:all": "pnpm test:unit && pnpm test:e2e",
     "test:unit": "vitest run",
-    "test:e2e": "npm run build && playwright test",
+    "test:e2e": "pnpm build && playwright test",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
