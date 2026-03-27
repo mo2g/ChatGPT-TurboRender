@@ -1,0 +1,619 @@
+import { DEFAULT_SETTINGS, TURN_ID_DATASET } from '../shared/constants';
+import type { IndexRange, Settings, TabRuntimeStatus, TurnRecord } from '../shared/types';
+
+import { detectTurnRole, isStreamingTurn, isTurnNode, scanChatPage } from './chatgpt-adapter';
+import { FrameSpikeMonitor } from './frame-spike-monitor';
+import { computeHotRange, planTurnGroups, shouldAutoActivate } from './layout';
+import { ParkingLot } from './parking-lot';
+import { StatusBar } from './status-bar';
+
+export interface TurboRenderControllerOptions {
+  document?: Document;
+  window?: Window;
+  settings?: Settings;
+  paused?: boolean;
+  mountUi?: boolean;
+  onPauseToggle?(paused: boolean, chatId: string): void | Promise<void>;
+}
+
+function requestAnimationFrameCompat(win: Window, callback: FrameRequestCallback): number {
+  return win.requestAnimationFrame?.(callback) ?? win.setTimeout(() => callback(win.performance.now()), 16);
+}
+
+function requestIdleCallbackCompat(
+  win: Window,
+  callback: IdleRequestCallback,
+): number {
+  return (
+    win.requestIdleCallback?.(callback, { timeout: 250 }) ??
+    win.setTimeout(
+      () =>
+        callback({
+          didTimeout: false,
+          timeRemaining: () => 0,
+        }),
+      16,
+    )
+  );
+}
+
+function cancelIdleCallbackCompat(win: Window, handle: number): void {
+  if (win.cancelIdleCallback != null) {
+    win.cancelIdleCallback(handle);
+  } else {
+    win.clearTimeout(handle);
+  }
+}
+
+function rangesIntersect(left: IndexRange, right: IndexRange): boolean {
+  return left.start <= right.end && right.start <= left.end;
+}
+
+export class TurboRenderController {
+  private readonly doc: Document;
+  private readonly win: Window;
+  private settings: Settings;
+  private paused: boolean;
+  private readonly mountUi: boolean;
+  private readonly onPauseToggle?: TurboRenderControllerOptions['onPauseToggle'];
+  private statusBar: StatusBar | null = null;
+  private readonly frameSpikeMonitor: FrameSpikeMonitor;
+  private readonly parkingLot = new ParkingLot();
+  private mutationObserver: MutationObserver | null = null;
+  private refreshHandle: number | null = null;
+  private idleHandle: number | null = null;
+  private routePollHandle: number | null = null;
+  private turnContainer: HTMLElement | null = null;
+  private lastHref: string;
+  private active = false;
+  private softFallbackSession = false;
+  private lastError: string | null = null;
+  private chatId: string;
+  private runtimeStatus: TabRuntimeStatus;
+  private lastInteractionNode: Node | null = null;
+  private lastInteractionAt = 0;
+  private manualRestoreHoldUntil = 0;
+  private readonly records = new Map<string, TurnRecord>();
+
+  constructor(options: TurboRenderControllerOptions = {}) {
+    this.doc = options.document ?? document;
+    this.win = options.window ?? window;
+    this.settings = options.settings ?? DEFAULT_SETTINGS;
+    this.paused = options.paused ?? false;
+    this.mountUi = options.mountUi ?? true;
+    this.onPauseToggle = options.onPauseToggle;
+    this.chatId = this.doc.location?.pathname ?? '/';
+    this.lastHref = this.doc.location?.href ?? '';
+    this.frameSpikeMonitor = new FrameSpikeMonitor(
+      this.win,
+      this.settings.frameSpikeThresholdMs,
+      this.settings.frameSpikeWindowMs,
+    );
+    this.runtimeStatus = this.buildStatus({
+      supported: false,
+      reason: 'not-started',
+      totalTurns: 0,
+      finalizedTurns: 0,
+      descendantCount: 0,
+      visibleRange: null,
+    });
+  }
+
+  start(): void {
+    if (this.mountUi) {
+      this.statusBar = new StatusBar(this.doc, {
+        onRestoreNearby: () => {
+          this.restoreNearby();
+          this.scheduleRefresh();
+        },
+        onRestoreAll: () => {
+          this.restoreAll();
+          this.scheduleRefresh();
+        },
+        onTogglePause: () => {
+          const next = !this.paused;
+          void this.onPauseToggle?.(next, this.chatId);
+          this.setPaused(next);
+        },
+      });
+      this.statusBar.mount();
+    }
+
+    this.frameSpikeMonitor.start();
+    this.bindEvents();
+    this.scheduleRefresh();
+  }
+
+  stop(): void {
+    this.restoreAll();
+    this.frameSpikeMonitor.stop();
+    this.mutationObserver?.disconnect();
+    this.mutationObserver = null;
+    if (this.refreshHandle != null) {
+      this.win.cancelAnimationFrame?.(this.refreshHandle) ?? this.win.clearTimeout(this.refreshHandle);
+      this.refreshHandle = null;
+    }
+    if (this.idleHandle != null) {
+      cancelIdleCallbackCompat(this.win, this.idleHandle);
+      this.idleHandle = null;
+    }
+    if (this.routePollHandle != null) {
+      this.win.clearInterval(this.routePollHandle);
+      this.routePollHandle = null;
+    }
+    this.statusBar?.destroy();
+    this.statusBar = null;
+  }
+
+  getStatus(): TabRuntimeStatus {
+    return this.runtimeStatus;
+  }
+
+  setSettings(settings: Settings): void {
+    this.settings = settings;
+    this.scheduleRefresh();
+  }
+
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    if (paused) {
+      this.active = false;
+      this.restoreAll();
+    }
+    this.scheduleRefresh();
+  }
+
+  restoreAll(): void {
+    this.parkingLot.restoreAll();
+    for (const record of this.records.values()) {
+      record.parked = false;
+    }
+    this.manualRestoreHoldUntil = this.win.performance.now() + 5000;
+    this.runtimeStatus = this.buildStatus({
+      supported: this.runtimeStatus.supported,
+      reason: this.runtimeStatus.reason,
+      totalTurns: this.runtimeStatus.totalTurns,
+      finalizedTurns: this.runtimeStatus.finalizedTurns,
+      descendantCount: this.runtimeStatus.descendantCount,
+      visibleRange: this.runtimeStatus.visibleRange,
+    });
+    this.statusBar?.update(this.runtimeStatus);
+  }
+
+  restoreNearby(): void {
+    const visibleRange = this.runtimeStatus.visibleRange;
+    if (visibleRange == null) {
+      return;
+    }
+
+    const targetRange = {
+      start: Math.max(0, visibleRange.start - this.settings.groupSize),
+      end: visibleRange.end + this.settings.groupSize,
+    };
+
+    for (const group of this.parkingLot.getSummaries()) {
+      if (rangesIntersect(targetRange, { start: group.startIndex, end: group.endIndex })) {
+        this.parkingLot.restoreGroup(group.id);
+      }
+    }
+  }
+
+  private bindEvents(): void {
+    this.doc.addEventListener(
+      'pointerdown',
+      (event) => {
+        this.lastInteractionNode = event.target as Node | null;
+        this.lastInteractionAt = this.win.performance.now();
+      },
+      true,
+    );
+
+    this.doc.addEventListener(
+      'click',
+      (event) => {
+        const target = event.target as Element | null;
+        const groupId =
+          target?.closest<HTMLElement>('[data-turbo-render-action="restore-group"]')?.dataset.groupId ??
+          this.parkingLot.findGroupIdByPlaceholder(target);
+
+        if (groupId == null) {
+          return;
+        }
+
+        event.preventDefault();
+        this.parkingLot.restoreGroup(groupId);
+        this.scheduleRefresh();
+      },
+      true,
+    );
+
+    this.doc.addEventListener(
+      'scroll',
+      () => {
+        this.scheduleRefresh();
+      },
+      true,
+    );
+
+    this.win.addEventListener('resize', () => this.scheduleRefresh(), { passive: true });
+    this.win.addEventListener('pagehide', () => this.stop(), { once: true });
+
+    this.mutationObserver = new MutationObserver(() => this.scheduleRefresh());
+    this.mutationObserver.observe(this.doc.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-busy', 'data-testid', 'data-message-author-role'],
+    });
+
+    this.routePollHandle = this.win.setInterval(() => {
+      if (this.doc.location?.href !== this.lastHref) {
+        this.lastHref = this.doc.location?.href ?? '';
+        this.handleRouteChange();
+      }
+    }, 1000);
+  }
+
+  private handleRouteChange(): void {
+    this.restoreAll();
+    this.records.clear();
+    this.active = false;
+    this.softFallbackSession = false;
+    this.lastError = null;
+    this.scheduleRefresh();
+  }
+
+  private scheduleRefresh(): void {
+    if (this.refreshHandle != null) {
+      return;
+    }
+
+    this.refreshHandle = requestAnimationFrameCompat(this.win, () => {
+      this.refreshHandle = null;
+      this.refreshNow();
+    });
+  }
+
+  private refreshNow(): void {
+    for (const group of this.parkingLot.getDisconnectedHardGroups()) {
+      this.lastError = `host-rerender-lost-${group.id}`;
+      this.softFallbackSession = true;
+    }
+    if (this.softFallbackSession) {
+      this.restoreAll();
+    }
+
+    const snapshot = scanChatPage(this.doc);
+    this.chatId = snapshot.chatId;
+
+    if (!snapshot.supported || snapshot.turnContainer == null) {
+      this.turnContainer = null;
+      this.active = false;
+      this.runtimeStatus = this.buildStatus({
+        supported: false,
+        reason: snapshot.reason ?? 'unsupported',
+        totalTurns: 0,
+        finalizedTurns: 0,
+        descendantCount: snapshot.descendantCount,
+        visibleRange: null,
+      });
+      this.statusBar?.update(this.runtimeStatus);
+      return;
+    }
+
+    this.turnContainer = snapshot.turnContainer;
+    const orderedRecords = this.reconcileTurns(snapshot.turnNodes, snapshot.stopButtonVisible);
+    const visibleRange = this.computeVisibleRange(snapshot.scrollContainer);
+    const finalizedTurns = orderedRecords.filter((record) => !record.isStreaming).length;
+    const spikeCount = this.frameSpikeMonitor.getSpikeCount();
+
+    if (!this.paused && this.settings.enabled && this.settings.autoEnable) {
+      const activate = shouldAutoActivate({
+        finalizedTurns,
+        descendantCount: snapshot.descendantCount,
+        spikeCount,
+        settings: this.settings,
+      });
+      this.active = this.active || activate;
+    }
+
+    if (!this.settings.enabled || this.paused) {
+      this.active = false;
+      this.restoreAll();
+    }
+
+    this.runtimeStatus = this.buildStatus({
+      supported: true,
+      reason: null,
+      totalTurns: orderedRecords.length,
+      finalizedTurns,
+      descendantCount: snapshot.descendantCount,
+      visibleRange,
+    });
+    this.statusBar?.update(this.runtimeStatus);
+
+    if (!this.active || this.paused || this.win.performance.now() < this.manualRestoreHoldUntil) {
+      return;
+    }
+
+    if (this.idleHandle != null) {
+      cancelIdleCallbackCompat(this.win, this.idleHandle);
+    }
+
+    const candidates = orderedRecords.map((record) => ({
+      id: record.id,
+      index: record.index,
+      parked: record.parked,
+      isStreaming: record.isStreaming,
+      protected: this.isProtectedTurn(record.node),
+      parentKey: record.node?.parentElement?.dataset.turboRenderParentKey ?? 'root',
+    }));
+
+    const hotRange = computeHotRange(orderedRecords.length, visibleRange, this.settings);
+
+    this.idleHandle = requestIdleCallbackCompat(this.win, () => {
+      this.idleHandle = null;
+      this.restoreIntersectingGroups(hotRange);
+      const plans = planTurnGroups(candidates, hotRange, this.settings.groupSize);
+
+      for (const plan of plans) {
+        if (this.parkingLot.has(plan.id)) {
+          continue;
+        }
+
+        const nodes = plan.turnIds
+          .map((turnId) => this.records.get(turnId)?.node)
+          .filter((node): node is HTMLElement => node instanceof HTMLElement && node.isConnected);
+
+        if (nodes.length !== plan.turnIds.length) {
+          continue;
+        }
+
+        const parent = nodes[0]?.parentElement;
+        if (parent == null || nodes.some((node) => node.parentElement !== parent)) {
+          continue;
+        }
+
+        const mode = this.softFallbackSession || this.settings.softFallback ? 'soft' : 'hard';
+        const group = this.parkingLot.park({
+          id: plan.id,
+          mode,
+          parent,
+          startIndex: plan.startIndex,
+          endIndex: plan.endIndex,
+          turnIds: plan.turnIds,
+          nodes,
+        });
+
+        if (group == null) {
+          continue;
+        }
+
+        for (const turnId of plan.turnIds) {
+          const record = this.records.get(turnId);
+          if (record != null) {
+            record.parked = true;
+            if (mode === 'hard') {
+              record.node = group.nodes[group.turnIds.indexOf(turnId)] ?? null;
+            }
+          }
+        }
+      }
+
+      this.runtimeStatus = this.buildStatus({
+        supported: true,
+        reason: null,
+        totalTurns: orderedRecords.length,
+        finalizedTurns,
+        descendantCount: snapshot.descendantCount,
+        visibleRange,
+      });
+      this.statusBar?.update(this.runtimeStatus);
+    });
+  }
+
+  private reconcileTurns(liveTurnNodes: HTMLElement[], stopButtonVisible: boolean): TurnRecord[] {
+    if (this.turnContainer == null) {
+      return [];
+    }
+
+    liveTurnNodes.forEach((node, index) => {
+      if (!node.dataset[TURN_ID_DATASET]) {
+        node.dataset[TURN_ID_DATASET] = `turn-${this.chatId}-${index}-${Math.random().toString(36).slice(2, 8)}`;
+      }
+
+      if (!node.parentElement?.dataset.turboRenderParentKey) {
+        node.parentElement?.setAttribute('data-turbo-render-parent-key', 'conversation-root');
+      }
+
+      const id = node.dataset[TURN_ID_DATASET]!;
+      const record = this.records.get(id) ?? {
+        id,
+        index,
+        role: detectTurnRole(node),
+        isStreaming: false,
+        parked: false,
+        node,
+      };
+
+      record.index = index;
+      record.role = detectTurnRole(node);
+      record.isStreaming = isStreamingTurn(node, {
+        isLastTurn: index === liveTurnNodes.length - 1,
+        stopButtonVisible,
+      });
+      record.node = node;
+      record.parked = false;
+      this.records.set(id, record);
+    });
+
+    const orderedIds: string[] = [];
+    for (const child of Array.from(this.turnContainer.children)) {
+      if (child instanceof HTMLElement) {
+        const groupId = child.getAttribute('data-turbo-render-group-id');
+        if (groupId != null) {
+          const group = this.parkingLot.getGroup(groupId);
+          if (group != null) {
+            orderedIds.push(...group.turnIds);
+          }
+          continue;
+        }
+
+        if (isTurnNode(child)) {
+          const turnId = child.dataset[TURN_ID_DATASET];
+          if (turnId != null) {
+            orderedIds.push(turnId);
+          }
+        }
+      }
+    }
+
+    const summaries = this.parkingLot.getSummaries();
+    for (const [id, record] of this.records.entries()) {
+      if (!orderedIds.includes(id) && !record.parked) {
+        this.records.delete(id);
+      }
+    }
+
+    return orderedIds.map((id, index) => {
+      const record = this.records.get(id)!;
+      record.index = index;
+      record.parked = summaries.some(
+        (group) => group.startIndex <= index && group.endIndex >= index,
+      );
+      return record;
+    });
+  }
+
+  private computeVisibleRange(scrollContainer: HTMLElement): IndexRange | null {
+    if (this.turnContainer == null) {
+      return null;
+    }
+
+    const containerRect = scrollContainer.getBoundingClientRect();
+    const childRects = Array.from(this.turnContainer.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement)
+      .map((child) => child.getBoundingClientRect());
+
+    const hasRealLayout = childRects.some(
+      (rect) => rect.height > 0 || rect.width > 0 || rect.top !== 0 || rect.bottom !== 0,
+    );
+
+    if (
+      !hasRealLayout &&
+      containerRect.height === 0 &&
+      containerRect.width === 0
+    ) {
+      return null;
+    }
+
+    const ranges: IndexRange[] = [];
+
+    for (const child of Array.from(this.turnContainer.children)) {
+      if (!(child instanceof HTMLElement)) {
+        continue;
+      }
+
+      const rect = child.getBoundingClientRect();
+      const intersects = rect.bottom >= containerRect.top && rect.top <= containerRect.bottom;
+      if (!intersects) {
+        continue;
+      }
+
+      const groupId = child.getAttribute('data-turbo-render-group-id');
+      if (groupId != null) {
+        const summary = this.parkingLot.getSummaries().find((group) => group.id === groupId);
+        if (summary != null) {
+          ranges.push({ start: summary.startIndex, end: summary.endIndex });
+        }
+        continue;
+      }
+
+      const turnId = child.dataset[TURN_ID_DATASET];
+      if (turnId == null) {
+        continue;
+      }
+      const record = this.records.get(turnId);
+      if (record != null) {
+        ranges.push({ start: record.index, end: record.index });
+      }
+    }
+
+    if (ranges.length === 0) {
+      return null;
+    }
+
+    return {
+      start: Math.min(...ranges.map((range) => range.start)),
+      end: Math.max(...ranges.map((range) => range.end)),
+    };
+  }
+
+  private restoreIntersectingGroups(hotRange: IndexRange): void {
+    for (const group of this.parkingLot.getSummaries()) {
+      if (rangesIntersect(hotRange, { start: group.startIndex, end: group.endIndex })) {
+        const restoredGroup = this.parkingLot.getGroup(group.id);
+        this.parkingLot.restoreGroup(group.id);
+        for (const turnId of restoredGroup?.turnIds ?? []) {
+          const record = this.records.get(turnId);
+          if (record != null) {
+            record.parked = false;
+          }
+        }
+      }
+    }
+  }
+
+  private isProtectedTurn(node: HTMLElement | null): boolean {
+    if (node == null) {
+      return false;
+    }
+
+    const activeElement = this.doc.activeElement;
+    if (activeElement != null && node.contains(activeElement)) {
+      return true;
+    }
+
+    const selection = this.win.getSelection();
+    if (selection != null && selection.rangeCount > 0) {
+      const anchorNode = selection.anchorNode;
+      const focusNode = selection.focusNode;
+      if ((anchorNode != null && node.contains(anchorNode)) || (focusNode != null && node.contains(focusNode))) {
+        return true;
+      }
+    }
+
+    const recentInteraction =
+      this.lastInteractionNode != null &&
+      this.win.performance.now() - this.lastInteractionAt < 1500 &&
+      node.contains(this.lastInteractionNode);
+
+    return recentInteraction;
+  }
+
+  private buildStatus(input: {
+    supported: boolean;
+    reason: string | null;
+    totalTurns: number;
+    finalizedTurns: number;
+    descendantCount: number;
+    visibleRange: IndexRange | null;
+  }): TabRuntimeStatus {
+    return {
+      supported: input.supported,
+      chatId: this.chatId,
+      reason: input.reason,
+      active: this.active,
+      paused: this.paused,
+      softFallback: this.softFallbackSession || this.settings.softFallback,
+      totalTurns: input.totalTurns,
+      finalizedTurns: input.finalizedTurns,
+      parkedTurns: this.parkingLot.getTotalParkedTurns(),
+      parkedGroups: this.parkingLot.getSummaries().length,
+      descendantCount: input.descendantCount,
+      visibleRange: input.visibleRange,
+      spikeCount: this.frameSpikeMonitor.getSpikeCount(),
+      lastError: this.lastError,
+    };
+  }
+}
