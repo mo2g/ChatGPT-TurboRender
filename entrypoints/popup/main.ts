@@ -13,7 +13,7 @@ function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typ
   if (!status.supported) {
     return t('stateUnsupported');
   }
-  if (status.historyInspectionActive) {
+  if (status.historyPanelOpen) {
     return t('stateInspecting');
   }
   if (status.paused) {
@@ -36,7 +36,7 @@ function render(status: TabStatusResponse): void {
   const initialTrim = runtime?.initialTrimApplied
     ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
     : t('statusHistoryNo');
-  const inspection = runtime?.historyInspectionActive ? t('statusInspectionOpen') : t('statusInspectionClosed');
+  const inspection = runtime?.historyPanelOpen ? t('statusInspectionOpen') : t('statusInspectionClosed');
 
   app.innerHTML = `
     <section class="popup-card">

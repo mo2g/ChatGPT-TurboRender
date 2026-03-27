@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_SETTINGS } from '../../lib/shared/constants';
+import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import { mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
@@ -80,7 +80,7 @@ describe('TurboRenderController', () => {
     controller.stop();
   });
 
-  it('mounts a top history shelf and lets users inspect managed history', async () => {
+  it('mounts a right-side history drawer trigger and lets users search managed history', async () => {
     const controller = new TurboRenderController({
       settings: {
         ...DEFAULT_SETTINGS,
@@ -88,7 +88,7 @@ describe('TurboRenderController', () => {
         minFinalizedBlocks: 10,
         minDescendants: 100,
         keepRecentTurns: 6,
-        liveHotTurns: 60,
+        liveHotTurns: 6,
         viewportBufferTurns: 1,
         groupSize: 5,
       },
@@ -120,34 +120,48 @@ describe('TurboRenderController', () => {
     });
     await flush();
 
+    expect(controller.getStatus().initialTrimApplied).toBe(true);
+    expect(controller.getStatus().initialTrimmedTurns).toBe(6);
+    expect(controller.getStatus().handledTurnsTotal).toBeGreaterThan(6);
+    expect(controller.getStatus().historyPanelOpen).toBe(false);
+    expect(controller.getStatus().parkedGroups).toBeGreaterThan(0);
+
+    const panelRoot = document.querySelector<HTMLElement>('[data-turbo-render-history-panel-root="true"]');
+    expect(panelRoot).not.toBeNull();
+    expect(panelRoot?.parentElement).toBe(document.body);
+    expect(document.querySelector('[data-turbo-render-history-shelf="true"]')).toBeNull();
+
+    panelRoot?.querySelector<HTMLButtonElement>('button[data-action="toggle-panel"]')?.click();
+    await flush();
+
     expect(controller.getStatus()).toMatchObject({
       initialTrimApplied: true,
       initialTrimmedTurns: 6,
-      totalTurns: 46,
-      handledTurnsTotal: 6,
-      historyInspectionActive: false,
-      parkedTurns: 6,
+      historyPanelOpen: true,
+      parkedGroups: 0,
     });
 
-    const shelf = document.querySelector<HTMLElement>('[data-turbo-render-history-shelf="true"]');
-    expect(shelf).not.toBeNull();
-    expect(shelf?.parentElement?.getAttribute('data-testid')).toBe('conversation-transcript');
-    expect(document.querySelector('[data-turbo-render-initial-cold-turns="true"]')).toBeNull();
-
-    shelf?.querySelector<HTMLButtonElement>('button[data-action="inspect-history"]')?.click();
+    const search = panelRoot?.querySelector<HTMLInputElement>('input[type="search"]');
+    expect(search).not.toBeNull();
+    if (search != null) {
+      search.value = 'Turn 10';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     await flush();
 
-    expect(controller.getStatus()).toMatchObject({
-      historyInspectionActive: true,
-      handledTurnsTotal: 6,
-      parkedTurns: 0,
-    });
-    expect(document.querySelector('[data-turbo-render-initial-cold-turns="true"]')).not.toBeNull();
-
-    shelf?.querySelector<HTMLButtonElement>('button[data-action="inspect-history"]')?.click();
+    const resultButton = panelRoot?.querySelector<HTMLButtonElement>(
+      `.${UI_CLASS_NAMES.historyDrawerResults} button[data-action="open-entry"]`,
+    );
+    expect(resultButton).not.toBeNull();
+    resultButton?.click();
     await flush();
 
-    expect(controller.getStatus().historyInspectionActive).toBe(false);
+    expect(document.querySelector(`.${UI_CLASS_NAMES.transcriptHighlight}`)).not.toBeNull();
+
+    panelRoot?.querySelector<HTMLButtonElement>('button[data-action="close-panel"]')?.click();
+    await flush();
+
+    expect(controller.getStatus().historyPanelOpen).toBe(false);
     controller.stop();
   });
 });

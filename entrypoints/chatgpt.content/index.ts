@@ -9,12 +9,25 @@ import {
   normalizeSettings,
   setChatPaused,
 } from '../../lib/shared/settings';
+import { createDisposableBag, registerOptionalListener } from '../../lib/content/runtime-disposers';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import type { InitialTrimSession, Settings } from '../../lib/shared/types';
 
-function whenDocumentReady(callback: () => void): void {
+function whenDocumentReady(callback: () => void, ctx?: { addEventListener?: (...args: unknown[]) => void; isInvalid?: boolean }): void {
   if (document.readyState === 'interactive' || document.readyState === 'complete') {
+    if (ctx?.isInvalid) {
+      return;
+    }
     callback();
+    return;
+  }
+
+  if (ctx?.addEventListener != null) {
+    ctx.addEventListener(document, 'DOMContentLoaded', () => {
+      if (!ctx.isInvalid) {
+        callback();
+      }
+    }, { once: true });
     return;
   }
 
@@ -24,12 +37,14 @@ function whenDocumentReady(callback: () => void): void {
 export default defineContentScript({
   matches: ['https://chatgpt.com/*'],
   runAt: 'document_start',
-  async main() {
+  async main(ctx) {
     let settings = await getSettings();
     let paused = await isChatPaused(getCurrentChatId());
     let controller: TurboRenderController | null = null;
     const trimSessions = new Map<string, InitialTrimSession>();
     let lastChatId = getCurrentChatId();
+    let destroyed = false;
+    const disposables = createDisposableBag();
 
     const syncPageConfig = (nextSettings: Settings) => {
       postBridgeMessage(window, {
@@ -58,7 +73,7 @@ export default defineContentScript({
       }
     };
 
-    window.addEventListener('message', handlePageMessage);
+    ctx.addEventListener(window, 'message', handlePageMessage);
     syncPageConfig(settings);
     postBridgeMessage(window, {
       namespace: 'chatgpt-turborender',
@@ -74,7 +89,7 @@ export default defineContentScript({
       });
       controller.start();
       syncKnownSession(getCurrentChatId());
-    });
+    }, ctx);
 
     const handleStorageChange: Parameters<typeof browser.storage.onChanged.addListener>[0] = (
       changes,
@@ -120,10 +135,10 @@ export default defineContentScript({
       }
     };
 
-    browser.storage.onChanged.addListener(handleStorageChange);
-    browser.runtime.onMessage.addListener(handleRuntimeMessage);
+    registerOptionalListener(disposables, browser.storage?.onChanged, handleStorageChange);
+    registerOptionalListener(disposables, browser.runtime?.onMessage, handleRuntimeMessage);
 
-    const routePollHandle = window.setInterval(() => {
+    ctx.setInterval(() => {
       const nextChatId = getCurrentChatId();
       if (nextChatId === lastChatId) {
         return;
@@ -142,16 +157,18 @@ export default defineContentScript({
       });
     }, 500);
 
-    window.addEventListener(
-      'pagehide',
-      () => {
-        window.clearInterval(routePollHandle);
-        window.removeEventListener('message', handlePageMessage);
-        browser.storage.onChanged.removeListener(handleStorageChange);
-        browser.runtime.onMessage.removeListener(handleRuntimeMessage);
-        controller?.stop();
-      },
-      { once: true },
-    );
+    const cleanup = () => {
+      if (destroyed) {
+        return;
+      }
+
+      destroyed = true;
+      disposables.dispose();
+      controller?.stop();
+      controller = null;
+    };
+
+    ctx.onInvalidated(cleanup);
+    ctx.addEventListener(window, 'pagehide', cleanup, { once: true });
   },
 });

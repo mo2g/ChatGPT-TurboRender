@@ -4,6 +4,7 @@ export type ParkingMode = 'hard' | 'soft';
 export type TurboRenderMode = 'performance' | 'compatibility';
 export type ColdRestoreMode = 'placeholder' | 'readOnly';
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN';
+export type ManagedHistorySource = 'initial-trim' | 'parked-group';
 
 export interface Settings {
   enabled: boolean;
@@ -65,6 +66,27 @@ export interface CachedConversationTurn {
   createTime: number | null;
 }
 
+export interface ManagedHistoryEntry {
+  id: string;
+  source: ManagedHistorySource;
+  role: TurnRole;
+  turnIndex: number;
+  turnId: string | null;
+  groupId: string | null;
+  parts: string[];
+  text: string;
+}
+
+export interface ManagedHistoryMatch {
+  entryId: string;
+  source: ManagedHistorySource;
+  role: TurnRole;
+  turnIndex: number;
+  turnId: string | null;
+  groupId: string | null;
+  excerpt: string;
+}
+
 export interface InitialTrimSession {
   chatId: string;
   conversationId: string | null;
@@ -97,7 +119,7 @@ export interface TabRuntimeStatus {
   totalTurns: number;
   finalizedTurns: number;
   handledTurnsTotal: number;
-  historyInspectionActive: boolean;
+  historyPanelOpen: boolean;
   parkedTurns: number;
   parkedGroups: number;
   liveDescendantCount: number;
