@@ -13,6 +13,7 @@
     "debug:mcp-chrome": "node ./scripts/debug-mcp-chrome.mjs",
     "zip": "wxt zip -b chrome",
     "zip:edge": "wxt zip -b edge",
+    "release:publish": "node ./scripts/publish-stores.mjs",
     "test": "pnpm test:unit",
     "test:all": "pnpm test:unit && pnpm test:e2e",
     "test:unit": "vitest run",

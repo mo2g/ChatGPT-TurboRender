@@ -70,6 +70,12 @@ pnpm test:all
 pnpm zip
 ```
 
+## Publishing pipeline
+
+Automated store publishing is wired through [.github/workflows/publish.yml](./.github/workflows/publish.yml). It packages the Chrome and Edge builds, uploads them as workflow artifacts, and publishes when the required store secrets are configured.
+
+See [docs/publishing.md](./docs/publishing.md) for the one-time store setup, secret names, and release flow.
+
 ## Controlled Chrome Debugging
 
 To debug the unpacked extension with `chrome-devtools` MCP, use the repo-managed browser instead of loading the extension manually inside the MCP browser:

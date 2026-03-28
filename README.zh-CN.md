@@ -70,6 +70,12 @@ pnpm test:all
 pnpm zip
 ```
 
+## 发布流水线
+
+自动上架由 [.github/workflows/publish.yml](./.github/workflows/publish.yml) 处理。它会先打包 Chrome / Edge 版本、保存构建产物，再在配置好商店密钥后自动发布。
+
+详细的首次配置、密钥名称和发布流程见 [docs/publishing.md](./docs/publishing.md)。
+
 ## 受控 Chrome 调试
 
 如果要让 `chrome-devtools` MCP 调试真正连到“已加载 unpacked 扩展”的浏览器，不要再在 MCP 自启浏览器里手动点 `chrome://extensions`。统一使用仓库内的受控 Chrome 启动命令：
