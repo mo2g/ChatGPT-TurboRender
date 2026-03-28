@@ -59,7 +59,7 @@ pnpm install
 pnpm build
 ```
 
-然后在 Chrome 或 Edge 中以开发者模式加载 `.output/chrome-mv3`。
+如果你想要本地解压后的目录，可用 `pnpm build`、`pnpm build:edge`、`pnpm build:firefox`，然后侧载 `.output/chrome-mv3`、`.output/edge-mv3` 或 `.output/firefox-mv2`。如果你想要浏览器原生的发布文件，可用 `pnpm package:chrome`、`pnpm package:edge`、`pnpm package:firefox`，分别生成 Chrome/Edge 的 `.crx` 和 Firefox 的签名 `.xpi`。
 
 常用命令：
 
@@ -67,14 +67,16 @@ pnpm build
 pnpm dev
 pnpm test
 pnpm test:all
-pnpm zip
+pnpm package:chrome
+pnpm package:edge
+pnpm package:firefox
 ```
 
-## 发布流水线
+## 浏览器 Release
 
-自动上架由 [.github/workflows/publish.yml](./.github/workflows/publish.yml) 处理。它会先打包 Chrome / Edge 版本、保存构建产物，再在配置好商店密钥后自动发布。
+GitHub Actions 会在 [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) 里通过 tag 触发，构建 Chrome 和 Edge 的 `.crx` 文件，以及 Firefox 的签名 `.xpi`，并发布到 GitHub Release。
 
-详细的首次配置、密钥名称和发布流程见 [docs/publishing.md](./docs/publishing.md)。
+详细的触发方式、Release asset 名称、签名密钥要求和手动安装步骤见 [docs/browser-packages.md](./docs/browser-packages.md)。
 
 ## 受控 Chrome 调试
 

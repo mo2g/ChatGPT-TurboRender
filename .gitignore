@@ -1,6 +1,7 @@
 node_modules
 .pnpm-store
 .output
+.release
 .wxt
 playwright-report
 test-results

@@ -10,10 +10,12 @@
     "dev:firefox": "wxt -b firefox",
     "build": "wxt build -b chrome",
     "build:edge": "wxt build -b edge",
+    "build:firefox": "wxt build -b firefox",
+    "package:chrome": "node ./scripts/package-browser-release.mjs chrome",
+    "package:edge": "node ./scripts/package-browser-release.mjs edge",
+    "package:firefox": "node ./scripts/package-browser-release.mjs firefox",
+    "package:all": "pnpm package:chrome && pnpm package:edge && pnpm package:firefox",
     "debug:mcp-chrome": "node ./scripts/debug-mcp-chrome.mjs",
-    "zip": "wxt zip -b chrome",
-    "zip:edge": "wxt zip -b edge",
-    "release:publish": "node ./scripts/publish-stores.mjs",
     "test": "pnpm test:unit",
     "test:all": "pnpm test:unit && pnpm test:e2e",
     "test:unit": "vitest run",
@@ -23,9 +25,11 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/node": "^24.10.0",
+    "crx": "^5.0.1",
     "jsdom": "^29.0.1",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2",
+    "web-ext": "^10.0.0",
     "wxt": "^0.20.20"
   }
 }

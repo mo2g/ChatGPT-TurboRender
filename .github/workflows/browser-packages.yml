@@ -1,0 +1,143 @@
+name: Build browser release packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: browser-packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: 24
+  PNPM_VERSION: 9.14.2
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run unit tests
+        run: pnpm test:unit
+
+  package:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - browser: chrome
+            build_command: pnpm build
+          - browser: edge
+            build_command: pnpm build:edge
+          - browser: firefox
+            build_command: pnpm build:firefox
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - id: version
+        name: Resolve release version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "Release version is required." >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          npm pkg set version="${VERSION}"
+
+      - name: Build browser bundle
+        run: ${{ matrix.build_command }}
+
+      - id: prepare-chromium-signing-key
+        name: Prepare Chromium signing key
+        if: matrix.browser != 'firefox'
+        shell: bash
+        env:
+          CHROMIUM_CRX_PRIVATE_KEY_PEM: ${{ secrets.CHROMIUM_CRX_PRIVATE_KEY_PEM }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CHROMIUM_CRX_PRIVATE_KEY_PEM}" ]]; then
+            echo "CHROMIUM_CRX_PRIVATE_KEY_PEM is required for Chrome and Edge release files." >&2
+            exit 1
+          fi
+
+          key_file="${RUNNER_TEMP}/chatgpt-turborender-chromium.pem"
+          printf '%s\n' "${CHROMIUM_CRX_PRIVATE_KEY_PEM}" > "${key_file}"
+          echo "key_file=${key_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package browser release file
+        env:
+          CHROMIUM_CRX_PRIVATE_KEY_FILE: ${{ steps.prepare-chromium-signing-key.outputs.key_file }}
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: pnpm package:${{ matrix.browser }}
+
+      - name: Upload browser artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-turborender-${{ steps.version.outputs.version }}-${{ matrix.browser }}-release
+          path: .release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chatgpt-turborender-*-release
+          path: .release
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ChatGPT TurboRender ${{ github.ref_name }}
+          files: .release/*
+          generate_release_notes: true

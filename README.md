@@ -59,7 +59,7 @@ pnpm install
 pnpm build
 ```
 
-Load the generated extension from `.output/chrome-mv3` in Chrome or Edge.
+Use `pnpm build` for Chrome, `pnpm build:edge` for Edge, and `pnpm build:firefox` for Firefox if you want unpacked local builds. Load `.output/chrome-mv3`, `.output/edge-mv3`, or `.output/firefox-mv2` to sideload those local builds. Use `pnpm package:chrome`, `pnpm package:edge`, and `pnpm package:firefox` if you want browser-native release files (`.crx` for Chrome/Edge, signed `.xpi` for Firefox).
 
 Useful commands:
 
@@ -67,14 +67,16 @@ Useful commands:
 pnpm dev
 pnpm test
 pnpm test:all
-pnpm zip
+pnpm package:chrome
+pnpm package:edge
+pnpm package:firefox
 ```
 
-## Publishing pipeline
+## Browser releases
 
-Automated store publishing is wired through [.github/workflows/publish.yml](./.github/workflows/publish.yml). It packages the Chrome and Edge builds, uploads them as workflow artifacts, and publishes when the required store secrets are configured.
+GitHub Actions builds Chrome and Edge `.crx` files plus a signed Firefox `.xpi` from tagged releases in [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) and publishes them to GitHub Releases.
 
-See [docs/publishing.md](./docs/publishing.md) for the one-time store setup, secret names, and release flow.
+See [docs/browser-packages.md](./docs/browser-packages.md) for the tag trigger, release asset names, required signing secrets, and manual install steps.
 
 ## Controlled Chrome Debugging
 
