@@ -22,6 +22,11 @@ body {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 }
 
+.popup-card.support-card {
+  border-color: rgba(15, 23, 42, 0.14);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.03) 0%, #ffffff 45%);
+}
+
 .popup-card h1,
 .popup-card h2,
 .popup-card p {
@@ -30,6 +35,43 @@ body {
 
 .popup-status {
   color: #475569;
+}
+
+.popup-support-note {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.support-gallery {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.support-figure {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  text-align: center;
+}
+
+.support-figure img {
+  width: 100%;
+  max-width: 148px;
+  height: auto;
+  padding: 8px;
+  box-sizing: border-box;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.support-figure figcaption {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .popup-grid {

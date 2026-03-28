@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { getSupportReadmeUrl } from '../../lib/shared/constants';
 import {
   createTranslator,
   getCatalogKeys,
@@ -34,5 +35,14 @@ describe('i18n helpers', () => {
   it('interpolates message variables', () => {
     const t = createTranslator('en');
     expect(t('statusShelfManaged', { count: 12 })).toContain('12');
+  });
+
+  it('resolves support readme links for both languages', () => {
+    expect(getSupportReadmeUrl('en')).toBe(
+      'https://github.com/mo2g/ChatGPT-TurboRender/blob/main/README.md#support',
+    );
+    expect(getSupportReadmeUrl('zh-CN')).toBe(
+      'https://github.com/mo2g/ChatGPT-TurboRender/blob/main/README.zh-CN.md#support',
+    );
   });
 });

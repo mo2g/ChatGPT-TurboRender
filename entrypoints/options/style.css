@@ -26,6 +26,11 @@ body {
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
 }
 
+.options-card.support-card {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.03) 0%, rgba(255, 255, 255, 0.98) 48%);
+}
+
 .options-card h1,
 .options-card h2,
 .options-card p {
@@ -42,6 +47,48 @@ label {
   display: grid;
   gap: 6px;
   color: #334155;
+}
+
+.support-copy,
+.support-note {
+  margin: 0;
+  color: #475569;
+}
+
+.support-note {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.support-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.support-figure {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  text-align: center;
+}
+
+.support-figure img {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.support-figure figcaption {
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 input[type="number"],

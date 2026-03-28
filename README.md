@@ -8,6 +8,8 @@ ChatGPT TurboRender is a Chromium-first browser extension that reduces UI jank i
 
 If this project saves your browser from melting down, star the repo and share a trace or screenshot. Real-world long-thread cases are the fastest way to make the extension better.
 
+If it also saves you time, see the [Support](#support) section below.
+
 ## Why this exists
 
 Long ChatGPT sessions eventually push the browser into a bad state:
@@ -120,6 +122,18 @@ Issues and PRs are welcome, especially if you can provide:
 - a reproducible long-thread slowdown case
 - a DOM snapshot or screen recording after a ChatGPT UI change
 - a performance profile comparing extension on vs. off
+
+<a id="support"></a>
+
+## Support
+
+If TurboRender saves you time, you can support ongoing maintenance and compatibility updates.
+
+| WeChat sponsor code | Alipay sponsor code |
+| --- | --- |
+| <img src="./public/assets/wechat-sponsor.jpg" alt="WeChat sponsor code" width="280" /> | <img src="./public/assets/aliapy-sponsor.jpg" alt="Alipay sponsor code" width="280" /> |
+
+Support helps cover maintenance, long-thread testing, and ChatGPT compatibility updates.
 
 ## License
 

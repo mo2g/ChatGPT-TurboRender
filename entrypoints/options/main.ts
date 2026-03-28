@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 
-import { DEFAULT_SETTINGS } from '../../lib/shared/constants';
+import { DEFAULT_SETTINGS, getSupportReadmeUrl, SUPPORT_ASSET_PATHS } from '../../lib/shared/constants';
 import { getExtensionLanguage, createTranslator, normalizeLanguagePreference, type TranslationKey } from '../../lib/shared/i18n';
 import { getSettings } from '../../lib/shared/settings';
 import type { Settings } from '../../lib/shared/types';
@@ -18,6 +18,15 @@ const FIELDS = [
   'frameSpikeCount',
   'frameSpikeWindowMs',
 ] as const;
+
+let currentSupportUrl = getSupportReadmeUrl('en');
+
+function getSupportAssets(): { wechat: string; alipay: string } {
+  return {
+    wechat: browser.runtime.getURL(SUPPORT_ASSET_PATHS.wechatSponsor),
+    alipay: browser.runtime.getURL(SUPPORT_ASSET_PATHS.alipaySponsor),
+  };
+}
 
 function readPatchFromForm() {
   return {
@@ -53,6 +62,8 @@ function render(settings: Settings, statusKey?: TranslationKey): void {
 
   const language = getExtensionLanguage(settings);
   const t = createTranslator(language);
+  currentSupportUrl = getSupportReadmeUrl(language);
+  const supportAssets = getSupportAssets();
   const statusText = statusKey != null ? t(statusKey) : t('statusStoredLocally');
 
   app.innerHTML = `
@@ -116,6 +127,24 @@ function render(settings: Settings, statusKey?: TranslationKey): void {
         </div>
         <p id="save-status">${statusText}</p>
       </section>
+      <section class="options-card support-card">
+        <h2>${t('supportTitle')}</h2>
+        <p class="support-copy">${t('supportLead')}</p>
+        <div class="support-gallery">
+          <figure class="support-figure">
+            <img src="${supportAssets.wechat}" alt="${t('supportWeChatLabel')}" />
+            <figcaption>${t('supportWeChatLabel')}</figcaption>
+          </figure>
+          <figure class="support-figure">
+            <img src="${supportAssets.alipay}" alt="${t('supportAlipayLabel')}" />
+            <figcaption>${t('supportAlipayLabel')}</figcaption>
+          </figure>
+        </div>
+        <p class="support-note">${t('supportScanHint')}</p>
+        <div class="options-actions">
+          <button id="open-support">${t('supportAction')}</button>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -147,5 +176,10 @@ document.addEventListener('click', async (event) => {
       patch: DEFAULT_SETTINGS,
     });
     await refresh('statusResetToDefaults');
+    return;
+  }
+
+  if (target.id === 'open-support') {
+    window.open(currentSupportUrl, '_blank', 'noopener,noreferrer');
   }
 });

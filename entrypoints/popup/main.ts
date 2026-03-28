@@ -1,10 +1,19 @@
 import { browser } from 'wxt/browser';
 
+import { getSupportReadmeUrl, SUPPORT_ASSET_PATHS } from '../../lib/shared/constants';
 import { createTranslator, getExtensionLanguage, normalizeLanguagePreference } from '../../lib/shared/i18n';
 import type { TabStatusResponse } from '../../lib/shared/types';
 import './style.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
+let currentSupportUrl = getSupportReadmeUrl('en');
+
+function getSupportAssets(): { wechat: string; alipay: string } {
+  return {
+    wechat: browser.runtime.getURL(SUPPORT_ASSET_PATHS.wechatSponsor),
+    alipay: browser.runtime.getURL(SUPPORT_ASSET_PATHS.alipaySponsor),
+  };
+}
 
 function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typeof createTranslator>): string {
   if (status == null) {
@@ -40,6 +49,8 @@ function render(status: TabStatusResponse): void {
 
   const language = getExtensionLanguage(status.settings);
   const t = createTranslator(language);
+  currentSupportUrl = getSupportReadmeUrl(language);
+  const supportAssets = getSupportAssets();
   const runtime = status.runtime;
   const initialTrim = runtime?.initialTrimApplied
     ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
@@ -116,6 +127,24 @@ function render(status: TabStatusResponse): void {
         <button data-variant="primary" id="open-options">${t('actionOpenOptions')}</button>
       </div>
     </section>
+    <section class="popup-card support-card">
+      <h2>${t('supportTitle')}</h2>
+      <p class="popup-status">${t('supportLead')}</p>
+      <div class="support-gallery">
+        <figure class="support-figure">
+          <img src="${supportAssets.wechat}" alt="${t('supportWeChatLabel')}" />
+          <figcaption>${t('supportWeChatLabel')}</figcaption>
+        </figure>
+        <figure class="support-figure">
+          <img src="${supportAssets.alipay}" alt="${t('supportAlipayLabel')}" />
+          <figcaption>${t('supportAlipayLabel')}</figcaption>
+        </figure>
+      </div>
+      <p class="popup-support-note">${t('supportScanHint')}</p>
+      <div class="popup-actions">
+        <button id="open-support">${t('supportAction')}</button>
+      </div>
+    </section>
   `;
 }
 
@@ -169,6 +198,11 @@ document.addEventListener('click', async (event) => {
 
   if (target.id === 'open-options') {
     await browser.runtime.openOptionsPage();
+    return;
+  }
+
+  if (target.id === 'open-support') {
+    window.open(currentSupportUrl, '_blank', 'noopener,noreferrer');
     return;
   }
 

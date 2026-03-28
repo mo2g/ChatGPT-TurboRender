@@ -11,6 +11,18 @@ export const STORAGE_KEYS = {
   pausedChats: 'turboRender.pausedChats',
 } as const;
 
+export const PROJECT_REPOSITORY_URL = 'https://github.com/mo2g/ChatGPT-TurboRender';
+export const SUPPORT_ASSET_PATHS = {
+  wechatSponsor: 'assets/wechat-sponsor.jpg',
+  alipaySponsor: 'assets/aliapy-sponsor.jpg',
+} as const;
+
+export function getSupportReadmeUrl(language: 'en' | 'zh-CN'): string {
+  return language === 'zh-CN'
+    ? `${PROJECT_REPOSITORY_URL}/blob/main/README.zh-CN.md#support`
+    : `${PROJECT_REPOSITORY_URL}/blob/main/README.md#support`;
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
   autoEnable: true,
