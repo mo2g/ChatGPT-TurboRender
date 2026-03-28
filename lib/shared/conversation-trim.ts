@@ -1,9 +1,12 @@
 import type {
   CachedConversationTurn,
+  ConversationRouteKind,
   InitialTrimSession,
+  ManagedHistoryRenderKind,
   TurnRole,
   TurboRenderMode,
 } from './types';
+import { buildInteractionPairs } from './interaction-pairs';
 
 export interface ConversationMessageAuthor {
   role?: string | null;
@@ -43,11 +46,21 @@ export interface ConversationPayload {
   [key: string]: unknown;
 }
 
+export interface ShareLoaderDataPayload {
+  sharedConversationId?: string | null;
+  serverResponse?: {
+    type?: string | null;
+    data?: ConversationPayload | null;
+  } | null;
+}
+
 export interface TrimConversationOptions {
   chatId: string;
+  routeKind: ConversationRouteKind;
+  routeId: string | null;
   conversationId: string | null;
   mode: TurboRenderMode;
-  initialHotTurns: number;
+  initialHotPairs: number;
   minVisibleTurns: number;
 }
 
@@ -118,6 +131,29 @@ export function isConversationEndpoint(url: string): boolean {
   return extractConversationIdFromUrl(url) != null;
 }
 
+export function extractShareConversationPayload(source: unknown): {
+  shareId: string | null;
+  payload: ConversationPayload | null;
+} {
+  if (typeof source !== 'object' || source == null) {
+    return { shareId: null, payload: null };
+  }
+
+  const record = source as ShareLoaderDataPayload;
+  const payload =
+    typeof record.serverResponse === 'object' &&
+    record.serverResponse != null &&
+    typeof record.serverResponse.data === 'object' &&
+    record.serverResponse.data != null
+      ? (record.serverResponse.data as ConversationPayload)
+      : null;
+
+  return {
+    shareId: record.sharedConversationId ?? null,
+    payload,
+  };
+}
+
 export function resolveActiveNodeId(payload: ConversationPayload): string | null {
   const mapping = payload.mapping;
   if (mapping == null) {
@@ -177,49 +213,128 @@ export function buildActiveChain(
 }
 
 function extractMessageParts(message: ConversationMessage | null | undefined): string[] {
-  const parts = message?.content?.parts;
-  if (!Array.isArray(parts)) {
-    return [];
-  }
+  const fragments: string[] = [];
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 5 || value == null) {
+      return;
+    }
 
-  return parts
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part.trim();
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        fragments.push(trimmed);
       }
+      return;
+    }
 
-      if (
-        typeof part === 'object' &&
-        part !== null &&
-        'text' in part &&
-        typeof (part as { text?: unknown }).text === 'string'
-      ) {
-        return (part as { text: string }).text.trim();
-      }
+    if (Array.isArray(value)) {
+      value.forEach((part) => visit(part, depth + 1));
+      return;
+    }
 
-      try {
-        return JSON.stringify(part);
-      } catch {
-        return '';
-      }
-    })
-    .filter((part) => part.length > 0);
+    if (typeof value !== 'object') {
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === 'string') {
+      visit(record.text, depth + 1);
+    }
+    if (Array.isArray(record.parts)) {
+      visit(record.parts, depth + 1);
+    }
+    if (Array.isArray(record.content)) {
+      visit(record.content, depth + 1);
+    }
+    if (typeof record.title === 'string') {
+      visit(record.title, depth + 1);
+    }
+  };
+
+  visit(message?.content?.parts ?? []);
+  return fragments;
 }
 
-function createColdTurn(node: ConversationMappingNode): CachedConversationTurn | null {
+function stringifyStructuredPayload(message: ConversationMessage | null | undefined): string | null {
+  if (message?.content == null && message?.metadata == null) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(
+      {
+        content: message?.content ?? null,
+        metadata: message?.metadata ?? null,
+      },
+      null,
+      2,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function isStructuredRole(role: TurnRole): boolean {
+  return role === 'system' || role === 'tool';
+}
+
+function isHiddenFromConversation(message: ConversationMessage | null | undefined): boolean {
+  return message?.metadata?.is_visually_hidden_from_conversation === true;
+}
+
+function createUnsupportedContentPlaceholder(role: TurnRole, contentType: string | null): string {
+  const typeLabel = contentType?.trim() || 'unknown';
+  return `[${role}] Unsupported ${typeLabel} message`;
+}
+
+function createCachedTurnContent(message: ConversationMessage | null | undefined): Pick<
+  CachedConversationTurn,
+  'parts' | 'renderKind' | 'contentType' | 'snapshotHtml' | 'structuredDetails' | 'hiddenFromConversation'
+> {
+  const role = normalizeRole(message?.author?.role);
+  const hiddenFromConversation = isHiddenFromConversation(message);
+  const parts = extractMessageParts(message);
+  const contentType = message?.content?.content_type ?? null;
+  const structuredDetails = hiddenFromConversation ? null : stringifyStructuredPayload(message);
+  const hasText = parts.length > 0;
+  const renderKind: ManagedHistoryRenderKind =
+    isStructuredRole(role) || (!hasText && structuredDetails != null)
+      ? 'structured-message'
+      : 'markdown-text';
+
+  return {
+    parts:
+      hiddenFromConversation
+        ? []
+        : hasText
+          ? parts
+          : renderKind === 'structured-message'
+            ? []
+            : [createUnsupportedContentPlaceholder(role, contentType)],
+    renderKind,
+    contentType,
+    snapshotHtml: null,
+    structuredDetails: renderKind === 'structured-message' ? structuredDetails : null,
+    hiddenFromConversation,
+  };
+}
+
+function createCachedTurn(node: ConversationMappingNode): CachedConversationTurn | null {
   if (node.message == null) {
     return null;
   }
 
   const role = normalizeRole(node.message.author?.role);
-  const parts = extractMessageParts(node.message);
+  const content = createCachedTurnContent(node.message);
   return {
     id: node.id,
     role,
-    parts:
-      parts.length > 0
-        ? parts
-        : [`[${role}] Message available in cold cache but the original content was not plain text.`],
+    parts: content.parts,
+    renderKind: content.renderKind,
+    contentType: content.contentType,
+    snapshotHtml: content.snapshotHtml,
+    structuredDetails: content.structuredDetails,
+    hiddenFromConversation: content.hiddenFromConversation,
     createTime: node.message.create_time ?? null,
   };
 }
@@ -245,6 +360,8 @@ export function trimConversationPayload(
       payload,
       session: {
         chatId: options.chatId,
+        routeKind: options.routeKind,
+        routeId: options.routeId,
         conversationId: options.conversationId,
         applied: false,
         reason: 'missing-mapping',
@@ -254,8 +371,15 @@ export function trimConversationPayload(
         activeBranchLength: 0,
         hotVisibleTurns: 0,
         coldVisibleTurns: 0,
-        initialHotTurns: options.initialHotTurns,
+        initialHotPairs: options.initialHotPairs,
+        hotPairCount: 0,
+        archivedPairCount: 0,
+        initialHotTurns: options.initialHotPairs * 2,
+        hotStartIndex: 0,
+        hotTurnCount: 0,
+        archivedTurnCount: 0,
         activeNodeId: null,
+        turns: [],
         coldTurns: [],
         capturedAt: Date.now(),
       },
@@ -271,6 +395,8 @@ export function trimConversationPayload(
 
   const baseSession: InitialTrimSession = {
     chatId: options.chatId,
+    routeKind: options.routeKind,
+    routeId: options.routeId,
     conversationId: options.conversationId,
     applied: false,
     reason: null,
@@ -280,8 +406,15 @@ export function trimConversationPayload(
     activeBranchLength: activeChain.length,
     hotVisibleTurns: totalVisibleTurns,
     coldVisibleTurns: 0,
-    initialHotTurns: options.initialHotTurns,
+    initialHotPairs: options.initialHotPairs,
+    hotPairCount: 0,
+    archivedPairCount: 0,
+    initialHotTurns: options.initialHotPairs * 2,
+    hotStartIndex: 0,
+    hotTurnCount: totalVisibleTurns,
+    archivedTurnCount: 0,
     activeNodeId,
+    turns: [],
     coldTurns: [],
     capturedAt: Date.now(),
   };
@@ -298,21 +431,36 @@ export function trimConversationPayload(
     };
   }
 
+  const turns = visibleChainIds
+    .map((nodeId) => createCachedTurn(mapping[nodeId]!))
+    .filter((turn): turn is CachedConversationTurn => turn != null);
+  baseSession.turns = turns;
+  const pairs = buildInteractionPairs(
+    turns.map((turn, index) => ({
+      ...turn,
+      turnIndex: index,
+      text: turn.parts.join('\n'),
+    })),
+  );
+  const totalVisiblePairs = pairs.length;
+
   const thresholdReached =
     totalVisibleTurns >= options.minVisibleTurns || totalMappingNodes >= options.minVisibleTurns;
-  if (!thresholdReached || totalVisibleTurns <= options.initialHotTurns) {
+  if (!thresholdReached || totalVisiblePairs <= options.initialHotPairs) {
     return {
       applied: false,
       payload,
       session: {
         ...baseSession,
+        hotPairCount: totalVisiblePairs,
         reason: thresholdReached ? 'already-hot' : 'below-threshold',
       },
       coldMapping: {},
     };
   }
 
-  const recentVisibleIds = visibleChainIds.slice(-options.initialHotTurns);
+  const hotPairs = pairs.slice(-options.initialHotPairs);
+  const recentVisibleIds = new Set(hotPairs.flatMap((pair) => pair.entries.map((entry) => visibleChainIds[entry.turnIndex]!)));
   const keepIds = new Set<string>();
 
   for (const [index, nodeId] of activeChain.entries()) {
@@ -326,15 +474,14 @@ export function trimConversationPayload(
       continue;
     }
 
-    const role = normalizeRole(node.message.author?.role);
-    if (recentVisibleIds.includes(nodeId) || role === 'system' || role === 'tool') {
+    if (recentVisibleIds.has(nodeId)) {
       keepIds.add(nodeId);
     }
   }
 
   const coldTurns = activeChain
     .filter((nodeId) => isRenderableNode(mapping[nodeId]) && !keepIds.has(nodeId))
-    .map((nodeId) => createColdTurn(mapping[nodeId]!))
+    .map((nodeId) => createCachedTurn(mapping[nodeId]!))
     .filter((turn): turn is CachedConversationTurn => turn != null);
 
   if (coldTurns.length === 0) {
@@ -384,8 +531,14 @@ export function trimConversationPayload(
       ...baseSession,
       applied: true,
       reason: 'trimmed',
+      hotPairCount: hotPairs.length,
+      archivedPairCount: totalVisiblePairs - hotPairs.length,
       hotVisibleTurns: totalVisibleTurns - coldTurns.length,
       coldVisibleTurns: coldTurns.length,
+      hotStartIndex: coldTurns.length,
+      hotTurnCount: totalVisibleTurns - coldTurns.length,
+      archivedTurnCount: coldTurns.length,
+      turns,
       coldTurns,
     },
     coldMapping,

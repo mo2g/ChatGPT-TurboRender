@@ -11,7 +11,7 @@ export interface TurboRenderPageConfig {
   enabled: boolean;
   mode: TurboRenderMode;
   initialTrimEnabled: boolean;
-  initialHotTurns: number;
+  initialHotPairs: number;
   minFinalizedBlocks: number;
   coldRestoreMode: ColdRestoreMode;
 }
@@ -44,14 +44,14 @@ export type TurboRenderBridgeMessage =
 export function toPageConfig(
   settings: Pick<
     Settings,
-    'enabled' | 'mode' | 'initialTrimEnabled' | 'initialHotTurns' | 'minFinalizedBlocks' | 'coldRestoreMode'
+    'enabled' | 'mode' | 'initialTrimEnabled' | 'initialHotPairs' | 'minFinalizedBlocks' | 'coldRestoreMode'
   >,
 ): TurboRenderPageConfig {
   return {
     enabled: settings.enabled,
     mode: settings.mode,
     initialTrimEnabled: settings.initialTrimEnabled,
-    initialHotTurns: settings.initialHotTurns,
+    initialHotPairs: settings.initialHotPairs,
     minFinalizedBlocks: settings.minFinalizedBlocks,
     coldRestoreMode: settings.coldRestoreMode,
   };

@@ -9,11 +9,11 @@ import './style.css';
 const FIELDS = [
   'minFinalizedBlocks',
   'minDescendants',
-  'initialHotTurns',
-  'liveHotTurns',
-  'keepRecentTurns',
+  'initialHotPairs',
+  'liveHotPairs',
+  'keepRecentPairs',
   'viewportBufferTurns',
-  'groupSize',
+  'batchPairCount',
   'frameSpikeThresholdMs',
   'frameSpikeCount',
   'frameSpikeWindowMs',
@@ -30,11 +30,11 @@ function readPatchFromForm() {
     softFallback: document.querySelector<HTMLInputElement>('#softFallback')!.checked,
     minFinalizedBlocks: Number(document.querySelector<HTMLInputElement>('#minFinalizedBlocks')!.value),
     minDescendants: Number(document.querySelector<HTMLInputElement>('#minDescendants')!.value),
-    initialHotTurns: Number(document.querySelector<HTMLInputElement>('#initialHotTurns')!.value),
-    liveHotTurns: Number(document.querySelector<HTMLInputElement>('#liveHotTurns')!.value),
-    keepRecentTurns: Number(document.querySelector<HTMLInputElement>('#keepRecentTurns')!.value),
+    initialHotPairs: Number(document.querySelector<HTMLInputElement>('#initialHotPairs')!.value),
+    liveHotPairs: Number(document.querySelector<HTMLInputElement>('#liveHotPairs')!.value),
+    keepRecentPairs: Number(document.querySelector<HTMLInputElement>('#keepRecentPairs')!.value),
     viewportBufferTurns: Number(document.querySelector<HTMLInputElement>('#viewportBufferTurns')!.value),
-    groupSize: Number(document.querySelector<HTMLInputElement>('#groupSize')!.value),
+    batchPairCount: Number(document.querySelector<HTMLInputElement>('#batchPairCount')!.value),
     frameSpikeThresholdMs: Number(
       document.querySelector<HTMLInputElement>('#frameSpikeThresholdMs')!.value,
     ),
@@ -99,11 +99,11 @@ function render(settings: Settings, statusKey?: TranslationKey): void {
         <div class="options-grid">
           <label>${t('labelFinalizedTurnsBeforeActivation')}<input type="number" id="minFinalizedBlocks" min="10" value="${settings.minFinalizedBlocks}" /></label>
           <label>${t('labelLiveDescendantsBeforeActivation')}<input type="number" id="minDescendants" min="100" value="${settings.minDescendants}" /></label>
-          <label>${t('labelInitialHotTurns')}<input type="number" id="initialHotTurns" min="4" value="${settings.initialHotTurns}" /></label>
-          <label>${t('labelLiveHotTurns')}<input type="number" id="liveHotTurns" min="4" value="${settings.liveHotTurns}" /></label>
-          <label>${t('labelRecentHotTurns')}<input type="number" id="keepRecentTurns" min="4" value="${settings.keepRecentTurns}" /></label>
+          <label>${t('labelInitialHotPairs')}<input type="number" id="initialHotPairs" min="1" value="${settings.initialHotPairs}" /></label>
+          <label>${t('labelLiveHotPairs')}<input type="number" id="liveHotPairs" min="1" value="${settings.liveHotPairs}" /></label>
+          <label>${t('labelRecentHotPairs')}<input type="number" id="keepRecentPairs" min="1" value="${settings.keepRecentPairs}" /></label>
           <label>${t('labelViewportBufferTurns')}<input type="number" id="viewportBufferTurns" min="0" value="${settings.viewportBufferTurns}" /></label>
-          <label>${t('labelTurnsPerColdGroup')}<input type="number" id="groupSize" min="2" value="${settings.groupSize}" /></label>
+          <label>${t('labelPairsPerBatch')}<input type="number" id="batchPairCount" min="1" value="${settings.batchPairCount}" /></label>
           <label>${t('labelFrameSpikeThreshold')}<input type="number" id="frameSpikeThresholdMs" min="16" value="${settings.frameSpikeThresholdMs}" /></label>
           <label>${t('labelFrameSpikeCount')}<input type="number" id="frameSpikeCount" min="1" value="${settings.frameSpikeCount}" /></label>
           <label>${t('labelFrameSpikeWindow')}<input type="number" id="frameSpikeWindowMs" min="500" value="${settings.frameSpikeWindowMs}" /></label>

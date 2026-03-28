@@ -10,11 +10,11 @@ function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typ
   if (status == null) {
     return t('statusUnavailable');
   }
+  if (status.archiveOnly) {
+    return t('stateArchiveOnly');
+  }
   if (!status.supported) {
     return t('stateUnsupported');
-  }
-  if (status.historyPanelOpen) {
-    return t('stateInspecting');
   }
   if (status.paused) {
     return t('statePaused');
@@ -23,6 +23,14 @@ function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typ
     return status.softFallback ? t('stateActiveSoft') : t('stateActive');
   }
   return t('stateMonitoring');
+}
+
+function formatStartedAt(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '—';
+  }
+
+  return new Date(timestamp).toLocaleString();
 }
 
 function render(status: TabStatusResponse): void {
@@ -36,7 +44,6 @@ function render(status: TabStatusResponse): void {
   const initialTrim = runtime?.initialTrimApplied
     ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
     : t('statusHistoryNo');
-  const inspection = runtime?.historyPanelOpen ? t('statusInspectionOpen') : t('statusInspectionClosed');
 
   app.innerHTML = `
     <section class="popup-card">
@@ -70,10 +77,18 @@ function render(status: TabStatusResponse): void {
             ? `<span>${t('labelCurrentTab')}</span><span>${t('statusUnavailable')}</span>`
             : `
               <span>${t('labelTotalTurns')}</span><span>${runtime.totalTurns}</span>
+              <span>${t('labelTotalPairs')}</span><span>${runtime.totalPairs}</span>
+              <span>${t('labelHotPairsVisible')}</span><span>${runtime.hotPairsVisible}</span>
               <span>${t('labelFinalized')}</span><span>${runtime.finalizedTurns}</span>
               <span>${t('labelInitialTrim')}</span><span>${initialTrim}</span>
               <span>${t('labelHandledHistory')}</span><span>${runtime.handledTurnsTotal}</span>
-              <span>${t('labelHistoryInspection')}</span><span>${inspection}</span>
+              <span>${t('labelArchivedTurns')}</span><span>${runtime.archivedTurnsTotal}</span>
+              <span>${t('labelCollapsedBatches')}</span><span>${runtime.collapsedBatchCount}</span>
+              <span>${t('labelExpandedBatches')}</span><span>${runtime.expandedBatchCount}</span>
+              <span>${t('labelRouteKind')}</span><span>${runtime.routeKind}</span>
+              <span>${t('labelContentScriptInstance')}</span><span>${runtime.contentScriptInstanceId.slice(0, 8)}</span>
+              <span>${t('labelContentScriptStarted')}</span><span>${formatStartedAt(runtime.contentScriptStartedAt)}</span>
+              <span>${t('labelBuildSignature')}</span><span>${runtime.buildSignature}</span>
               <span>${t('labelParkedTurns')}</span><span>${runtime.parkedTurns}</span>
               <span>${t('labelParkedGroups')}</span><span>${runtime.parkedGroups}</span>
               <span>${t('labelLiveDomNodes')}</span><span>${runtime.liveDescendantCount}</span>
@@ -86,10 +101,10 @@ function render(status: TabStatusResponse): void {
         <button id="pause-chat" ${runtime == null || !runtime.supported ? 'disabled' : ''}>
           ${status.paused ? t('actionResumeChat') : t('actionPauseChat')}
         </button>
-        <button id="restore-nearby" ${runtime == null || runtime.parkedGroups === 0 ? 'disabled' : ''}>
+        <button id="restore-nearby" ${runtime == null || runtime.collapsedBatchCount === 0 ? 'disabled' : ''}>
           ${t('actionRestoreNearby')}
         </button>
-        <button id="restore-all" ${runtime == null || runtime.parkedGroups === 0 ? 'disabled' : ''}>
+        <button id="restore-all" ${runtime == null || runtime.collapsedBatchCount === 0 ? 'disabled' : ''}>
           ${t('actionRestoreAll')}
         </button>
       </div>

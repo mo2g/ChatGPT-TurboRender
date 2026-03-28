@@ -38,4 +38,23 @@ describe('runtime disposers', () => {
     expect(removeListener).toHaveBeenCalledTimes(1);
     expect(removeListener).toHaveBeenCalledWith(handler);
   });
+
+  it('fails closed when listener registration throws', () => {
+    const bag = createDisposableBag();
+
+    expect(
+      registerOptionalListener(
+        bag,
+        {
+          addListener: vi.fn(() => {
+            throw new Error('context invalidated');
+          }),
+          removeListener: vi.fn(),
+        },
+        vi.fn(),
+      ),
+    ).toBe(false);
+
+    expect(() => bag.dispose()).not.toThrow();
+  });
 });

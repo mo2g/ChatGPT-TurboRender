@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  extractShareConversationPayload,
   resolveActiveNodeId,
   trimConversationPayload,
   type ConversationMappingNode,
@@ -79,9 +80,11 @@ describe('conversation trim', () => {
     const payload = buildPayload();
     const result = trimConversationPayload(payload, {
       chatId: 'chat:abc',
+      routeKind: 'chat',
+      routeId: 'abc',
       conversationId: 'abc',
       mode: 'performance',
-      initialHotTurns: 3,
+      initialHotPairs: 2,
       minVisibleTurns: 4,
     });
 
@@ -91,30 +94,143 @@ describe('conversation trim', () => {
       totalVisibleTurns: 7,
       coldVisibleTurns: 3,
       hotVisibleTurns: 4,
+      hotStartIndex: 3,
+      hotPairCount: 2,
+      archivedPairCount: 1,
+      hotTurnCount: 4,
+      archivedTurnCount: 3,
     });
 
     const trimmedMapping = result.payload.mapping ?? {};
-    expect(Object.keys(trimmedMapping)).toEqual(['root', 'system', 'assistant2', 'user3', 'assistant3']);
+    expect(Object.keys(trimmedMapping)).toEqual(['root', 'user2', 'assistant2', 'user3', 'assistant3']);
+    expect(trimmedMapping['user2']).toMatchObject({
+      parent: 'root',
+      children: ['assistant2'],
+    });
     expect(trimmedMapping['assistant2']).toMatchObject({
-      parent: 'system',
+      parent: 'user2',
       children: ['user3'],
     });
     expect(result.coldMapping['branchUser']).toBeDefined();
-    expect(result.session?.coldTurns.map((turn) => turn.id)).toEqual(['user1', 'assistant1', 'user2']);
+    expect(result.session?.coldTurns.map((turn) => turn.id)).toEqual(['system', 'user1', 'assistant1']);
+    expect(result.session?.turns.map((turn) => turn.id)).toEqual([
+      'system',
+      'user1',
+      'assistant1',
+      'user2',
+      'assistant2',
+      'user3',
+      'assistant3',
+    ]);
+    expect(result.session?.turns[0]).toMatchObject({
+      renderKind: 'structured-message',
+      contentType: 'text',
+    });
+    expect(result.session?.turns[1]).toMatchObject({
+      renderKind: 'markdown-text',
+      contentType: 'text',
+      snapshotHtml: null,
+      structuredDetails: null,
+    });
   });
 
   it('returns the original payload when the conversation is already within the hot window', () => {
     const payload = buildPayload();
     const result = trimConversationPayload(payload, {
       chatId: 'chat:abc',
+      routeKind: 'chat',
+      routeId: 'abc',
       conversationId: 'abc',
       mode: 'performance',
-      initialHotTurns: 8,
+      initialHotPairs: 8,
       minVisibleTurns: 4,
     });
 
     expect(result.applied).toBe(false);
     expect(result.payload).toBe(payload);
     expect(result.session?.reason).toBe('already-hot');
+  });
+
+  it('keeps structured tool messages searchable without falling back to the old placeholder', () => {
+    const payload = buildPayload();
+    payload.mapping!['assistant2']!.message = {
+      id: 'assistant2',
+      author: { role: 'tool', name: null, metadata: {} },
+      create_time: 5,
+      update_time: null,
+      content: {
+        content_type: 'tool_result',
+        parts: [{ type: 'tool_result', payload: { stdout: 'iptables-save' } }],
+      },
+      status: 'finished_successfully',
+      metadata: { tool_name: 'browser' },
+    };
+
+    const result = trimConversationPayload(payload, {
+      chatId: 'chat:abc',
+      routeKind: 'chat',
+      routeId: 'abc',
+      conversationId: 'abc',
+      mode: 'performance',
+      initialHotPairs: 2,
+      minVisibleTurns: 4,
+    });
+
+    const toolTurn = result.session?.turns.find((turn) => turn.id === 'assistant2');
+    expect(toolTurn).toMatchObject({
+      renderKind: 'structured-message',
+      contentType: 'tool_result',
+    });
+    expect(toolTurn?.parts).toEqual([]);
+    expect(toolTurn?.structuredDetails).toContain('iptables-save');
+  });
+
+  it('marks visually hidden messages so they can stay out of the restored chat flow', () => {
+    const payload = buildPayload();
+    payload.mapping!['system']!.message = {
+      id: 'system',
+      author: { role: 'system', name: null, metadata: {} },
+      create_time: 1,
+      update_time: null,
+      content: {
+        content_type: 'text',
+        parts: ['hidden system scaffold'],
+      },
+      status: 'finished_successfully',
+      metadata: { is_visually_hidden_from_conversation: true },
+    };
+
+    const result = trimConversationPayload(payload, {
+      chatId: 'chat:abc',
+      routeKind: 'chat',
+      routeId: 'abc',
+      conversationId: 'abc',
+      mode: 'performance',
+      initialHotPairs: 2,
+      minVisibleTurns: 4,
+    });
+
+    expect(result.session?.turns[0]).toMatchObject({
+      renderKind: 'structured-message',
+      hiddenFromConversation: true,
+    });
+    expect(result.session?.turns[0]?.parts).toEqual([]);
+    expect(result.session?.turns[0]?.structuredDetails).toBeNull();
+  });
+
+  it('extracts share conversation payloads from react-router loader data', () => {
+    const payload = buildPayload();
+    const extracted = extractShareConversationPayload({
+      sharedConversationId: 'share-123',
+      serverResponse: {
+        type: 'data',
+        data: payload,
+      },
+    });
+
+    expect(extracted).toMatchObject({
+      shareId: 'share-123',
+      payload,
+    });
   });
 });

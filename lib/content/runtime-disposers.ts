@@ -48,9 +48,17 @@ export function registerOptionalListener<Handler>(
     return false;
   }
 
-  api.addListener(handler);
+  try {
+    api.addListener(handler);
+  } catch {
+    return false;
+  }
   bag.add(() => {
-    api.removeListener(handler);
+    try {
+      api.removeListener(handler);
+    } catch {
+      // Ignore teardown failures when the extension event target is already invalid.
+    }
   });
   return true;
 }

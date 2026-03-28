@@ -2,7 +2,7 @@
 
 Keep long ChatGPT conversations responsive without replacing the native UI.
 
-[中文说明](./README.zh-CN.md) | [Architecture Notes](./docs/architecture.md) | [架构说明](./docs/architecture.zh-CN.md)
+[中文说明](./README.zh-CN.md) | [Architecture Notes](./docs/architecture.md) | [架构说明](./docs/architecture.zh-CN.md) | [Controlled Chrome Cookbook](./docs/cookbook-controlled-chrome.md) | [受控 Chrome Cookbook](./docs/cookbook-controlled-chrome.zh-CN.md)
 
 ChatGPT TurboRender is a Chromium-first browser extension that reduces UI jank in very long ChatGPT threads by trimming cold history before first render, preserving a hot interaction window, and restoring old turns on demand.
 
@@ -23,11 +23,11 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 ## What it does
 
 - Preserves the native ChatGPT UI instead of forcing a custom reader mode
-- Adds a top-of-conversation history shelf so managed history is easy to find
+- Keeps the latest 5 interaction pairs live and folds older history inline in the original transcript order
 - Activates automatically when thread size or frame-pressure heuristics cross a threshold
-- Trims the initial `/backend-api/conversation/:id` payload in page context so very long chats do not fully hit the official first render path
-- Parks cold message groups and replaces them with compact restore blocks
-- Restores nearby or all history on demand
+- Trims the initial `/backend-api/conversation/:id` payload in page context and also reads share-page loader data
+- Parks cold message groups and replaces them with compact inline batch cards
+- Keeps a sticky `Expand / Collapse` control on the right side of long opened batches
 - Supports English and Simplified Chinese, with auto-follow plus manual override
 - Falls back to a safer soft-fold mode if the host page re-renders aggressively
 - Stores settings locally only and does not send conversation data to any external service
@@ -40,13 +40,15 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 - Network model: page-layer interception of the initial conversation payload in the main world, no backend, no cloud sync
 - Current E2E note: Playwright extension tests are included, but launching a persistent Chromium extension context can still be environment-sensitive in headless sandboxes
 
-## How to view managed history
+## How folded history works
 
-When TurboRender processes older turns, it adds a sticky history shelf at the top of the conversation.
+TurboRender keeps the newest 5 interaction pairs visible in the native ChatGPT transcript.
 
-- Click `View history` to reveal the managed history block and temporarily pause auto-parking
-- Use `More` to access `Restore nearby`, `Restore all`, or pause the current chat
-- Group placeholders inside the transcript still work, but they are secondary shortcuts now
+- Older history stays inline, above the hot window, as collapsible batch cards
+- Each batch holds 5 interaction pairs in the original order
+- Expanding a parked batch restores the original host DOM when available
+- Expanding an initial-trim batch shows a read-only near-native renderer in the same position
+- Long expanded batches keep a sticky `Expand / Collapse` action rail on the right so you can fold them back quickly
 
 ## Quick start
 
@@ -65,6 +67,16 @@ pnpm test
 pnpm test:all
 pnpm zip
 ```
+
+## Controlled Chrome Debugging
+
+To debug the unpacked extension with `chrome-devtools` MCP, use the repo-managed browser instead of loading the extension manually inside the MCP browser:
+
+```bash
+pnpm debug:mcp-chrome -- https://chatgpt.com/share/69c62773-7b4c-83e8-b441-48520275c284
+```
+
+This launches a dedicated Chromium-based browser on `http://127.0.0.1:9222` with `.output/chrome-mv3` preloaded. The launcher prefers the repo-managed Playwright browser (`Google Chrome for Testing`) or a local Chromium build, because stable Google Chrome no longer honors `--load-extension` for unpacked extensions. After launching it, restart Codex in this repo so the project-level `[.codex/config.toml](./.codex/config.toml)` can point `chrome-devtools` MCP at that browser.
 
 ## Repository map
 

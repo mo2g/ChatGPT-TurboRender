@@ -1,15 +1,15 @@
-import { browser } from 'wxt/browser';
-
+import { BUILD_SIGNATURE, DEFAULT_SETTINGS } from '../../lib/shared/constants';
 import { isRuntimeMessage } from '../../lib/shared/messages';
 import { isTurboRenderBridgeMessage, postBridgeMessage, toPageConfig } from '../../lib/shared/runtime-bridge';
+import { shouldReplaceSession } from '../../lib/shared/session-precedence';
 import {
   getCurrentChatId,
   getSettings,
   isChatPaused,
-  normalizeSettings,
   setChatPaused,
 } from '../../lib/shared/settings';
 import { createDisposableBag, registerOptionalListener } from '../../lib/content/runtime-disposers';
+import { getRuntimeMessageEvent } from '../../lib/shared/extension-api';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import type { InitialTrimSession, Settings } from '../../lib/shared/types';
 
@@ -34,19 +34,46 @@ function whenDocumentReady(callback: () => void, ctx?: { addEventListener?: (...
   document.addEventListener('DOMContentLoaded', () => callback(), { once: true });
 }
 
+function createContentScriptInstanceId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+
+  return `turborender-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isTransientChatId(chatId: string): boolean {
+  return chatId === 'chat:home' || chatId === 'chat:unknown';
+}
+
 export default defineContentScript({
   matches: ['https://chatgpt.com/*'],
   runAt: 'document_start',
   async main(ctx) {
-    let settings = await getSettings();
-    let paused = await isChatPaused(getCurrentChatId());
+    const html = document.documentElement;
+    if (html != null) {
+      html.dataset.turborenderBuild = BUILD_SIGNATURE;
+    }
+    console.info(`[TurboRender] content-script build ${BUILD_SIGNATURE}`);
+
+    const contentScriptStartedAt = Date.now();
+    const contentScriptInstanceId = createContentScriptInstanceId();
+    let settings = DEFAULT_SETTINGS;
+    let paused = false;
     let controller: TurboRenderController | null = null;
     const trimSessions = new Map<string, InitialTrimSession>();
     let lastChatId = getCurrentChatId();
+    let pendingChatId: string | null = null;
+    let pendingChatSince = 0;
+    let storageSyncInFlight = false;
     let destroyed = false;
     const disposables = createDisposableBag();
+    const isAlive = () => !destroyed && !ctx.isInvalid;
 
     const syncPageConfig = (nextSettings: Settings) => {
+      if (!isAlive()) {
+        return;
+      }
       postBridgeMessage(window, {
         namespace: 'chatgpt-turborender',
         type: 'TURBO_RENDER_CONFIG',
@@ -55,10 +82,96 @@ export default defineContentScript({
     };
 
     const syncKnownSession = (chatId: string) => {
+      if (!isAlive()) {
+        return;
+      }
       controller?.setInitialTrimSession(trimSessions.get(chatId) ?? null);
     };
 
+    const syncPausedState = (chatId: string) => {
+      void isChatPaused(chatId).then((nextPaused) => {
+        if (!isAlive() || chatId !== lastChatId) {
+          return;
+        }
+        paused = nextPaused;
+        controller?.setPaused(nextPaused);
+      });
+    };
+
+    const requestSessionReplay = (chatId: string) => {
+      if (!isAlive()) {
+        return;
+      }
+      postBridgeMessage(window, {
+        namespace: 'chatgpt-turborender',
+        type: 'TURBO_RENDER_REQUEST_STATE',
+        payload: { chatId },
+      });
+    };
+
+    const syncSettingsSnapshot = () => {
+      if (!isAlive() || storageSyncInFlight) {
+        return;
+      }
+
+      storageSyncInFlight = true;
+      const chatIdAtSyncStart = lastChatId;
+      void Promise.all([getSettings(), isChatPaused(chatIdAtSyncStart)])
+        .then(([nextSettings, nextPaused]) => {
+          if (!isAlive()) {
+            return;
+          }
+
+          settings = nextSettings;
+          controller?.setSettings(nextSettings);
+          syncPageConfig(nextSettings);
+
+          if (chatIdAtSyncStart !== lastChatId) {
+            return;
+          }
+
+          paused = nextPaused;
+          controller?.setPaused(nextPaused);
+        })
+        .finally(() => {
+          storageSyncInFlight = false;
+        });
+    };
+
+    const commitChatSwitch = (nextChatId: string, options?: { requestReplay?: boolean }) => {
+      if (!isAlive() || nextChatId === lastChatId) {
+        return;
+      }
+
+      lastChatId = nextChatId;
+      pendingChatId = null;
+      pendingChatSince = 0;
+      controller?.resetForChatChange(nextChatId);
+      syncPausedState(nextChatId);
+      syncKnownSession(nextChatId);
+      if (options?.requestReplay !== false) {
+        requestSessionReplay(nextChatId);
+      }
+    };
+
+    const cleanup = () => {
+      if (destroyed) {
+        return;
+      }
+
+      destroyed = true;
+      disposables.dispose();
+      controller?.stop();
+      controller = null;
+    };
+
+    ctx.onInvalidated(cleanup);
+    ctx.addEventListener(window, 'pagehide', cleanup, { once: true });
+
     const handlePageMessage = (event: MessageEvent) => {
+      if (!isAlive()) {
+        return;
+      }
       if (
         event.source !== window ||
         !isTurboRenderBridgeMessage(event.data) ||
@@ -67,56 +180,81 @@ export default defineContentScript({
         return;
       }
 
-      trimSessions.set(event.data.payload.chatId, event.data.payload);
-      if (event.data.payload.chatId === getCurrentChatId()) {
-        controller?.setInitialTrimSession(event.data.payload);
+      const incomingSession = event.data.payload;
+      const currentSession = trimSessions.get(incomingSession.chatId);
+      const accepted = shouldReplaceSession(currentSession, incomingSession);
+      if (accepted) {
+        trimSessions.set(incomingSession.chatId, incomingSession);
+      }
+
+      if (!accepted) {
+        return;
+      }
+
+      const routeChatId = getCurrentChatId();
+      const targetChatId = isTransientChatId(routeChatId) ? lastChatId : routeChatId;
+      if (incomingSession.chatId === targetChatId) {
+        if (incomingSession.chatId !== lastChatId) {
+          commitChatSwitch(incomingSession.chatId, { requestReplay: false });
+        } else {
+          pendingChatId = null;
+          pendingChatSince = 0;
+        }
+        controller?.setInitialTrimSession(incomingSession);
       }
     };
 
     ctx.addEventListener(window, 'message', handlePageMessage);
     syncPageConfig(settings);
-    postBridgeMessage(window, {
-      namespace: 'chatgpt-turborender',
-      type: 'TURBO_RENDER_REQUEST_STATE',
-      payload: { chatId: lastChatId },
-    });
+    requestSessionReplay(lastChatId);
 
-    whenDocumentReady(() => {
-      controller = new TurboRenderController({
-        settings,
-        paused,
-        onPauseToggle: (nextPaused, chatId) => setChatPaused(chatId, nextPaused),
-      });
-      controller.start();
-      syncKnownSession(getCurrentChatId());
-    }, ctx);
-
-    const handleStorageChange: Parameters<typeof browser.storage.onChanged.addListener>[0] = (
-      changes,
-      areaName,
-    ) => {
-      if (areaName !== 'local') {
+    const ensureController = () => {
+      if (!isAlive() || controller != null) {
         return;
       }
 
-      const settingsChange = changes['turboRender.settings'];
-      if (settingsChange != null) {
-        settings = normalizeSettings(settingsChange.newValue);
-        controller?.setSettings(settings);
-        syncPageConfig(settings);
-      }
-
-      const pausedChatsChange = changes['turboRender.pausedChats'];
-      if (pausedChatsChange != null) {
-        const pausedChats = (pausedChatsChange.newValue as Record<string, boolean> | undefined) ?? {};
-        paused = pausedChats[getCurrentChatId()] ?? false;
-        controller?.setPaused(paused);
-      }
+      controller = new TurboRenderController({
+        settings,
+        paused,
+        contentScriptInstanceId,
+        contentScriptStartedAt,
+        onPauseToggle: (nextPaused, chatId) => setChatPaused(chatId, nextPaused),
+      });
+      controller.start();
+      controller.resetForChatChange(lastChatId);
+      syncKnownSession(lastChatId);
     };
 
-    const handleRuntimeMessage: Parameters<typeof browser.runtime.onMessage.addListener>[0] = (
-      message,
-    ) => {
+    whenDocumentReady(() => {
+      ensureController();
+    }, ctx);
+
+    void (async () => {
+      const chatIdAtLoad = lastChatId;
+      const [nextSettings, nextPaused] = await Promise.all([
+        getSettings(),
+        isChatPaused(chatIdAtLoad),
+      ]);
+
+      if (!isAlive()) {
+        return;
+      }
+
+      settings = nextSettings;
+      if (chatIdAtLoad === lastChatId) {
+        paused = nextPaused;
+      }
+      syncPageConfig(settings);
+      controller?.setSettings(settings);
+      if (chatIdAtLoad === lastChatId) {
+        controller?.setPaused(paused);
+      }
+    })();
+
+    const handleRuntimeMessage = (message: unknown) => {
+      if (!isAlive()) {
+        return undefined;
+      }
       if (!isRuntimeMessage(message)) {
         return undefined;
       }
@@ -135,40 +273,56 @@ export default defineContentScript({
       }
     };
 
-    registerOptionalListener(disposables, browser.storage?.onChanged, handleStorageChange);
-    registerOptionalListener(disposables, browser.runtime?.onMessage, handleRuntimeMessage);
+    registerOptionalListener(disposables, getRuntimeMessageEvent<typeof handleRuntimeMessage>(), handleRuntimeMessage);
+    ctx.setInterval(() => {
+      syncSettingsSnapshot();
+    }, 2000);
 
     ctx.setInterval(() => {
+      if (!isAlive()) {
+        return;
+      }
       const nextChatId = getCurrentChatId();
       if (nextChatId === lastChatId) {
+        pendingChatId = null;
+        pendingChatSince = 0;
         return;
       }
 
-      lastChatId = nextChatId;
-      void isChatPaused(nextChatId).then((nextPaused) => {
-        paused = nextPaused;
-        controller?.setPaused(nextPaused);
-      });
-      syncKnownSession(nextChatId);
-      postBridgeMessage(window, {
-        namespace: 'chatgpt-turborender',
-        type: 'TURBO_RENDER_REQUEST_STATE',
-        payload: { chatId: nextChatId },
-      });
+      if (trimSessions.has(nextChatId)) {
+        commitChatSwitch(nextChatId, { requestReplay: false });
+        return;
+      }
+
+      const currentHasKnownSession = trimSessions.has(lastChatId);
+
+      if (pendingChatId !== nextChatId) {
+        pendingChatId = nextChatId;
+        pendingChatSince = Date.now();
+        requestSessionReplay(nextChatId);
+        return;
+      }
+
+      const stableMs = Date.now() - pendingChatSince;
+      if (stableMs < 1500) {
+        return;
+      }
+
+      // Keep polling state replay, but do not switch to transient route ids.
+      // ChatGPT can briefly emit route placeholders during hydration.
+      if (isTransientChatId(nextChatId)) {
+        requestSessionReplay(nextChatId);
+        return;
+      }
+
+      // If the current chat has a known session, keep it until the next chat has
+      // concrete session data. This avoids archive flicker/disappearance on route churn.
+      if (currentHasKnownSession && !trimSessions.has(nextChatId)) {
+        requestSessionReplay(nextChatId);
+        return;
+      }
+
+      commitChatSwitch(nextChatId, { requestReplay: false });
     }, 500);
-
-    const cleanup = () => {
-      if (destroyed) {
-        return;
-      }
-
-      destroyed = true;
-      disposables.dispose();
-      controller?.stop();
-      controller = null;
-    };
-
-    ctx.onInvalidated(cleanup);
-    ctx.addEventListener(window, 'pagehide', cleanup, { once: true });
   },
 });

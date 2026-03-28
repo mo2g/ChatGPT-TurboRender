@@ -1,212 +1,252 @@
 import { UI_CLASS_NAMES } from '../shared/constants';
+import { buildInteractionPairs } from '../shared/interaction-pairs';
 import { createTranslator, type Translator } from '../shared/i18n';
-import type { ManagedHistoryEntry, TabRuntimeStatus } from '../shared/types';
+import type { HistoryAnchorMode, ManagedHistoryEntry, ManagedHistoryGroup, TabRuntimeStatus } from '../shared/types';
+
+import { renderManagedHistoryEntryBody } from './history-entry-renderer';
+
+export interface StatusBarState {
+  archiveGroups: ManagedHistoryGroup[];
+  collapsedBatchCount: number;
+  expandedBatchCount: number;
+  searchQuery: string;
+}
 
 export interface StatusBarActions {
-  onRestoreNearby(): void;
-  onRestoreAll(): void;
-  onTogglePause(): void;
-  onOpenHistoryPanel(): void;
-  onCloseHistoryPanel(): void;
-  onActivateHistoryEntry(entryId: string): void;
+  onSearchQueryChange(query: string): void;
+  onToggleArchiveGroup(groupId: string, anchor: HTMLElement | null): void;
 }
 
 const STYLE_ID = 'turbo-render-style';
-const HISTORY_PANEL_ROOT_ATTRIBUTE = 'data-turbo-render-history-panel-root';
-const HISTORY_ENTRY_ATTRIBUTE = 'data-turbo-render-history-entry-id';
+const INLINE_ROOT_ATTRIBUTE = 'data-turbo-render-inline-history-root';
 
 const STYLES = `
-.${UI_CLASS_NAMES.historyOverlay} {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 80;
+.${UI_CLASS_NAMES.inlineHistoryRoot} {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 18px;
 }
 
-.${UI_CLASS_NAMES.historyTrigger},
-.${UI_CLASS_NAMES.historyDrawer},
-.${UI_CLASS_NAMES.historyHint},
-.${UI_CLASS_NAMES.placeholder} button {
-  pointer-events: auto;
+.${UI_CLASS_NAMES.inlineHistoryRoot} > * {
+  width: min(100%, 920px);
+  margin-inline: auto;
 }
 
-.${UI_CLASS_NAMES.historyTrigger} {
-  position: fixed;
-  top: var(--turbo-render-history-top, 88px);
-  right: var(--turbo-render-history-right, 16px);
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid rgba(15, 23, 42, 0.14);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #0f172a;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
-  backdrop-filter: blur(12px);
-  font: 12px/1.4 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-.${UI_CLASS_NAMES.historyTrigger}[data-state="paused"] {
-  border-color: rgba(245, 158, 11, 0.35);
-}
-
-.${UI_CLASS_NAMES.historyTrigger}[data-state="active"] {
-  border-color: rgba(16, 185, 129, 0.35);
-}
-
-.${UI_CLASS_NAMES.historyTriggerBadge} {
-  min-width: 20px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: #0f172a;
-  color: #ffffff;
-  text-align: center;
-  font-size: 11px;
-}
-
-.${UI_CLASS_NAMES.historyTriggerBadge}[hidden] {
-  display: none !important;
-}
-
-.${UI_CLASS_NAMES.historyHint} {
-  position: fixed;
-  top: calc(var(--turbo-render-history-top, 88px) + 48px);
-  right: var(--turbo-render-history-right, 16px);
-  width: min(320px, calc(100vw - 24px));
+.${UI_CLASS_NAMES.inlineHistoryToolbar} {
   display: grid;
   gap: 8px;
-  padding: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.98);
+  padding: 12px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.9);
   color: #0f172a;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
   font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.${UI_CLASS_NAMES.historyHint}[hidden] {
-  display: none !important;
-}
-
-.${UI_CLASS_NAMES.historyHintDismiss} {
-  justify-self: end;
-}
-
-.${UI_CLASS_NAMES.historyDrawer} {
-  position: fixed;
-  top: var(--turbo-render-history-top, 88px);
-  right: var(--turbo-render-history-right, 16px);
-  width: min(420px, calc(100vw - 24px));
-  max-height: min(78vh, calc(100vh - var(--turbo-render-history-top, 88px) - 16px));
-  display: grid;
-  gap: 12px;
-  padding: 16px;
-  border: 1px solid rgba(15, 23, 42, 0.14);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.98);
-  color: #0f172a;
-  box-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
-  backdrop-filter: blur(16px);
-  overflow: hidden;
-  font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-.${UI_CLASS_NAMES.historyDrawer}[hidden] {
-  display: none !important;
-}
-
-.${UI_CLASS_NAMES.historyDrawerHeader},
-.${UI_CLASS_NAMES.historyDrawerActions},
-.${UI_CLASS_NAMES.historyDrawerSearch},
-.${UI_CLASS_NAMES.placeholderActions} {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.${UI_CLASS_NAMES.historyDrawerCopy} {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.${UI_CLASS_NAMES.historyDrawerCopy} strong,
-.${UI_CLASS_NAMES.coldHistoryHeader} strong {
-  font-size: 13px;
-}
-
-.${UI_CLASS_NAMES.historyDrawerCopy} p,
-.${UI_CLASS_NAMES.historyDrawerMeta},
-.${UI_CLASS_NAMES.historyEntryMeta},
-.${UI_CLASS_NAMES.placeholderSummary},
-.${UI_CLASS_NAMES.coldHistoryHeader} p {
+.${UI_CLASS_NAMES.inlineHistorySummary},
+.${UI_CLASS_NAMES.inlineBatchMeta},
+.${UI_CLASS_NAMES.inlineBatchPreview},
+.${UI_CLASS_NAMES.inlineBatchMatches},
+.${UI_CLASS_NAMES.historyEntryMeta} {
   margin: 0;
   color: #475569;
 }
 
-.${UI_CLASS_NAMES.historyDrawerSearch} input {
-  flex: 1 1 220px;
+.${UI_CLASS_NAMES.inlineHistorySearch} input {
+  width: 100%;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 9px 11px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 12px;
-  background: rgba(248, 250, 252, 0.95);
+  background: #ffffff;
   color: #0f172a;
   font: inherit;
 }
 
-.${UI_CLASS_NAMES.historyDrawerResults},
-.${UI_CLASS_NAMES.historyDrawerCards},
-.${UI_CLASS_NAMES.coldHistoryTurns} {
+.${UI_CLASS_NAMES.inlineBatchCard} {
   display: grid;
-  gap: 10px;
-  overflow: auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
-.${UI_CLASS_NAMES.historyDrawerResults}[hidden] {
-  display: none !important;
+.${UI_CLASS_NAMES.inlineBatchMain} {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
 }
 
-.${UI_CLASS_NAMES.historyEntryCard},
-.${UI_CLASS_NAMES.placeholder},
-.${UI_CLASS_NAMES.coldHistoryTurn} {
+.${UI_CLASS_NAMES.inlineBatchHeader} {
   display: grid;
   gap: 8px;
-  padding: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 14px;
-  background: rgba(248, 250, 252, 0.88);
+  min-width: 0;
 }
 
-.${UI_CLASS_NAMES.historyEntryBody},
-.${UI_CLASS_NAMES.coldHistoryBody} {
+.${UI_CLASS_NAMES.inlineBatchMeta} {
   display: grid;
   gap: 6px;
 }
 
-.${UI_CLASS_NAMES.historyEntryBody} p,
-.${UI_CLASS_NAMES.coldHistoryBody} p,
-.${UI_CLASS_NAMES.coldHistoryTurn} p {
+.${UI_CLASS_NAMES.inlineBatchPreview} {
+  display: grid;
+  gap: 4px;
+}
+
+.${UI_CLASS_NAMES.inlineBatchMatches} {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.${UI_CLASS_NAMES.inlineBatchRail} {
+  display: flex;
+  justify-content: flex-end;
+  align-self: start;
+  position: sticky;
+  top: 16px;
+  height: max-content;
+}
+
+.${UI_CLASS_NAMES.inlineBatchAction} {
+  appearance: none;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0f172a;
+  cursor: pointer;
+  padding: 7px 11px;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.${UI_CLASS_NAMES.inlineBatchEntries} {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.${UI_CLASS_NAMES.inlineBatchEntry} {
+  display: grid;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.${UI_CLASS_NAMES.inlineBatchEntry}:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.${UI_CLASS_NAMES.historyEntryCard} {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.${UI_CLASS_NAMES.historyEntryCard}[data-lane="user"] {
+  justify-items: end;
+}
+
+.${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] {
+  justify-items: stretch;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody} {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.${UI_CLASS_NAMES.historyEntryCard}[data-lane="user"] .${UI_CLASS_NAMES.historyEntryBody} {
+  justify-self: end;
+  width: fit-content;
+  max-width: min(72ch, 100%);
+  padding: 12px 16px;
+  border-radius: 22px;
+  background: #e9ecef;
+  color: #0f172a;
+}
+
+.${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] .${UI_CLASS_NAMES.historyEntryBody} {
+  justify-self: center;
+  width: min(82ch, 100%);
+}
+
+.${UI_CLASS_NAMES.historyEntryBody} p {
   margin: 0;
   white-space: pre-wrap;
 }
 
-.${UI_CLASS_NAMES.historyEntryAction} {
-  justify-self: start;
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] {
+  font-size: 13px;
+  line-height: 1.68;
 }
 
-.${UI_CLASS_NAMES.historyEntryHighlight},
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] a {
+  color: #2563eb;
+  text-decoration: underline;
+  word-break: break-word;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.08);
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] pre,
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="structured-message"] pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid rgba(59, 130, 246, 0.3);
+  color: #334155;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] ul,
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] :is(button, input, textarea, select, a) {
+  pointer-events: none !important;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-supplemental-role] {
+  padding-top: 8px;
+  border-top: 1px dashed rgba(15, 23, 42, 0.08);
+}
+
+.${UI_CLASS_NAMES.inlineBatchHighlight},
 .${UI_CLASS_NAMES.transcriptHighlight} {
   outline: 2px solid rgba(59, 130, 246, 0.42);
   outline-offset: 3px;
-  background: rgba(219, 234, 254, 0.72) !important;
-}
-
-.${UI_CLASS_NAMES.placeholder} {
-  margin: 12px 0;
-  border-style: dashed;
+  background: rgba(219, 234, 254, 0.44) !important;
 }
 
 .${UI_CLASS_NAMES.softFolded} {
@@ -220,158 +260,28 @@ const STYLES = `
   pointer-events: none !important;
 }
 
-.${UI_CLASS_NAMES.historyDrawer} button,
-.${UI_CLASS_NAMES.historyTrigger},
-.${UI_CLASS_NAMES.historyHint} button,
-.${UI_CLASS_NAMES.placeholder} button {
-  appearance: none;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 999px;
-  background: #ffffff;
-  color: #0f172a;
-  cursor: pointer;
-  padding: 7px 11px;
-  font: inherit;
-}
-
-.${UI_CLASS_NAMES.historyDrawer} button[data-variant="primary"],
-.${UI_CLASS_NAMES.historyTrigger}[data-open="true"] {
-  background: #0f172a;
-  border-color: #0f172a;
-  color: #ffffff;
-}
-
-.${UI_CLASS_NAMES.historyDrawer} button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-@media (max-width: 960px) {
-  .${UI_CLASS_NAMES.historyTrigger},
-  .${UI_CLASS_NAMES.historyDrawer},
-  .${UI_CLASS_NAMES.historyHint} {
-    right: 12px;
-  }
-
-  .${UI_CLASS_NAMES.historyDrawer} {
-    top: 76px;
-    width: min(440px, calc(100vw - 24px));
-    max-height: calc(100vh - 92px);
-  }
-}
-
 @media (max-width: 720px) {
-  .${UI_CLASS_NAMES.historyTrigger} {
-    top: 72px;
+  .${UI_CLASS_NAMES.inlineBatchCard} {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
   }
 
-  .${UI_CLASS_NAMES.historyDrawer} {
-    top: 72px;
-    left: 12px;
-    right: 12px;
-    width: auto;
-    max-height: calc(100vh - 88px);
+  .${UI_CLASS_NAMES.inlineBatchRail} {
+    justify-self: end;
+    z-index: 1;
   }
 
-  .${UI_CLASS_NAMES.historyHint} {
-    top: 120px;
-    left: 12px;
-    right: 12px;
-    width: auto;
+  .${UI_CLASS_NAMES.inlineBatchRail} {
+    top: 8px;
+  }
+
+  .${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] .${UI_CLASS_NAMES.historyEntryBody} {
+    width: 100%;
   }
 }
 `;
 
-function getStateLabel(t: Translator, status: TabRuntimeStatus): string {
-  if (!status.supported) {
-    return t('stateUnsupported');
-  }
-  if (status.historyPanelOpen) {
-    return t('stateInspecting');
-  }
-  if (status.paused) {
-    return t('statePaused');
-  }
-  if (status.active) {
-    return status.softFallback ? t('stateActiveSoft') : t('stateActive');
-  }
-  return t('stateMonitoring');
-}
-
-function getRoleLabel(t: Translator, role: ManagedHistoryEntry['role']): string {
-  switch (role) {
-    case 'user':
-      return t('roleUser');
-    case 'assistant':
-      return t('roleAssistant');
-    case 'system':
-      return t('roleSystem');
-    case 'tool':
-      return t('roleTool');
-    default:
-      return t('roleUnknown');
-  }
-}
-
-function getSourceLabel(t: Translator, source: ManagedHistoryEntry['source']): string {
-  return source === 'initial-trim' ? t('historySearchInitialTrim') : t('historySearchParkedGroup');
-}
-
-function shouldShowControl(status: TabRuntimeStatus): boolean {
-  return status.supported && (status.active || status.paused || status.handledTurnsTotal > 0);
-}
-
-function matchesEntry(entry: ManagedHistoryEntry, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (normalizedQuery.length === 0) {
-    return true;
-  }
-
-  return entry.text.toLowerCase().includes(normalizedQuery);
-}
-
-function createEntryCard(
-  doc: Document,
-  t: Translator,
-  entry: ManagedHistoryEntry,
-  highlightedEntryId: string | null,
-): HTMLElement {
-  const article = doc.createElement('article');
-  article.className = UI_CLASS_NAMES.historyEntryCard;
-  if (entry.id === highlightedEntryId) {
-    article.classList.add(UI_CLASS_NAMES.historyEntryHighlight);
-  }
-  article.setAttribute(HISTORY_ENTRY_ATTRIBUTE, entry.id);
-
-  const meta = doc.createElement('div');
-  meta.className = UI_CLASS_NAMES.historyEntryMeta;
-  meta.textContent = `${getRoleLabel(t, entry.role)} • #${entry.turnIndex + 1} • ${getSourceLabel(t, entry.source)}`;
-  article.append(meta);
-
-  const body = doc.createElement('div');
-  body.className = UI_CLASS_NAMES.historyEntryBody;
-  const parts = entry.parts.length === 0 ? [entry.text] : entry.parts;
-  for (const part of parts) {
-    const paragraph = doc.createElement('p');
-    paragraph.textContent = part;
-    body.append(paragraph);
-  }
-  article.append(body);
-
-  if (entry.source === 'parked-group') {
-    const action = doc.createElement('button');
-    action.type = 'button';
-    action.className = UI_CLASS_NAMES.historyEntryAction;
-    action.dataset.action = 'open-entry';
-    action.dataset.entryId = entry.id;
-    action.textContent = t('historySearchOpenChat');
-    article.append(action);
-  }
-
-  return article;
-}
-
-export function ensureTurboRenderStyles(doc: Document): void {
+function ensureTurboRenderStyles(doc: Document): void {
   if (doc.getElementById(STYLE_ID) != null) {
     return;
   }
@@ -382,30 +292,25 @@ export function ensureTurboRenderStyles(doc: Document): void {
   doc.head.append(style);
 }
 
+function getSlotSummaryText(t: Translator, group: ManagedHistoryGroup): string {
+  return t('historyBatchSummary', {
+    count: group.capacity,
+    start: group.slotPairStartIndex + 1,
+    end: group.slotPairEndIndex + 1,
+  });
+}
+
+function getFilledSummaryText(t: Translator, group: ManagedHistoryGroup): string {
+  return `${getSlotSummaryText(t, group)} · ${group.filledPairCount}/${group.capacity}`;
+}
+
 export class StatusBar {
   private root: HTMLElement | null = null;
-  private trigger: HTMLButtonElement | null = null;
-  private triggerBadge: HTMLElement | null = null;
-  private hint: HTMLElement | null = null;
-  private drawer: HTMLElement | null = null;
-  private drawerTitle: HTMLElement | null = null;
-  private drawerSummary: HTMLElement | null = null;
-  private drawerMeta: HTMLElement | null = null;
-  private searchWrap: HTMLElement | null = null;
   private searchInput: HTMLInputElement | null = null;
-  private searchResults: HTMLElement | null = null;
-  private cards: HTMLElement | null = null;
-  private restoreNearbyButton: HTMLButtonElement | null = null;
-  private restoreAllButton: HTMLButtonElement | null = null;
-  private pauseButton: HTMLButtonElement | null = null;
-  private closeButton: HTMLButtonElement | null = null;
-  private t: Translator = createTranslator('en');
+  private groupsRoot: HTMLElement | null = null;
   private currentStatus: TabRuntimeStatus | null = null;
-  private currentEntries: ManagedHistoryEntry[] = [];
-  private query = '';
-  private highlightedEntryId: string | null = null;
-  private lastChatId: string | null = null;
-  private readonly dismissedHintChatIds = new Set<string>();
+  private currentState: StatusBarState | null = null;
+  private t: Translator = createTranslator('en');
 
   constructor(
     private readonly doc: Document,
@@ -417,327 +322,218 @@ export class StatusBar {
     this.render();
   }
 
-  update(
-    status: TabRuntimeStatus,
-    anchor: HTMLElement | null,
-    entries: ManagedHistoryEntry[],
-    highlightedEntryId: string | null,
-  ): void {
+  getAnchorMode(): HistoryAnchorMode {
+    return 'hidden';
+  }
+
+  update(status: TabRuntimeStatus, target: HTMLElement | null, state: StatusBarState): HistoryAnchorMode {
     this.currentStatus = status;
-    this.currentEntries = entries;
-    this.highlightedEntryId = highlightedEntryId;
-
-    if (this.lastChatId !== status.chatId) {
-      this.lastChatId = status.chatId;
-      this.query = '';
-      this.highlightedEntryId = null;
-    }
-
-    this.mount(anchor);
+    this.currentState = state;
+    this.mount(target);
     this.render();
+    return 'hidden';
   }
 
   destroy(): void {
     this.root?.remove();
     this.root = null;
-    this.trigger = null;
-    this.triggerBadge = null;
-    this.hint = null;
-    this.drawer = null;
-    this.drawerTitle = null;
-    this.drawerSummary = null;
-    this.drawerMeta = null;
-    this.searchWrap = null;
     this.searchInput = null;
-    this.searchResults = null;
-    this.cards = null;
-    this.restoreNearbyButton = null;
-    this.restoreAllButton = null;
-    this.pauseButton = null;
-    this.closeButton = null;
+    this.groupsRoot = null;
   }
 
-  private mount(anchor: HTMLElement | null): void {
+  focusArchive(): void {}
+
+  focusEntry(): boolean {
+    return false;
+  }
+
+  getToggleButton(groupId: string): HTMLButtonElement | null {
+    return this.root?.querySelector<HTMLButtonElement>(
+      `[data-turbo-render-action="toggle-archive-group"][data-group-id="${groupId}"]`,
+    ) ?? null;
+  }
+
+  private mount(target: HTMLElement | null): void {
     ensureTurboRenderStyles(this.doc);
-
-    if (this.root == null) {
-      this.root = this.doc.createElement('div');
-      this.root.className = UI_CLASS_NAMES.historyOverlay;
-      this.root.setAttribute(HISTORY_PANEL_ROOT_ATTRIBUTE, 'true');
-      this.root.innerHTML = `
-        <button type="button" class="${UI_CLASS_NAMES.historyTrigger}" data-action="toggle-panel">
-          <span data-slot="label"></span>
-          <span class="${UI_CLASS_NAMES.historyTriggerBadge}" data-slot="badge"></span>
-        </button>
-        <div class="${UI_CLASS_NAMES.historyHint}" hidden>
-          <button type="button" class="${UI_CLASS_NAMES.historyHintDismiss}" data-action="dismiss-hint"></button>
-          <p data-slot="hint-copy"></p>
-        </div>
-        <aside class="${UI_CLASS_NAMES.historyDrawer}" hidden>
-          <div class="${UI_CLASS_NAMES.historyDrawerHeader}">
-            <div class="${UI_CLASS_NAMES.historyDrawerCopy}">
-              <strong></strong>
-              <p></p>
-            </div>
-            <button type="button" data-action="close-panel"></button>
-          </div>
-          <div class="${UI_CLASS_NAMES.historyDrawerMeta}"></div>
-          <div class="${UI_CLASS_NAMES.historyDrawerActions}">
-            <button type="button" data-action="restore-nearby"></button>
-            <button type="button" data-action="restore-all"></button>
-            <button type="button" data-action="toggle-pause"></button>
-          </div>
-          <div class="${UI_CLASS_NAMES.historyDrawerSearch}">
-            <input type="search" data-slot="search" />
-          </div>
-          <div class="${UI_CLASS_NAMES.historyDrawerResults}" hidden></div>
-          <div class="${UI_CLASS_NAMES.historyDrawerCards}"></div>
-        </aside>
-      `;
-
-      this.trigger = this.root.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.historyTrigger}`);
-      this.triggerBadge = this.root.querySelector<HTMLElement>('[data-slot="badge"]');
-      this.hint = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyHint}`);
-      this.drawer = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawer}`);
-      this.drawerTitle = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerCopy} strong`);
-      this.drawerSummary = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerCopy} p`);
-      this.drawerMeta = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerMeta}`);
-      this.searchWrap = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerSearch}`);
-      this.searchInput = this.root.querySelector<HTMLInputElement>('input[data-slot="search"]');
-      this.searchResults = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerResults}`);
-      this.cards = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyDrawerCards}`);
-      this.restoreNearbyButton = this.root.querySelector<HTMLButtonElement>('button[data-action="restore-nearby"]');
-      this.restoreAllButton = this.root.querySelector<HTMLButtonElement>('button[data-action="restore-all"]');
-      this.pauseButton = this.root.querySelector<HTMLButtonElement>('button[data-action="toggle-pause"]');
-      this.closeButton = this.root.querySelector<HTMLButtonElement>('button[data-action="close-panel"]');
-
-      this.root.addEventListener('click', (event) => {
-        const target = event.target as HTMLElement | null;
-        const button = target?.closest<HTMLButtonElement>('button[data-action]');
-        if (button == null) {
-          return;
-        }
-
-        const action = button.dataset.action;
-        switch (action) {
-          case 'toggle-panel':
-            if (this.currentStatus?.historyPanelOpen) {
-              this.actions.onCloseHistoryPanel();
-            } else {
-              this.actions.onOpenHistoryPanel();
-            }
-            break;
-          case 'close-panel':
-            this.actions.onCloseHistoryPanel();
-            break;
-          case 'restore-nearby':
-            this.actions.onRestoreNearby();
-            break;
-          case 'restore-all':
-            this.actions.onRestoreAll();
-            break;
-          case 'toggle-pause':
-            this.actions.onTogglePause();
-            break;
-          case 'dismiss-hint':
-            if (this.currentStatus != null) {
-              this.dismissedHintChatIds.add(this.currentStatus.chatId);
-              this.render();
-            }
-            break;
-          case 'open-entry':
-            if (button.dataset.entryId != null) {
-              this.actions.onActivateHistoryEntry(button.dataset.entryId);
-            }
-            break;
-          default:
-            break;
-        }
-      });
-
-      this.searchInput?.addEventListener('input', () => {
-        this.query = this.searchInput?.value ?? '';
-        this.renderEntrySections();
-      });
-
-      this.doc.body.append(this.root);
-    }
-
-    this.updatePosition(anchor);
-  }
-
-  private updatePosition(anchor: HTMLElement | null): void {
-    if (this.root == null) {
+    if (target == null) {
       return;
     }
 
-    const headerBottom = this.doc.querySelector('header')?.getBoundingClientRect().bottom ?? 0;
-    const mainTop = anchor?.closest('main')?.getBoundingClientRect().top ?? 72;
-    const anchorRight = anchor?.getBoundingClientRect().right ?? this.doc.documentElement.clientWidth - 16;
-    const gutterRight = Math.max(16, this.winWidth() - anchorRight);
-    const top = Math.max(16, headerBottom + 12, mainTop + 12);
-    const right = gutterRight >= 96 ? Math.max(12, gutterRight - 56) : 16;
+    if (this.root == null) {
+      this.root = this.doc.createElement('section');
+      this.root.className = UI_CLASS_NAMES.inlineHistoryRoot;
+      this.root.setAttribute(INLINE_ROOT_ATTRIBUTE, 'true');
+      this.root.innerHTML = `
+        <div class="${UI_CLASS_NAMES.inlineHistoryToolbar}">
+          <p class="${UI_CLASS_NAMES.inlineHistorySummary}"></p>
+          <div class="${UI_CLASS_NAMES.inlineHistorySearch}">
+            <input type="search" />
+          </div>
+        </div>
+        <div class="${UI_CLASS_NAMES.archiveGroups}"></div>
+      `;
+      this.searchInput = this.root.querySelector<HTMLInputElement>('input[type="search"]');
+      this.groupsRoot = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.archiveGroups}`);
+      this.searchInput?.addEventListener('input', () => {
+        this.actions.onSearchQueryChange(this.searchInput?.value ?? '');
+      });
+    }
 
-    this.root.style.setProperty('--turbo-render-history-top', `${Math.round(top)}px`);
-    this.root.style.setProperty('--turbo-render-history-right', `${Math.round(right)}px`);
-  }
-
-  private winWidth(): number {
-    return this.doc.defaultView?.innerWidth ?? this.doc.documentElement.clientWidth ?? 1280;
+    if (this.root.parentElement !== target.parentElement || this.root.nextElementSibling !== target) {
+      target.parentElement?.insertBefore(this.root, target);
+    }
   }
 
   private render(): void {
-    if (
-      this.root == null ||
-      this.trigger == null ||
-      this.triggerBadge == null ||
-      this.hint == null ||
-      this.drawer == null ||
-      this.drawerTitle == null ||
-      this.drawerSummary == null ||
-      this.drawerMeta == null ||
-      this.searchWrap == null ||
-      this.searchInput == null ||
-      this.searchResults == null ||
-      this.cards == null ||
-      this.restoreNearbyButton == null ||
-      this.restoreAllButton == null ||
-      this.pauseButton == null ||
-      this.closeButton == null ||
-      this.currentStatus == null
-    ) {
+    if (this.root == null || this.searchInput == null || this.groupsRoot == null || this.currentState == null) {
       return;
     }
 
-    const status = this.currentStatus;
-    const visible = shouldShowControl(status);
+    const visible =
+      this.currentState.collapsedBatchCount > 0 ||
+      this.currentState.expandedBatchCount > 0 ||
+      this.currentState.archiveGroups.length > 0 ||
+      this.currentState.searchQuery.length > 0;
     this.root.hidden = !visible;
     if (!visible) {
       return;
     }
 
-    const state =
-      !status.supported
-        ? 'unsupported'
-        : status.paused
-          ? 'paused'
-          : status.active
-            ? 'active'
-            : 'monitoring';
+    const summary = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineHistorySummary}`);
+    if (summary != null) {
+      summary.textContent = this.t('inlineHistorySummary', {
+        collapsed: this.currentState.collapsedBatchCount,
+        expanded: this.currentState.expandedBatchCount,
+      });
+    }
 
-    this.trigger.dataset.state = state;
-    this.trigger.dataset.open = status.historyPanelOpen ? 'true' : 'false';
-    this.trigger.querySelector<HTMLElement>('[data-slot="label"]')!.textContent = this.t('historyTriggerLabel');
-    this.triggerBadge.hidden = status.handledTurnsTotal === 0;
-    this.triggerBadge.textContent = String(status.handledTurnsTotal);
-
-    const showHint =
-      status.handledTurnsTotal > 0 &&
-      !status.historyPanelOpen &&
-      !this.dismissedHintChatIds.has(status.chatId);
-    this.hint.hidden = !showHint;
-    this.hint.querySelector<HTMLButtonElement>('button[data-action="dismiss-hint"]')!.textContent =
-      this.t('actionClose');
-    this.hint.querySelector<HTMLElement>('[data-slot="hint-copy"]')!.textContent =
-      this.t('historyDrawerHint');
-
-    this.drawer.hidden = !status.historyPanelOpen;
-    this.drawerTitle.textContent = this.t('historyDrawerTitle');
-    this.drawerSummary.textContent =
-      status.paused && this.currentEntries.length === 0
-        ? this.t('historyDrawerPaused')
-        : this.currentEntries.length > 0
-          ? this.t('historyDrawerSummary', { count: status.handledTurnsTotal })
-          : this.t('historyDrawerEmpty');
-    this.drawerMeta.textContent = this.t('statusShelfMeta', {
-      state: getStateLabel(this.t, status),
-      handled: status.handledTurnsTotal,
-      nodes: status.liveDescendantCount,
-      spikes: status.spikeCount,
-    });
-
-    this.closeButton.textContent = this.t('actionHideHistory');
-    this.restoreNearbyButton.textContent = this.t('actionRestoreNearby');
-    this.restoreAllButton.textContent = this.t('actionRestoreAll');
-    this.pauseButton.textContent = status.paused ? this.t('actionResumeChat') : this.t('actionPauseChat');
-    this.pauseButton.disabled = !status.supported;
-    this.restoreNearbyButton.disabled = status.parkedGroups === 0;
-    this.restoreAllButton.disabled = status.parkedGroups === 0;
-
-    this.searchWrap.hidden = this.currentEntries.length === 0;
     this.searchInput.placeholder = this.t('historySearchPlaceholder');
-    if (this.searchInput.value !== this.query) {
-      this.searchInput.value = this.query;
-    }
+    this.searchInput.value = this.currentState.searchQuery;
 
-    this.renderEntrySections();
+    this.groupsRoot.replaceChildren();
 
-    if (status.historyPanelOpen) {
-      this.searchInput.focus();
-      this.scrollHighlightedEntryIntoView();
+    for (const group of this.currentState.archiveGroups) {
+      this.groupsRoot.append(this.createBatchCard(group));
     }
   }
 
-  private renderEntrySections(): void {
-    if (this.searchResults == null || this.cards == null || this.currentStatus == null) {
-      return;
+  private createBatchCard(group: ManagedHistoryGroup): HTMLElement {
+    const section = this.doc.createElement('section');
+    section.className = UI_CLASS_NAMES.inlineBatchCard;
+    if (group.matchCount > 0) {
+      section.classList.add(UI_CLASS_NAMES.inlineBatchHighlight);
     }
 
-    const entries = this.currentEntries.filter((entry) => matchesEntry(entry, this.query));
+    const main = this.doc.createElement('div');
+    main.className = UI_CLASS_NAMES.inlineBatchMain;
 
-    this.searchResults.replaceChildren();
-    this.cards.replaceChildren();
+    const header = this.doc.createElement('div');
+    header.className = UI_CLASS_NAMES.inlineBatchHeader;
 
-    if (this.query.trim().length > 0) {
-      this.searchResults.hidden = false;
-      const heading = this.doc.createElement('div');
-      heading.className = UI_CLASS_NAMES.historyEntryMeta;
-      heading.textContent =
-        entries.length > 0
-          ? this.t('historySearchResults', { count: entries.length })
-          : this.t('historySearchNoMatches');
-      this.searchResults.append(heading);
+    const meta = this.doc.createElement('div');
+    meta.className = UI_CLASS_NAMES.inlineBatchMeta;
+    meta.innerHTML = `<strong>${getFilledSummaryText(this.t, group)}</strong>`;
 
-      for (const entry of entries) {
-        const button = this.doc.createElement('button');
-        button.type = 'button';
-        button.dataset.action = 'open-entry';
-        button.dataset.entryId = entry.id;
-        button.textContent = `${getRoleLabel(this.t, entry.role)} • #${entry.turnIndex + 1} • ${
-          entry.text.slice(0, 72) || getSourceLabel(this.t, entry.source)
-        }`;
-        this.searchResults.append(button);
+    const preview = this.doc.createElement('div');
+    preview.className = UI_CLASS_NAMES.inlineBatchPreview;
+    if (group.userPreview.length > 0) {
+      const user = this.doc.createElement('p');
+      user.textContent = this.t('historyBatchPreviewUser', { text: group.userPreview });
+      preview.append(user);
+    }
+    if (group.assistantPreview.length > 0) {
+      const assistant = this.doc.createElement('p');
+      assistant.textContent = this.t('historyBatchPreviewAssistant', { text: group.assistantPreview });
+      preview.append(assistant);
+    }
+    if (group.matchCount > 0) {
+      const matches = this.doc.createElement('p');
+      matches.className = UI_CLASS_NAMES.inlineBatchMatches;
+      matches.textContent = this.t('historyBatchMatches', { count: group.matchCount });
+      preview.append(matches);
+    }
+
+    meta.append(preview);
+    header.append(meta);
+    main.append(header);
+
+    const rail = this.doc.createElement('div');
+    rail.className = UI_CLASS_NAMES.inlineBatchRail;
+    const button = this.doc.createElement('button');
+    button.type = 'button';
+    button.className = UI_CLASS_NAMES.inlineBatchAction;
+    button.dataset.action = 'toggle-archive-group';
+    button.dataset.turboRenderAction = 'toggle-archive-group';
+    button.dataset.groupId = group.id;
+    button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
+    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, button));
+    rail.append(button);
+
+    section.append(main, rail);
+
+    if (!group.expanded) {
+      return section;
+    }
+
+    const entries = this.doc.createElement('div');
+    entries.className = UI_CLASS_NAMES.inlineBatchEntries;
+    const query = this.currentState?.searchQuery.trim().toLowerCase() ?? '';
+    let highlighted = false;
+
+    for (const pair of buildInteractionPairs(
+      group.entries.map((entry) => ({
+        ...entry,
+        text: entry.text,
+      })),
+    )) {
+      const visibleEntries = pair.entries.filter((entry) => !entry.hiddenFromConversation);
+      if (visibleEntries.length === 0) {
+        continue;
       }
-    } else {
-      this.searchResults.hidden = true;
+
+      const article = this.doc.createElement('article');
+      article.className = UI_CLASS_NAMES.inlineBatchEntry;
+      if (!highlighted && query.length > 0 && pair.searchText.toLowerCase().includes(query)) {
+        article.classList.add(UI_CLASS_NAMES.inlineBatchHighlight);
+        highlighted = true;
+      }
+
+      const userEntries = visibleEntries.filter((entry) => entry.role === 'user');
+      const assistantEntries = visibleEntries.filter((entry) => entry.role !== 'user');
+
+      if (userEntries.length > 0) {
+        article.append(this.createEntryLane(userEntries, 'user'));
+      }
+      if (assistantEntries.length > 0) {
+        article.append(this.createEntryLane(assistantEntries, 'assistant'));
+      }
+      entries.append(article);
     }
 
-    const cardsToRender = this.query.trim().length > 0 ? entries : this.currentEntries;
-    if (cardsToRender.length === 0) {
-      const empty = this.doc.createElement('div');
-      empty.className = UI_CLASS_NAMES.historyEntryMeta;
-      empty.textContent =
-        this.query.trim().length > 0 ? this.t('historySearchNoMatches') : this.t('historyDrawerEmpty');
-      this.cards.append(empty);
-      return;
-    }
-
-    const summary = this.doc.createElement('div');
-    summary.className = UI_CLASS_NAMES.historyEntryMeta;
-    summary.textContent = this.t('historySearchSummary', { count: cardsToRender.length });
-    this.cards.append(summary);
-
-    for (const entry of cardsToRender) {
-      this.cards.append(createEntryCard(this.doc, this.t, entry, this.highlightedEntryId));
-    }
+    main.append(entries);
+    return section;
   }
 
-  private scrollHighlightedEntryIntoView(): void {
-    if (this.highlightedEntryId == null || this.cards == null) {
-      return;
+  private createEntryLane(entries: ManagedHistoryEntry[], lane: 'user' | 'assistant'): HTMLElement {
+    const laneEl = this.doc.createElement('section');
+    laneEl.className = UI_CLASS_NAMES.historyEntryCard;
+    laneEl.dataset.lane = lane;
+
+    for (const entry of entries) {
+      const body = renderManagedHistoryEntryBody(
+        this.doc,
+        entry,
+        this.t,
+        lane === 'user' ? this.t('roleUser') : this.t('roleAssistant'),
+        false,
+      );
+      body.classList.add(UI_CLASS_NAMES.historyEntryBody);
+      if (lane === 'assistant' && entry.role !== 'assistant') {
+        body.dataset.supplementalRole = entry.role;
+      }
+      laneEl.append(body);
     }
 
-    const target = this.cards.querySelector<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}="${this.highlightedEntryId}"]`);
-    target?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    return laneEl;
   }
 }

@@ -5,17 +5,22 @@ export interface AdapterSnapshot {
   supported: boolean;
   reason: string | null;
   chatId: string;
+  main: HTMLElement | null;
   turnContainer: HTMLElement | null;
+  historyMountTarget: HTMLElement | null;
   scrollContainer: HTMLElement;
   turnNodes: HTMLElement[];
   descendantCount: number;
   stopButtonVisible: boolean;
 }
 
-const TURN_SELECTORS = [
+const PRIMARY_TURN_SELECTORS = [
   '[data-testid^="conversation-turn-"]',
   '[data-message-author-role]',
   '.conversation-turn',
+];
+
+const FALLBACK_TURN_SELECTORS = [
   'article',
 ];
 
@@ -25,7 +30,7 @@ function getOutermostCandidates(candidates: HTMLElement[]): HTMLElement[] {
   );
 }
 
-function pickLargestParentGroup(nodes: HTMLElement[]): HTMLElement[] {
+function getParentGroups(nodes: HTMLElement[]): HTMLElement[][] {
   const groups = new Map<HTMLElement, HTMLElement[]>();
 
   for (const node of nodes) {
@@ -38,17 +43,23 @@ function pickLargestParentGroup(nodes: HTMLElement[]): HTMLElement[] {
     groups.set(parent, group);
   }
 
-  const sortedGroups = [...groups.values()].sort((left, right) => right.length - left.length);
-  return sortedGroups[0] ?? [];
+  return [...groups.values()].sort((left, right) => right.length - left.length);
 }
 
 function resolveCandidates(main: HTMLElement): HTMLElement[] {
-  const matches = TURN_SELECTORS.flatMap((selector) =>
+  const primaryMatches = PRIMARY_TURN_SELECTORS.flatMap((selector) =>
     Array.from(main.querySelectorAll<HTMLElement>(selector)),
   );
 
-  const unique = [...new Set(matches)];
-  return getOutermostCandidates(unique);
+  const uniquePrimary = getOutermostCandidates([...new Set(primaryMatches)]);
+  if (uniquePrimary.length > 0) {
+    return uniquePrimary;
+  }
+
+  const fallbackMatches = FALLBACK_TURN_SELECTORS.flatMap((selector) =>
+    Array.from(main.querySelectorAll<HTMLElement>(selector)),
+  );
+  return getOutermostCandidates([...new Set(fallbackMatches)]);
 }
 
 function isScrollable(node: HTMLElement): boolean {
@@ -56,16 +67,16 @@ function isScrollable(node: HTMLElement): boolean {
   return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight;
 }
 
-function resolveScrollContainer(turnContainer: HTMLElement): HTMLElement {
+function resolveScrollContainer(anchor: HTMLElement): HTMLElement {
   const explicit =
-    turnContainer.closest<HTMLElement>('[data-testid="conversation-scroller"]') ??
-    turnContainer.closest<HTMLElement>('[data-overflow-scroll="true"]');
+    anchor.closest<HTMLElement>('[data-testid="conversation-scroller"]') ??
+    anchor.closest<HTMLElement>('[data-overflow-scroll="true"]');
 
   if (explicit != null) {
     return explicit;
   }
 
-  let current: HTMLElement | null = turnContainer;
+  let current: HTMLElement | null = anchor;
   while (current != null) {
     if (isScrollable(current)) {
       return current;
@@ -73,7 +84,32 @@ function resolveScrollContainer(turnContainer: HTMLElement): HTMLElement {
     current = current.parentElement;
   }
 
-  return (turnContainer.ownerDocument.scrollingElement as HTMLElement | null) ?? turnContainer;
+  return (anchor.ownerDocument.scrollingElement as HTMLElement | null) ?? anchor;
+}
+
+function resolveHistoryMountTarget(main: HTMLElement, candidates: HTMLElement[]): HTMLElement {
+  const firstParent = candidates[0]?.parentElement;
+  if (firstParent instanceof HTMLElement) {
+    return firstParent;
+  }
+
+  const explicitScroller =
+    main.querySelector<HTMLElement>('[data-testid="conversation-scroller"]') ??
+    main.querySelector<HTMLElement>('[data-overflow-scroll="true"]');
+
+  if (explicitScroller?.firstElementChild instanceof HTMLElement) {
+    return explicitScroller.firstElementChild;
+  }
+
+  return explicitScroller ?? main;
+}
+
+function countDescendants(root: ParentNode | null): number {
+  if (root == null || !('querySelectorAll' in root)) {
+    return 0;
+  }
+
+  return root.querySelectorAll('*').length;
 }
 
 export function isTurnNode(node: Element): node is HTMLElement {
@@ -85,7 +121,7 @@ export function isTurnNode(node: Element): node is HTMLElement {
     return true;
   }
 
-  return TURN_SELECTORS.some((selector) => node.matches(selector));
+  return [...PRIMARY_TURN_SELECTORS, ...FALLBACK_TURN_SELECTORS].some((selector) => node.matches(selector));
 }
 
 export function detectTurnRole(node: HTMLElement): TurnRole {
@@ -136,7 +172,9 @@ export function scanChatPage(doc: Document = document): AdapterSnapshot {
       supported: false,
       reason: 'missing-main',
       chatId,
+      main: null,
       turnContainer: null,
+      historyMountTarget: null,
       scrollContainer: (doc.scrollingElement as HTMLElement | null) ?? doc.body,
       turnNodes: [],
       descendantCount: 0,
@@ -145,31 +183,41 @@ export function scanChatPage(doc: Document = document): AdapterSnapshot {
   }
 
   const candidates = resolveCandidates(main);
-  const turnNodes = pickLargestParentGroup(candidates);
-  const turnContainer = turnNodes[0]?.parentElement ?? null;
+  const parentGroups = getParentGroups(candidates);
+  const turnNodes = parentGroups[0] ?? [];
+  const turnParents = [...new Set(candidates.map((candidate) => candidate.parentElement).filter(
+    (parent): parent is HTMLElement => parent instanceof HTMLElement,
+  ))];
+  const turnContainer = turnParents.length === 1 ? turnParents[0] : null;
+  const historyMountTarget = resolveHistoryMountTarget(main, candidates);
+  const scrollContainer = resolveScrollContainer(turnContainer ?? historyMountTarget);
 
-  if (turnContainer == null || turnNodes.length === 0) {
+  if (candidates.length === 0) {
     return {
       supported: false,
       reason: 'no-turns',
       chatId,
+      main,
       turnContainer: null,
-      scrollContainer: (doc.scrollingElement as HTMLElement | null) ?? doc.body,
+      historyMountTarget,
+      scrollContainer,
       turnNodes: [],
-      descendantCount: main.querySelectorAll('*').length,
+      descendantCount: countDescendants(main),
       stopButtonVisible: doc.querySelector('button[data-testid="stop-button"]') != null,
     };
   }
 
-  if (turnNodes.some((node) => node.parentElement !== turnContainer)) {
+  if (turnContainer == null) {
     return {
       supported: false,
       reason: 'split-parents',
       chatId,
-      turnContainer,
-      scrollContainer: resolveScrollContainer(turnContainer),
-      turnNodes,
-      descendantCount: turnContainer.querySelectorAll('*').length,
+      main,
+      turnContainer: null,
+      historyMountTarget,
+      scrollContainer,
+      turnNodes: candidates,
+      descendantCount: countDescendants(historyMountTarget.parentElement ?? historyMountTarget),
       stopButtonVisible: doc.querySelector('button[data-testid="stop-button"]') != null,
     };
   }
@@ -178,10 +226,12 @@ export function scanChatPage(doc: Document = document): AdapterSnapshot {
     supported: true,
     reason: null,
     chatId,
+    main,
     turnContainer,
-    scrollContainer: resolveScrollContainer(turnContainer),
+    historyMountTarget,
+    scrollContainer,
     turnNodes,
-    descendantCount: turnContainer.querySelectorAll('*').length,
+    descendantCount: countDescendants(turnContainer),
     stopButtonVisible: doc.querySelector('button[data-testid="stop-button"]') != null,
   };
 }

@@ -1,5 +1,4 @@
-import { PLACEHOLDER_GROUP_ATTRIBUTE, UI_CLASS_NAMES } from '../shared/constants';
-import { createTranslator, type Translator } from '../shared/i18n';
+import { UI_CLASS_NAMES } from '../shared/constants';
 import type { ParkingMode, ParkedGroup, ParkedGroupSummary } from '../shared/types';
 
 export interface ParkRequest {
@@ -10,18 +9,16 @@ export interface ParkRequest {
   endIndex: number;
   turnIds: string[];
   nodes: HTMLElement[];
+  pairStartIndex: number;
+  pairEndIndex: number;
+  pairCount: number;
 }
 
 export class ParkingLot {
   private groups = new Map<string, ParkedGroup>();
-  private t: Translator = createTranslator('en');
+  private parkedTurnIds = new Set<string>();
 
-  setTranslator(translator: Translator): void {
-    this.t = translator;
-    for (const group of this.groups.values()) {
-      this.updatePlaceholderCopy(group);
-    }
-  }
+  setTranslator(_: unknown = undefined): void {}
 
   park(request: ParkRequest): ParkedGroup | null {
     if (this.groups.has(request.id) || request.nodes.length === 0) {
@@ -29,12 +26,14 @@ export class ParkingLot {
     }
 
     const firstNode = request.nodes[0]!;
-    const placeholder = this.createPlaceholder(request);
-    request.parent.insertBefore(placeholder, firstNode);
+    const anchor = request.parent.ownerDocument.createComment(`turbo-render:${request.id}`);
+    request.parent.insertBefore(anchor, firstNode);
 
     if (request.mode === 'hard') {
       for (const node of request.nodes) {
-        request.parent.removeChild(node);
+        if (node.parentElement === request.parent) {
+          request.parent.removeChild(node);
+        }
       }
     } else {
       for (const node of request.nodes) {
@@ -51,10 +50,16 @@ export class ParkingLot {
       turnIds: [...request.turnIds],
       nodes: [...request.nodes],
       parent: request.parent,
-      placeholder,
+      anchor,
+      pairStartIndex: request.pairStartIndex,
+      pairEndIndex: request.pairEndIndex,
+      pairCount: request.pairCount,
     };
 
     this.groups.set(group.id, group);
+    for (const turnId of group.turnIds) {
+      this.parkedTurnIds.add(turnId);
+    }
     return group;
   }
 
@@ -64,8 +69,8 @@ export class ParkingLot {
       return false;
     }
 
-    const parent = group.placeholder.parentElement ?? group.parent;
-    const reference = group.placeholder.isConnected ? group.placeholder : fallbackBefore ?? null;
+    const parent = (group.anchor.parentNode as HTMLElement | null) ?? group.parent;
+    const reference = group.anchor.isConnected ? group.anchor : fallbackBefore ?? null;
 
     if (group.mode === 'hard') {
       const fragment = parent.ownerDocument.createDocumentFragment();
@@ -80,11 +85,14 @@ export class ParkingLot {
       }
     }
 
-    if (group.placeholder.isConnected) {
-      group.placeholder.remove();
+    if (group.anchor.isConnected) {
+      group.anchor.remove();
     }
 
     this.groups.delete(id);
+    for (const turnId of group.turnIds) {
+      this.parkedTurnIds.delete(turnId);
+    }
     return true;
   }
 
@@ -109,6 +117,14 @@ export class ParkingLot {
     return this.groups.has(id);
   }
 
+  isTurnParked(turnId: string): boolean {
+    return this.parkedTurnIds.has(turnId);
+  }
+
+  getParkedTurnIds(): Set<string> {
+    return new Set(this.parkedTurnIds);
+  }
+
   getSummaries(): ParkedGroupSummary[] {
     return [...this.groups.values()]
       .sort((left, right) => left.startIndex - right.startIndex)
@@ -118,6 +134,9 @@ export class ParkingLot {
         startIndex: group.startIndex,
         endIndex: group.endIndex,
         count: group.turnIds.length,
+        pairStartIndex: group.pairStartIndex,
+        pairEndIndex: group.pairEndIndex,
+        pairCount: group.pairCount,
       }));
   }
 
@@ -125,59 +144,7 @@ export class ParkingLot {
     return [...this.groups.values()].reduce((sum, group) => sum + group.turnIds.length, 0);
   }
 
-  findGroupIdByPlaceholder(node: Element | null): string | null {
-    const placeholder = node?.closest<HTMLElement>(`[${PLACEHOLDER_GROUP_ATTRIBUTE}]`) ?? null;
-    if (placeholder == null) {
-      return null;
-    }
-    return placeholder.getAttribute(PLACEHOLDER_GROUP_ATTRIBUTE);
-  }
-
   getDisconnectedHardGroups(): ParkedGroup[] {
-    return [...this.groups.values()].filter(
-      (group) => group.mode === 'hard' && !group.placeholder.isConnected,
-    );
-  }
-
-  private createPlaceholder(request: ParkRequest): HTMLElement {
-    const placeholder = request.parent.ownerDocument.createElement('div');
-    placeholder.className = UI_CLASS_NAMES.placeholder;
-    placeholder.setAttribute(PLACEHOLDER_GROUP_ATTRIBUTE, request.id);
-    placeholder.dataset.turboRenderStart = String(request.startIndex);
-    placeholder.dataset.turboRenderEnd = String(request.endIndex);
-    placeholder.innerHTML = `
-      <div class="${UI_CLASS_NAMES.placeholderSummary}"></div>
-      <div class="${UI_CLASS_NAMES.placeholderActions}">
-        <button type="button" data-turbo-render-action="restore-group" data-group-id="${request.id}"></button>
-      </div>
-    `;
-    this.updatePlaceholderCopy({
-      id: request.id,
-      mode: request.mode,
-      startIndex: request.startIndex,
-      endIndex: request.endIndex,
-      turnIds: [...request.turnIds],
-      nodes: [...request.nodes],
-      parent: request.parent,
-      placeholder,
-    });
-    return placeholder;
-  }
-
-  private updatePlaceholderCopy(group: Pick<ParkedGroup, 'placeholder' | 'turnIds' | 'startIndex' | 'endIndex'>): void {
-    const summary = group.placeholder.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.placeholderSummary}`);
-    const button = group.placeholder.querySelector<HTMLButtonElement>('[data-turbo-render-action="restore-group"]');
-
-    if (summary != null) {
-      summary.textContent = this.t('placeholderFoldedTurns', {
-        count: group.turnIds.length,
-        start: group.startIndex + 1,
-        end: group.endIndex + 1,
-      });
-    }
-
-    if (button != null) {
-      button.textContent = this.t('actionRestore');
-    }
+    return [...this.groups.values()].filter((group) => group.mode === 'hard' && !group.anchor.isConnected);
   }
 }

@@ -100,6 +100,48 @@ function createConversationPayload() {
   };
 }
 
+function createShortConversationPayload() {
+  return {
+    current_node: 'assistant2',
+    mapping: {
+      root: { id: 'root', parent: null, children: ['user1'], message: null },
+      user1: {
+        id: 'user1',
+        parent: 'root',
+        children: ['assistant1'],
+        message: {
+          id: 'user1',
+          author: { role: 'user', name: null, metadata: {} },
+          create_time: 1,
+          content: { content_type: 'text', parts: ['user-1'] },
+        },
+      },
+      assistant1: {
+        id: 'assistant1',
+        parent: 'user1',
+        children: ['assistant2'],
+        message: {
+          id: 'assistant1',
+          author: { role: 'assistant', name: null, metadata: {} },
+          create_time: 2,
+          content: { content_type: 'text', parts: ['assistant-1'] },
+        },
+      },
+      assistant2: {
+        id: 'assistant2',
+        parent: 'assistant1',
+        children: [],
+        message: {
+          id: 'assistant2',
+          author: { role: 'assistant', name: null, metadata: {} },
+          create_time: 3,
+          content: { content_type: 'text', parts: ['assistant-2'] },
+        },
+      },
+    },
+  };
+}
+
 describe('conversation bootstrap', () => {
   const originalFetch = window.fetch;
 
@@ -133,7 +175,7 @@ describe('conversation bootstrap', () => {
           enabled: true,
           mode: 'performance',
           initialTrimEnabled: true,
-          initialHotTurns: 3,
+          initialHotPairs: 2,
           minFinalizedBlocks: 4,
           coldRestoreMode: 'placeholder',
         },
@@ -145,15 +187,161 @@ describe('conversation bootstrap', () => {
     const payload = (await response.json()) as ReturnType<typeof createConversationPayload>;
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    expect(Object.keys(payload.mapping)).toEqual(['root', 'assistant3', 'user4', 'assistant5']);
-    expect(payload.mapping['assistant3']?.parent).toBe('root');
+    expect(Object.keys(payload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+    expect(payload.mapping['user3']?.parent).toBe('root');
     expect(messages.at(-1)?.payload).toMatchObject({
       applied: true,
       chatId: 'chat:abc',
-      coldVisibleTurns: 5,
-      hotVisibleTurns: 3,
+      coldVisibleTurns: 4,
+      hotVisibleTurns: 4,
+      hotStartIndex: 4,
+      hotTurnCount: 4,
+      archivedTurnCount: 4,
+      hotPairCount: 2,
+      archivedPairCount: 2,
+    });
+    expect(messages.at(-1)?.payload.turns.map((turn) => turn.id)).toEqual([
+      'user1',
+      'assistant1',
+      'user2',
+      'assistant2',
+      'user3',
+      'assistant3',
+      'user4',
+      'assistant5',
+    ]);
+
+    cleanup();
+  });
+
+  it('keeps the last applied session when a later replay is non-applied', async () => {
+    const messages: TurboRenderSessionStateBridgeMessage[] = [];
+    window.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(createConversationPayload()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(createShortConversationPayload()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ) as typeof window.fetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+    window.addEventListener('message', (event: MessageEvent) => {
+      if (event.data?.type === 'TURBO_RENDER_SESSION_STATE') {
+        messages.push(event.data as TurboRenderSessionStateBridgeMessage);
+      }
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_CONFIG',
+          payload: {
+            enabled: true,
+            mode: 'performance',
+            initialTrimEnabled: true,
+            initialHotPairs: 2,
+            minFinalizedBlocks: 4,
+            coldRestoreMode: 'placeholder',
+          },
+        },
+      }),
+    );
+
+    await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_REQUEST_STATE',
+          payload: { chatId: 'chat:abc' },
+        },
+      }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    const appliedStates = messages.map((message) => message.payload.applied);
+    expect(appliedStates).toEqual([true, true]);
+    expect(messages.at(-1)?.payload).toMatchObject({
+      chatId: 'chat:abc',
+      applied: true,
+      coldVisibleTurns: 4,
     });
 
     cleanup();
+  });
+
+  it('captures share-page loader data and emits a share runtime session', async () => {
+    const messages: TurboRenderSessionStateBridgeMessage[] = [];
+    history.replaceState({}, '', '/share/share-123');
+    (window as typeof window & {
+      __reactRouterContext?: {
+        state?: {
+          loaderData?: Record<string, unknown>;
+        };
+      };
+    }).__reactRouterContext = {
+      state: {
+        loaderData: {
+          'routes/share.$shareId.($action)': {
+            sharedConversationId: 'share-123',
+            serverResponse: {
+              type: 'data',
+              data: createConversationPayload(),
+            },
+          },
+        },
+      },
+    };
+
+    const cleanup = installConversationBootstrap(window, document);
+    window.addEventListener('message', (event: MessageEvent) => {
+      if (event.data?.type === 'TURBO_RENDER_SESSION_STATE') {
+        messages.push(event.data as TurboRenderSessionStateBridgeMessage);
+      }
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_CONFIG',
+          payload: {
+            enabled: true,
+            mode: 'performance',
+            initialTrimEnabled: true,
+            initialHotPairs: 2,
+            minFinalizedBlocks: 4,
+            coldRestoreMode: 'placeholder',
+          },
+        },
+      }),
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+
+    expect(messages.at(-1)?.payload).toMatchObject({
+      chatId: 'share:share-123',
+      routeKind: 'share',
+      routeId: 'share-123',
+      conversationId: null,
+      applied: true,
+      coldVisibleTurns: 4,
+    });
+
+    cleanup();
+    history.replaceState({}, '', '/');
+    delete (window as typeof window & { __reactRouterContext?: unknown }).__reactRouterContext;
   });
 });
