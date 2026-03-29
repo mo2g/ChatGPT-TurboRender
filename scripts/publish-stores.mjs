@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import crypto from 'node:crypto';
-import { readFile, stat, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
@@ -483,8 +483,8 @@ async function publishFirefox({ sourceDir, metadataFile, artifactsDir, version }
   await assertFileExists(sourceDir, 'Firefox build output');
   await assertFileExists(metadataFile, 'Firefox AMO metadata');
 
-  await fs.rm(artifactsDir, { force: true, recursive: true });
-  await fs.mkdir(artifactsDir, { recursive: true });
+  await rm(artifactsDir, { force: true, recursive: true });
+  await mkdir(artifactsDir, { recursive: true });
 
   runCommand(
     pnpmCommand,
