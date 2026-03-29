@@ -1,0 +1,214 @@
+name: Publish browser store releases
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v
+        required: true
+        type: string
+      target:
+        description: Store target
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - chrome
+          - edge
+          - firefox
+
+concurrency:
+  group: browser-store-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24
+  PNPM_VERSION: 9.14.2
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run unit tests
+        run: pnpm test:unit
+
+      - id: version
+        name: Resolve release version
+        shell: bash
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${RELEASE_VERSION_INPUT}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          VERSION="${VERSION#v}"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "Release version is required." >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  publish-chrome:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'push'
+        || (
+          github.event_name == 'workflow_dispatch'
+          && (inputs.target == 'all' || inputs.target == 'chrome')
+        )
+      }}
+    env:
+      CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON }}
+      CHROME_WEB_STORE_PUBLISHER_ID: ${{ secrets.CHROME_WEB_STORE_PUBLISHER_ID }}
+      CHROME_WEB_STORE_ITEM_ID: ${{ secrets.CHROME_WEB_STORE_ITEM_ID }}
+      RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply release version
+        shell: bash
+        run: npm pkg set version="${RELEASE_VERSION}"
+
+      - name: Build Chrome store package
+        run: pnpm exec wxt zip -b chrome
+
+      - name: Publish Chrome Web Store release
+        run: pnpm release:publish-stores -- --target chrome --version "${RELEASE_VERSION}"
+
+  publish-edge:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'push'
+        || (
+          github.event_name == 'workflow_dispatch'
+          && (inputs.target == 'all' || inputs.target == 'edge')
+        )
+      }}
+    env:
+      EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
+      EDGE_ADDONS_CLIENT_ID: ${{ secrets.EDGE_ADDONS_CLIENT_ID }}
+      EDGE_ADDONS_PRODUCT_ID: ${{ secrets.EDGE_ADDONS_PRODUCT_ID }}
+      RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply release version
+        shell: bash
+        run: npm pkg set version="${RELEASE_VERSION}"
+
+      - name: Build Edge store package
+        run: pnpm exec wxt zip -b edge
+
+      - name: Publish Microsoft Edge Add-ons release
+        run: pnpm release:publish-stores -- --target edge --version "${RELEASE_VERSION}"
+
+  publish-firefox:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'push'
+        || (
+          github.event_name == 'workflow_dispatch'
+          && (inputs.target == 'all' || inputs.target == 'firefox')
+        )
+      }}
+    env:
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+      RELEASE_VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply release version
+        shell: bash
+        run: npm pkg set version="${RELEASE_VERSION}"
+
+      - name: Build Firefox store package
+        run: pnpm build:firefox
+
+      - name: Publish Firefox AMO release
+        run: pnpm release:publish-stores -- --target firefox --version "${RELEASE_VERSION}"

@@ -43,6 +43,14 @@ export function buildArtifactPath(releaseDir, version, browser) {
   return path.join(releaseDir, buildArtifactFileName(version, browser));
 }
 
+export function buildStoreZipFileName(version, browser) {
+  return `chatgpt-turborender-${version}-${assertSupportedBrowser(browser)}.zip`;
+}
+
+export function buildStoreZipPath(outputDir, version, browser) {
+  return path.join(outputDir, buildStoreZipFileName(version, browser));
+}
+
 export function buildChromiumPackArgs({ sourceDir, keyFile, outputFile }) {
   return ['exec', 'crx', 'pack', sourceDir, '-p', keyFile, '-o', outputFile];
 }

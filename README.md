@@ -78,6 +78,8 @@ GitHub Actions builds Chrome and Edge `.crx` files plus a signed Firefox `.xpi` 
 
 See [docs/browser-packages.md](./docs/browser-packages.md) for the tag trigger, release asset names, required signing secrets, and manual install steps.
 
+Store publishing automation is documented separately in [docs/store-publishing.md](./docs/store-publishing.md).
+
 ## Controlled Chrome Debugging
 
 To debug the unpacked extension with `chrome-devtools` MCP, use the repo-managed browser instead of loading the extension manually inside the MCP browser:

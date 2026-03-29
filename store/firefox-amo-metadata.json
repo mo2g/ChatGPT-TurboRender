@@ -1,0 +1,11 @@
+{
+  "summary": {
+    "en-US": "Keeps long ChatGPT conversations responsive by parking cold DOM nodes."
+  },
+  "categories": [
+    "other"
+  ],
+  "version": {
+    "license": "MIT"
+  }
+}

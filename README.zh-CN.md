@@ -78,6 +78,8 @@ GitHub Actions 会在 [.github/workflows/browser-packages.yml](./.github/workflo
 
 详细的触发方式、Release asset 名称、签名密钥要求和手动安装步骤见 [docs/browser-packages.md](./docs/browser-packages.md)。
 
+浏览器商店自动提交流程单独记录在 [docs/store-publishing.md](./docs/store-publishing.md)。
+
 ## 受控 Chrome 调试
 
 如果要让 `chrome-devtools` MCP 调试真正连到“已加载 unpacked 扩展”的浏览器，不要再在 MCP 自启浏览器里手动点 `chrome://extensions`。统一使用仓库内的受控 Chrome 启动命令：

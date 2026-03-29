@@ -6,6 +6,8 @@ import {
   buildArtifactPath,
   buildChromiumPackArgs,
   buildFirefoxSignArgs,
+  buildStoreZipFileName,
+  buildStoreZipPath,
   getSourceDir,
   isSupportedBrowser,
 } from '../../scripts/package-browser-release-lib.mjs';
@@ -24,6 +26,10 @@ describe('browser release packaging helpers', () => {
     expect(buildArtifactFileName('1.2.3', 'firefox')).toBe('chatgpt-turborender-1.2.3-firefox.xpi');
     expect(buildArtifactPath('/tmp/release', '1.2.3', 'firefox')).toBe(
       '/tmp/release/chatgpt-turborender-1.2.3-firefox.xpi',
+    );
+    expect(buildStoreZipFileName('1.2.3', 'chrome')).toBe('chatgpt-turborender-1.2.3-chrome.zip');
+    expect(buildStoreZipPath('/tmp/output', '1.2.3', 'edge')).toBe(
+      '/tmp/output/chatgpt-turborender-1.2.3-edge.zip',
     );
   });
 
