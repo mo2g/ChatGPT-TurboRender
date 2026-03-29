@@ -7,8 +7,8 @@ This repository uses [.github/workflows/browser-packages.yml](../.github/workflo
 - Push a tag like `v0.1.1` to trigger the workflow.
 - The pipeline installs dependencies, runs unit tests once, then builds one package per browser.
 - Chrome and Edge are packaged as `.zip` archives from the built extension output.
-- Firefox is signed with `web-ext sign --channel=unlisted` and published as a `.xpi` file.
-- If AMO already has the same Firefox version, the packaging step reuses the existing signed `.xpi` instead of failing on a duplicate submission.
+- Firefox downloads the signed `.xpi` from AMO after the store workflow submits the version, then publishes it as a release asset.
+- If AMO has not exposed the signed file URL yet, the packaging step keeps polling until it can download the file or times out.
 - The workflow publishes the release files to a GitHub Release that matches the tag.
 
 ## Browser outputs
@@ -39,10 +39,11 @@ pnpm package:firefox
 
 The release workflow expects these GitHub secrets:
 
-- `AMO_JWT_ISSUER`: the JWT issuer from addons.mozilla.org for Firefox signing.
-- `AMO_JWT_SECRET`: the JWT secret from addons.mozilla.org for Firefox signing.
+- `AMO_JWT_ISSUER`: the JWT issuer from addons.mozilla.org for Firefox AMO access.
+- `AMO_JWT_SECRET`: the JWT secret from addons.mozilla.org for Firefox AMO access.
 
 Firefox packaging also requires the manifest to include `browser_specific_settings.gecko.id`, which is configured in [wxt.config.ts](../wxt.config.ts).
+The Firefox store workflow is the only step that submits the version to AMO; this workflow only consumes the AMO-signed file.
 
 The custom GitHub Release intro copy lives in [.github/release-body.md](../.github/release-body.md).
 

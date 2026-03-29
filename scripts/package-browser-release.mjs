@@ -10,7 +10,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   assertSupportedBrowser,
   buildArtifactPath,
-  buildFirefoxSignArgs,
   getSourceDir,
 } from './package-browser-release-lib.mjs';
 
@@ -19,7 +18,6 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(repoRoot, 'package.json');
 const releaseDir = path.join(repoRoot, 'release');
-const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 const AMO_API_BASE_URL = 'https://addons.mozilla.org/api/v5/';
 const DEFAULT_EXISTING_FIREFOX_ARTIFACT_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_EXISTING_FIREFOX_ARTIFACT_POLL_MS = 2_000;
@@ -34,8 +32,8 @@ Usage:
   pnpm package:firefox
 
 Environment:
-  AMO_JWT_ISSUER                 AMO JWT issuer for Firefox signing.
-  AMO_JWT_SECRET                 AMO JWT secret for Firefox signing.
+  AMO_JWT_ISSUER                 AMO JWT issuer for Firefox AMO access.
+  AMO_JWT_SECRET                 AMO JWT secret for Firefox AMO access.
 `);
 }
 
@@ -67,16 +65,6 @@ async function removeIfExists(targetPath) {
   await fs.rm(targetPath, { force: true, recursive: true });
 }
 
-function writeCommandOutput(result) {
-  if (result.stdout) {
-    process.stdout.write(result.stdout);
-  }
-
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
-}
-
 function runCommand(command, args, description, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repoRoot,
@@ -93,36 +81,6 @@ function runCommand(command, args, description, options = {}) {
   }
 }
 
-function runCommandCapture(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ?? repoRoot,
-    env: process.env,
-    encoding: 'utf8',
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  return result;
-}
-
-async function findNewestFile(directory, extension) {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const candidates = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(extension))
-      .map(async (entry) => {
-        const filePath = path.join(directory, entry.name);
-        const stat = await fs.stat(filePath);
-        return { filePath, mtimeMs: stat.mtimeMs };
-      }),
-  );
-
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  return candidates[0]?.filePath ?? null;
-}
-
 function base64UrlEncode(text) {
   return Buffer.from(text, 'utf8').toString('base64url');
 }
@@ -137,14 +95,6 @@ function buildFirefoxAmoAuthHeader(apiKey, apiSecret) {
     .digest('base64url');
 
   return `JWT ${header}.${payload}.${signature}`;
-}
-
-export function isFirefoxVersionAlreadyExistsError(output) {
-  if (typeof output !== 'string' || output.trim().length === 0) {
-    return false;
-  }
-
-  return /already exists/i.test(output) && /(web-ext|WebExtError|Submission failed)/i.test(output);
 }
 
 export function readFirefoxAddonId(manifest, manifestPath = 'manifest.json') {
@@ -251,7 +201,7 @@ async function waitForFirefoxVersionFileUrl({
 
     const file = getFirefoxVersionFile(detail);
     lastFileStatus = file?.status ?? '<missing>';
-    if (file?.status === 'public' && typeof file.url === 'string' && file.url.length > 0) {
+    if (typeof file?.url === 'string' && file.url.length > 0) {
       return file.url;
     }
 
@@ -343,7 +293,7 @@ async function packageFirefox(version) {
 
   if (!apiKey || !apiSecret) {
     throw new Error(
-      'AMO_JWT_ISSUER and AMO_JWT_SECRET are required for Firefox signing. web-ext sign must produce a signed XPI before the file can be installed from Firefox.',
+      'AMO_JWT_ISSUER and AMO_JWT_SECRET are required for Firefox packaging so the signed AMO XPI can be downloaded.',
     );
   }
 
@@ -352,45 +302,13 @@ async function packageFirefox(version) {
   await removeIfExists(artifactsDir);
   await ensureDirectory(artifactsDir);
 
-  const signResult = runCommandCapture(
-    pnpmCommand,
-    buildFirefoxSignArgs({
-      sourceDir,
-      artifactsDir,
-      apiKey,
-      apiSecret,
-    }),
-    {
-      cwd: repoRoot,
-    },
-  );
-
-  const combinedOutput = `${signResult.stdout ?? ''}${signResult.stderr ?? ''}`;
-  if (signResult.status !== 0) {
-    if (isFirefoxVersionAlreadyExistsError(combinedOutput)) {
-      console.log(`Firefox AMO already has version ${version}; reusing the existing signed XPI.`);
-      const signedXpi = await downloadExistingFirefoxSignedArtifact({
-        sourceDir,
-        version,
-        artifactsDir,
-        apiKey,
-        apiSecret,
-      });
-      await fs.rename(signedXpi, outputFile);
-      await removeIfExists(artifactsDir);
-      return outputFile;
-    }
-
-    writeCommandOutput(signResult);
-    throw new Error(`Firefox signing failed with exit code ${signResult.status ?? 'unknown'}`);
-  }
-
-  writeCommandOutput(signResult);
-
-  const signedXpi = await findNewestFile(artifactsDir, '.xpi');
-  if (!signedXpi) {
-    throw new Error(`Firefox signing finished, but no .xpi file was created in ${artifactsDir}`);
-  }
+  const signedXpi = await downloadExistingFirefoxSignedArtifact({
+    sourceDir,
+    version,
+    artifactsDir,
+    apiKey,
+    apiSecret,
+  });
 
   await fs.rename(signedXpi, outputFile);
   await removeIfExists(artifactsDir);

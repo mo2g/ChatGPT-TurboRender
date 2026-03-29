@@ -696,7 +696,10 @@ async function publishFirefox({ sourceDir, metadataFile, artifactsDir, version }
 
   const signedXpi = await findNewestFile(artifactsDir, '.xpi');
   if (!signedXpi) {
-    throw new Error(`Firefox signing finished, but no .xpi file was created in ${artifactsDir}`);
+    console.log(
+      `Firefox publish accepted for version ${version}; approval wait was skipped so no signed XPI was downloaded locally.`,
+    );
+    return;
   }
 
   console.log(`Firefox publish accepted for version ${version}: ${signedXpi}`);

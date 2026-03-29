@@ -172,7 +172,7 @@ describe('publish store helpers', () => {
 });
 
 describe('publish store firefox CLI', () => {
-  it('creates a signed firefox artifact without requiring a real pnpm binary', () => {
+  it('accepts a firefox publish even when approval-timeout skips the local xpi download', () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), 'turborender-pnpm-'));
     const binDir = path.join(tempDir, 'bin');
     const sourceDir = path.join(tempDir, 'firefox-mv2');
@@ -186,19 +186,7 @@ describe('publish store firefox CLI', () => {
     writeFileSync(
       fakePnpm,
       `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
-
-const args = process.argv.slice(2);
-const artifactsArg = args.find((arg) => arg.startsWith('--artifacts-dir='));
-if (!artifactsArg) {
-  console.error('missing --artifacts-dir argument');
-  process.exit(1);
-}
-
-const artifactsDir = artifactsArg.slice('--artifacts-dir='.length);
-fs.mkdirSync(artifactsDir, { recursive: true });
-fs.writeFileSync(path.join(artifactsDir, 'signed.xpi'), 'dummy xpi');
+process.exit(0);
 `,
     );
     chmodSync(fakePnpm, 0o755);
@@ -233,6 +221,7 @@ fs.writeFileSync(path.join(artifactsDir, 'signed.xpi'), 'dummy xpi');
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Firefox publish accepted for version 1.2.3');
+      expect(result.stdout).toContain('approval wait was skipped so no signed XPI was downloaded locally');
       expect(result.stderr).not.toContain('ReferenceError: fs is not defined');
     } finally {
       rmSync(tempDir, { force: true, recursive: true });

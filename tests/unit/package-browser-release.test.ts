@@ -7,20 +7,10 @@ import { describe, expect, it } from 'vitest';
 // @ts-expect-error - The helper lives in an executable .mjs script.
 import {
   downloadExistingFirefoxSignedArtifact,
-  isFirefoxVersionAlreadyExistsError,
 } from '../../scripts/package-browser-release.mjs';
 
 describe('browser release packaging', () => {
-  it('recognizes Firefox version conflict errors from web-ext', () => {
-    expect(
-      isFirefoxVersionAlreadyExistsError(
-        'WebExtError: Submission failed (2): Conflict\n{"version":["Version 0.1.4 already exists."]}',
-      ),
-    ).toBe(true);
-    expect(isFirefoxVersionAlreadyExistsError('WebExtError: some other failure')).toBe(false);
-  });
-
-  it('downloads an existing signed Firefox artifact from AMO', async () => {
+  it('downloads an AMO-signed Firefox artifact even while the version is unreviewed', async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), 'turborender-firefox-'));
     const sourceDir = path.join(tempDir, 'firefox-mv2');
     const artifactsDir = path.join(tempDir, 'artifacts');
@@ -54,7 +44,7 @@ describe('browser release packaging', () => {
           text: async () =>
             JSON.stringify({
               file: {
-                status: 'public',
+                status: 'unreviewed',
                 url: signedFileUrl,
               },
             }),
@@ -100,6 +90,61 @@ describe('browser release packaging', () => {
           },
         },
       ]);
+    } finally {
+      rmSync(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  it('times out while AMO keeps the file unreviewed without exposing a download URL', async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'turborender-firefox-'));
+    const sourceDir = path.join(tempDir, 'firefox-mv2');
+    const artifactsDir = path.join(tempDir, 'artifacts');
+    const manifestPath = path.join(sourceDir, 'manifest.json');
+    const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
+
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        browser_specific_settings: {
+          gecko: {
+            id: 'chatgpt-turborender@mo2g.dev',
+          },
+        },
+      }),
+    );
+
+    const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push({ url: String(url), headers: init?.headers });
+
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () =>
+          JSON.stringify({
+            file: {
+              status: 'unreviewed',
+            },
+          }),
+      } as any;
+    };
+
+    try {
+      await expect(
+        downloadExistingFirefoxSignedArtifact({
+          sourceDir,
+          version: '0.1.4',
+          artifactsDir,
+          apiKey: 'issuer',
+          apiSecret: 'secret',
+          timeoutMs: 20,
+          pollIntervalMs: 1,
+          fetchImpl,
+        }),
+      ).rejects.toThrow(/did not become downloadable before timeout/);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every(({ url }) => url.includes('/versions/v0.1.4/'))).toBe(true);
     } finally {
       rmSync(tempDir, { force: true, recursive: true });
     }

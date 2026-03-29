@@ -85,6 +85,8 @@ One-time setup:
 
 - Add `browser_specific_settings.gecko.id` to the Firefox manifest.
 - Keep `store/firefox-amo-metadata.json` up to date for the first listed submission.
+- The store workflow is the only automated Firefox AMO submitter; the GitHub Release packaging workflow consumes the signed file that AMO exposes afterward.
+- When the workflow runs with `approval-timeout=0`, it may finish without downloading a local `.xpi`. That is expected and should not fail the release.
 
 ## Release artifacts
 
