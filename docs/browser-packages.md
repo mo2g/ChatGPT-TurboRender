@@ -1,12 +1,12 @@
 # Browser Release Packages
 
-This repository uses [.github/workflows/browser-packages.yml](../.github/workflows/browser-packages.yml) to build browser-native installable packages and publish them to GitHub Releases.
+This repository uses [.github/workflows/browser-packages.yml](../.github/workflows/browser-packages.yml) to build release archives for GitHub Releases.
 
 ## How it runs
 
 - Push a tag like `v0.1.1` to trigger the workflow.
 - The pipeline installs dependencies, runs unit tests once, then builds one package per browser.
-- Chrome and Edge are packed as `.crx` files using a stable Chromium signing key.
+- Chrome and Edge are packaged as `.zip` archives from the built extension output.
 - Firefox is signed with `web-ext sign --channel=unlisted` and published as a `.xpi` file.
 - The workflow publishes the release files to a GitHub Release that matches the tag.
 
@@ -14,8 +14,8 @@ This repository uses [.github/workflows/browser-packages.yml](../.github/workflo
 
 The GitHub Release will include these assets:
 
-- `chatgpt-turborender-<version>-chrome.crx`
-- `chatgpt-turborender-<version>-edge.crx`
+- `chatgpt-turborender-<version>-chrome.zip`
+- `chatgpt-turborender-<version>-edge.zip`
 - `chatgpt-turborender-<version>-firefox.xpi`
 
 Each package is built from the corresponding WXT output directory:
@@ -38,24 +38,24 @@ pnpm package:firefox
 
 The release workflow expects these GitHub secrets:
 
-- `CHROMIUM_CRX_PRIVATE_KEY_PEM`: a stable PEM key shared by Chrome and Edge packaging so the extension ID stays constant across releases.
 - `AMO_JWT_ISSUER`: the JWT issuer from addons.mozilla.org for Firefox signing.
 - `AMO_JWT_SECRET`: the JWT secret from addons.mozilla.org for Firefox signing.
 
-You can generate the Chromium key once with `pnpm exec crx keygen /tmp/chatgpt-turborender-key`, then copy the resulting `key.pem` into the GitHub secret.
-
 Firefox packaging also requires the manifest to include `browser_specific_settings.gecko.id`, which is configured in [wxt.config.ts](../wxt.config.ts).
+
+The custom GitHub Release intro copy lives in [.github/release-body.md](../.github/release-body.md).
 
 ## Download flow
 
 1. Open the latest GitHub Release for the tagged version.
 2. Download the package for the browser you need.
-3. Install the file directly in the browser.
+3. Unzip the Chrome or Edge archive, then load the extracted folder as an unpacked extension.
+4. Install the signed Firefox `.xpi` file directly from `about:addons`.
 
 ## Manual install
 
-- Chrome: open `chrome://extensions`, enable developer mode, then drag the `.crx` file onto the page and confirm the install prompt.
-- Edge: open `edge://extensions`, enable developer mode, then drag the `.crx` file onto the page and confirm the install prompt.
+- Chrome: unzip the downloaded archive, open `chrome://extensions`, enable developer mode, click `Load unpacked`, and select the extracted folder.
+- Edge: unzip the downloaded archive, open `edge://extensions`, enable developer mode, click `Load unpacked`, and select the extracted folder.
 - Firefox: open `about:addons`, click the gear icon, choose `Install Add-on From File...`, then select the signed `.xpi` file.
 
-These are the direct-install files users can download from GitHub Releases. Store publishing is documented separately in [docs/store-publishing.md](./store-publishing.md) and uses the browser store APIs instead of these release assets.
+These are release archives users can download from GitHub Releases. Chrome desktop does not support direct installation of GitHub Release archives, so unpacked loading is the supported manual path. Store publishing is documented separately in [docs/store-publishing.md](./store-publishing.md) and uses the browser store APIs instead of these release assets.

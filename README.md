@@ -59,7 +59,7 @@ pnpm install
 pnpm build
 ```
 
-Use `pnpm build` for Chrome, `pnpm build:edge` for Edge, and `pnpm build:firefox` for Firefox if you want unpacked local builds. Load `.output/chrome-mv3`, `.output/edge-mv3`, or `.output/firefox-mv2` to sideload those local builds. Use `pnpm package:chrome`, `pnpm package:edge`, and `pnpm package:firefox` if you want browser-native release files (`.crx` for Chrome/Edge, signed `.xpi` for Firefox).
+Use `pnpm build` for Chrome, `pnpm build:edge` for Edge, and `pnpm build:firefox` for Firefox if you want unpacked local builds. Load `.output/chrome-mv3`, `.output/edge-mv3`, or `.output/firefox-mv2` to sideload those local builds. Use `pnpm package:chrome`, `pnpm package:edge`, and `pnpm package:firefox` if you want GitHub Release archives (`.zip` for Chrome/Edge, signed `.xpi` for Firefox).
 
 Useful commands:
 
@@ -74,7 +74,7 @@ pnpm package:firefox
 
 ## Browser releases
 
-GitHub Actions builds Chrome and Edge `.crx` files plus a signed Firefox `.xpi` from tagged releases in [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) and publishes them to GitHub Releases.
+GitHub Actions builds Chrome and Edge `.zip` archives plus a signed Firefox `.xpi` from tagged releases in [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) and publishes them to GitHub Releases.
 
 See [docs/browser-packages.md](./docs/browser-packages.md) for the tag trigger, release asset names, required signing secrets, and manual install steps.
 

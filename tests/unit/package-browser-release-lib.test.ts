@@ -4,7 +4,6 @@ import {
   assertSupportedBrowser,
   buildArtifactFileName,
   buildArtifactPath,
-  buildChromiumPackArgs,
   buildFirefoxSignArgs,
   buildStoreZipFileName,
   buildStoreZipPath,
@@ -21,9 +20,12 @@ describe('browser release packaging helpers', () => {
   });
 
   it('builds browser-specific release file names and paths', () => {
-    expect(buildArtifactFileName('1.2.3', 'chrome')).toBe('chatgpt-turborender-1.2.3-chrome.crx');
-    expect(buildArtifactFileName('1.2.3', 'edge')).toBe('chatgpt-turborender-1.2.3-edge.crx');
+    expect(buildArtifactFileName('1.2.3', 'chrome')).toBe('chatgpt-turborender-1.2.3-chrome.zip');
+    expect(buildArtifactFileName('1.2.3', 'edge')).toBe('chatgpt-turborender-1.2.3-edge.zip');
     expect(buildArtifactFileName('1.2.3', 'firefox')).toBe('chatgpt-turborender-1.2.3-firefox.xpi');
+    expect(buildArtifactPath('/tmp/release', '1.2.3', 'chrome')).toBe(
+      '/tmp/release/chatgpt-turborender-1.2.3-chrome.zip',
+    );
     expect(buildArtifactPath('/tmp/release', '1.2.3', 'firefox')).toBe(
       '/tmp/release/chatgpt-turborender-1.2.3-firefox.xpi',
     );
@@ -39,24 +41,7 @@ describe('browser release packaging helpers', () => {
     expect(getSourceDir('/repo', 'firefox')).toBe('/repo/.output/firefox-mv2');
   });
 
-  it('builds the Chromium and Firefox packaging command arguments', () => {
-    expect(
-      buildChromiumPackArgs({
-        sourceDir: '/repo/.output/chrome-mv3',
-        keyFile: '/tmp/key.pem',
-        outputFile: '/tmp/release/chatgpt-turborender-1.2.3-chrome.crx',
-      }),
-    ).toEqual([
-      'exec',
-      'crx',
-      'pack',
-      '/repo/.output/chrome-mv3',
-      '-p',
-      '/tmp/key.pem',
-      '-o',
-      '/tmp/release/chatgpt-turborender-1.2.3-chrome.crx',
-    ]);
-
+  it('builds the Firefox packaging command arguments', () => {
     expect(
       buildFirefoxSignArgs({
         sourceDir: '/repo/.output/firefox-mv2',

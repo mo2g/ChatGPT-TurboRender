@@ -2,11 +2,11 @@ import path from 'node:path';
 
 export const PACKAGE_TARGETS = {
   chrome: {
-    artifactExtension: 'crx',
+    artifactExtension: 'zip',
     sourceDir: '.output/chrome-mv3',
   },
   edge: {
-    artifactExtension: 'crx',
+    artifactExtension: 'zip',
     sourceDir: '.output/edge-mv3',
   },
   firefox: {
@@ -49,10 +49,6 @@ export function buildStoreZipFileName(version, browser) {
 
 export function buildStoreZipPath(outputDir, version, browser) {
   return path.join(outputDir, buildStoreZipFileName(version, browser));
-}
-
-export function buildChromiumPackArgs({ sourceDir, keyFile, outputFile }) {
-  return ['exec', 'crx', 'pack', sourceDir, '-p', keyFile, '-o', outputFile];
 }
 
 export function buildFirefoxSignArgs({ sourceDir, artifactsDir, apiKey, apiSecret }) {

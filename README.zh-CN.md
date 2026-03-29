@@ -59,7 +59,7 @@ pnpm install
 pnpm build
 ```
 
-如果你想要本地解压后的目录，可用 `pnpm build`、`pnpm build:edge`、`pnpm build:firefox`，然后侧载 `.output/chrome-mv3`、`.output/edge-mv3` 或 `.output/firefox-mv2`。如果你想要浏览器原生的发布文件，可用 `pnpm package:chrome`、`pnpm package:edge`、`pnpm package:firefox`，分别生成 Chrome/Edge 的 `.crx` 和 Firefox 的签名 `.xpi`。
+如果你想要本地解压后的目录，可用 `pnpm build`、`pnpm build:edge`、`pnpm build:firefox`，然后侧载 `.output/chrome-mv3`、`.output/edge-mv3` 或 `.output/firefox-mv2`。如果你想要 GitHub Release 归档，可用 `pnpm package:chrome`、`pnpm package:edge`、`pnpm package:firefox`，分别生成 Chrome/Edge 的 `.zip` 和 Firefox 的签名 `.xpi`。
 
 常用命令：
 
@@ -74,7 +74,7 @@ pnpm package:firefox
 
 ## 浏览器 Release
 
-GitHub Actions 会在 [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) 里通过 tag 触发，构建 Chrome 和 Edge 的 `.crx` 文件，以及 Firefox 的签名 `.xpi`，并发布到 GitHub Release。
+GitHub Actions 会在 [.github/workflows/browser-packages.yml](./.github/workflows/browser-packages.yml) 里通过 tag 触发，构建 Chrome 和 Edge 的 `.zip` 归档，以及 Firefox 的签名 `.xpi`，并发布到 GitHub Release。
 
 详细的触发方式、Release asset 名称、签名密钥要求和手动安装步骤见 [docs/browser-packages.md](./docs/browser-packages.md)。
 

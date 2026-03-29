@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 import {
   assertSupportedBrowser,
   buildArtifactPath,
-  buildChromiumPackArgs,
   buildFirefoxSignArgs,
   getSourceDir,
 } from './package-browser-release-lib.mjs';
@@ -29,7 +28,6 @@ Usage:
   pnpm package:firefox
 
 Environment:
-  CHROMIUM_CRX_PRIVATE_KEY_FILE  Path to the shared Chromium/Edge PEM key.
   AMO_JWT_ISSUER                 AMO JWT issuer for Firefox signing.
   AMO_JWT_SECRET                 AMO JWT secret for Firefox signing.
 `);
@@ -63,9 +61,9 @@ async function removeIfExists(targetPath) {
   await fs.rm(targetPath, { force: true, recursive: true });
 }
 
-function runCommand(command, args, description) {
+function runCommand(command, args, description, options = {}) {
   const result = spawnSync(command, args, {
-    cwd: repoRoot,
+    cwd: options.cwd ?? repoRoot,
     env: process.env,
     stdio: 'inherit',
   });
@@ -98,18 +96,13 @@ async function findNewestFile(directory, extension) {
 async function packageChromium(browser, version) {
   const sourceDir = getSourceDir(repoRoot, browser);
   const outputFile = buildArtifactPath(releaseDir, version, browser);
-  const keyFile = process.env.CHROMIUM_CRX_PRIVATE_KEY_FILE;
-
-  if (!keyFile) {
-    throw new Error(
-      'CHROMIUM_CRX_PRIVATE_KEY_FILE is required for chrome and edge packages. Provide a stable PEM key so the CRX ID stays the same across releases.',
-    );
-  }
 
   await ensureDirectory(releaseDir);
   await removeIfExists(outputFile);
 
-  runCommand(pnpmCommand, buildChromiumPackArgs({ sourceDir, keyFile, outputFile }), `CRX packaging for ${browser}`);
+  runCommand('zip', ['-qr', outputFile, '.'], `ZIP packaging for ${browser}`, {
+    cwd: sourceDir,
+  });
   return outputFile;
 }
 

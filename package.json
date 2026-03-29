@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-turborender",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "A Chromium-first extension that keeps long ChatGPT conversations responsive by parking cold DOM nodes.",
   "packageManager": "pnpm@9.14.2",
