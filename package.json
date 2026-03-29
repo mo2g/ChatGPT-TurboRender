@@ -15,6 +15,7 @@
     "package:edge": "node ./scripts/package-browser-release.mjs edge",
     "package:firefox": "node ./scripts/package-browser-release.mjs firefox",
     "package:all": "pnpm package:chrome && pnpm package:edge && pnpm package:firefox",
+    "chrome:preflight": "node ./scripts/publish-stores.mjs -- --check-chrome",
     "release:publish-stores": "node ./scripts/publish-stores.mjs",
     "debug:mcp-chrome": "node ./scripts/debug-mcp-chrome.mjs",
     "test": "pnpm test:unit",

@@ -9,7 +9,9 @@ import { describe, expect, it } from 'vitest';
 import {
   extractOperationId,
   isBenignEdgePublishFailure,
+  resolveChromeResourceIds,
   isFirefoxVersionAlreadyExistsError,
+  preflightChrome,
   normalizeTarget,
   parseArgs,
 } from '../../scripts/publish-stores.mjs';
@@ -31,12 +33,26 @@ describe('publish store helpers', () => {
         'store/firefox-amo-metadata.json',
       ]),
     ).toEqual({
+      checkChrome: false,
       target: 'firefox',
       version: '1.2.3',
       chromeZip: '',
       edgeZip: '',
       firefoxSourceDir: '.output/firefox-mv2',
       firefoxAmoMetadata: 'store/firefox-amo-metadata.json',
+      firefoxArtifactsDir: '',
+    });
+  });
+
+  it('parses the Chrome preflight flag', () => {
+    expect(parseArgs(['node', 'scripts/publish-stores.mjs', '--check-chrome'])).toEqual({
+      checkChrome: true,
+      target: 'all',
+      version: '',
+      chromeZip: '',
+      edgeZip: '',
+      firefoxSourceDir: '',
+      firefoxAmoMetadata: '',
       firefoxArtifactsDir: '',
     });
   });
@@ -76,6 +92,82 @@ describe('publish store helpers', () => {
       ),
     ).toBe(true);
     expect(isFirefoxVersionAlreadyExistsError('WebExtError: some other failure')).toBe(false);
+  });
+
+  it('resolves chrome resource ids with the new extension-id env name and the legacy alias', () => {
+    expect(
+      resolveChromeResourceIds({
+        CHROME_WEB_STORE_PUBLISHER_ID: 'publisher',
+        CHROME_WEB_STORE_EXTENSION_ID: 'extension',
+      }),
+    ).toEqual({
+      publisherId: 'publisher',
+      extensionId: 'extension',
+    });
+
+    expect(
+      resolveChromeResourceIds({
+        CHROME_WEB_STORE_PUBLISHER_ID: 'publisher',
+        CHROME_WEB_STORE_ITEM_ID: 'legacy-extension',
+      }),
+    ).toEqual({
+      publisherId: 'publisher',
+      extensionId: 'legacy-extension',
+    });
+  });
+
+  it('preflights chrome credentials with a read-only fetchStatus call', async () => {
+    const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
+    const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push({ url: String(url), headers: init?.headers });
+
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => JSON.stringify({ itemState: 'PUBLISHED' }),
+      } as any;
+    };
+
+    const payload = await preflightChrome({
+      env: {
+        CHROME_WEB_STORE_PUBLISHER_ID: 'publisher',
+        CHROME_WEB_STORE_EXTENSION_ID: 'extension',
+      },
+      getAccessToken: async () => 'access-token',
+      fetchImpl,
+    });
+
+    expect(payload).toEqual({ itemState: 'PUBLISHED' });
+    expect(calls).toEqual([
+      {
+        url: 'https://chromewebstore.googleapis.com/v2/publishers/publisher/items/extension:fetchStatus',
+        headers: {
+          Authorization: 'Bearer access-token',
+        },
+      },
+    ]);
+  });
+
+  it('reports chrome permission issues during preflight', async () => {
+    const fetchImpl = async () =>
+      ({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () => '{"error":"denied"}',
+      }) as any;
+
+    await expect(
+      preflightChrome({
+        env: {
+          CHROME_WEB_STORE_PUBLISHER_ID: 'publisher',
+          CHROME_WEB_STORE_EXTENSION_ID: 'extension',
+        },
+        getAccessToken: async () => 'access-token',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/Chrome Web Store denied access to publishers\/publisher\/items\/extension/);
   });
 });
 

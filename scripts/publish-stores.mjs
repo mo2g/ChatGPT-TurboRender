@@ -30,8 +30,10 @@ function printHelp() {
 
 Usage:
   pnpm release:publish-stores -- --target <chrome|edge|firefox|all> --version <version> [options]
+  pnpm release:publish-stores -- --check-chrome
 
 Options:
+  --check-chrome           Validate Chrome Web Store credentials and read-only access.
   --target                 Store target to publish to. Defaults to "all".
   --version                Release version without the leading "v".
   --chrome-zip             Path to the Chrome ZIP package.
@@ -44,6 +46,9 @@ Options:
 Required environment variables for Chrome:
   CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON
   CHROME_WEB_STORE_PUBLISHER_ID
+  CHROME_WEB_STORE_EXTENSION_ID
+
+Legacy alias accepted for Chrome:
   CHROME_WEB_STORE_ITEM_ID
 
 Required environment variables for Edge:
@@ -59,6 +64,7 @@ Required environment variables for Firefox:
 
 export function parseArgs(argv) {
   const result = {
+    checkChrome: false,
     target: DEFAULT_TARGET,
     version: '',
     chromeZip: '',
@@ -72,6 +78,11 @@ export function parseArgs(argv) {
     const arg = argv[index];
 
     if (arg === '--') {
+      continue;
+    }
+
+    if (arg === '--check-chrome') {
+      result.checkChrome = true;
       continue;
     }
 
@@ -156,6 +167,32 @@ function requireEnv(name) {
   }
 
   return value;
+}
+
+function readOptionalEnv(env, name) {
+  const value = env[name];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+export function resolveChromeResourceIds(env = process.env) {
+  const publisherId = readOptionalEnv(env, 'CHROME_WEB_STORE_PUBLISHER_ID');
+  if (publisherId.length === 0) {
+    throw new Error('Missing required environment variable: CHROME_WEB_STORE_PUBLISHER_ID');
+  }
+
+  const extensionId =
+    readOptionalEnv(env, 'CHROME_WEB_STORE_EXTENSION_ID') || readOptionalEnv(env, 'CHROME_WEB_STORE_ITEM_ID');
+
+  if (extensionId.length === 0) {
+    throw new Error(
+      'Missing required environment variable: CHROME_WEB_STORE_EXTENSION_ID (legacy alias: CHROME_WEB_STORE_ITEM_ID).',
+    );
+  }
+
+  return {
+    extensionId,
+    publisherId,
+  };
 }
 
 function base64UrlEncode(input) {
@@ -312,19 +349,12 @@ async function getGoogleAccessToken() {
   return tokenPayload.access_token;
 }
 
-async function waitForChromeUpload(accessToken, publisherId, itemId) {
-  const statusUrl = `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${itemId}:fetchStatus`;
+async function waitForChromeUpload(accessToken, publisherId, extensionId) {
   const deadline = Date.now() + CHROME_STATUS_POLL_TIMEOUT_MS;
   let lastState = null;
 
   while (Date.now() < deadline) {
-    const statusResponse = await fetch(statusUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-
-    const statusPayload = await parseJsonResponse(statusResponse, 'Chrome upload status');
+    const statusPayload = await fetchChromeStatus(accessToken, publisherId, extensionId);
     lastState = statusPayload?.lastAsyncUploadState ?? null;
     console.log(`Chrome upload status: ${lastState ?? 'unknown'}`);
 
@@ -342,12 +372,106 @@ async function waitForChromeUpload(accessToken, publisherId, itemId) {
   throw new Error(`Timed out waiting for Chrome upload to finish. Last state: ${lastState ?? 'unknown'}`);
 }
 
+function buildChromeStatusUrl(publisherId, extensionId) {
+  return `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${extensionId}:fetchStatus`;
+}
+
+function formatChromeStatusError({ body, publisherId, extensionId, status, statusText }) {
+  const responseBody = body || '<empty response>';
+
+  if (status === 401) {
+    return [
+      `Chrome Web Store rejected the access token for publishers/${publisherId}/items/${extensionId} (401 Unauthorized).`,
+      'Check CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON, especially the private key and token_uri fields.',
+      `Response: ${responseBody}`,
+    ].join(' ');
+  }
+
+  if (status === 403) {
+    return [
+      `Chrome Web Store denied access to publishers/${publisherId}/items/${extensionId} (403 Forbidden).`,
+      'Check that the Google service account email from CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON has been added to the Chrome Web Store developer dashboard for this publisher.',
+      'Also verify that CHROME_WEB_STORE_EXTENSION_ID points to the extension ID for the item owned by that publisher.',
+      `Response: ${responseBody}`,
+    ].join(' ');
+  }
+
+  if (status === 404) {
+    return [
+      `Chrome Web Store item publishers/${publisherId}/items/${extensionId} was not found (404 Not Found).`,
+      'Check that CHROME_WEB_STORE_PUBLISHER_ID and CHROME_WEB_STORE_EXTENSION_ID match the item in the Chrome Web Store developer dashboard.',
+      `Response: ${responseBody}`,
+    ].join(' ');
+  }
+
+  return `Chrome fetchStatus failed (${status} ${statusText}): ${responseBody}`;
+}
+
+async function fetchChromeStatus(accessToken, publisherId, extensionId, fetchImpl = fetch) {
+  const statusUrl = buildChromeStatusUrl(publisherId, extensionId);
+  const statusResponse = await fetchImpl(statusUrl, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const statusBody = await statusResponse.text();
+  if (!statusResponse.ok) {
+    throw new Error(
+      formatChromeStatusError({
+        body: statusBody,
+        extensionId,
+        publisherId,
+        status: statusResponse.status,
+        statusText: statusResponse.statusText,
+      }),
+    );
+  }
+
+  if (statusBody.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(statusBody);
+  } catch (error) {
+    throw new Error(`Chrome fetchStatus returned invalid JSON: ${statusBody}`, { cause: error });
+  }
+}
+
+function isChromePermissionDeniedError(error) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return /PERMISSION_DENIED|Permission denied on resource/i.test(error.message);
+}
+
+function formatChromePermissionDeniedMessage({ extensionId, publisherId }) {
+  return [
+    `Chrome Web Store denied access to publishers/${publisherId}/items/${extensionId}.`,
+    'Check that the Google service account email from CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON has been added to the Chrome Web Store developer dashboard for this publisher.',
+    'Also verify that CHROME_WEB_STORE_EXTENSION_ID points to the extension ID for the item owned by that publisher.',
+  ].join(' ');
+}
+
+export async function preflightChrome({ env = process.env, getAccessToken = getGoogleAccessToken, fetchImpl = fetch } = {}) {
+  const { extensionId, publisherId } = resolveChromeResourceIds(env);
+  const accessToken = await getAccessToken();
+  const statusPayload = await fetchChromeStatus(accessToken, publisherId, extensionId, fetchImpl);
+
+  console.log(
+    `Chrome preflight succeeded for publishers/${publisherId}/items/${extensionId}: ${JSON.stringify(statusPayload)}`,
+  );
+
+  return statusPayload;
+}
+
 async function publishChrome({ zipPath, version }) {
-  const publisherId = requireEnv('CHROME_WEB_STORE_PUBLISHER_ID');
-  const itemId = requireEnv('CHROME_WEB_STORE_ITEM_ID');
+  const { extensionId, publisherId } = resolveChromeResourceIds();
   const accessToken = await getGoogleAccessToken();
   const zip = await readFile(zipPath);
-  const uploadUrl = `https://chromewebstore.googleapis.com/upload/v2/publishers/${publisherId}/items/${itemId}:upload`;
+  const uploadUrl = `https://chromewebstore.googleapis.com/upload/v2/publishers/${publisherId}/items/${extensionId}:upload`;
 
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
@@ -358,7 +482,16 @@ async function publishChrome({ zipPath, version }) {
     body: zip,
   });
 
-  const uploadPayload = await parseJsonResponse(uploadResponse, 'Chrome upload');
+  let uploadPayload;
+  try {
+    uploadPayload = await parseJsonResponse(uploadResponse, 'Chrome upload');
+  } catch (error) {
+    if (isChromePermissionDeniedError(error)) {
+      throw new Error(formatChromePermissionDeniedMessage({ extensionId, publisherId }), { cause: error });
+    }
+
+    throw error;
+  }
   console.log(`Chrome upload accepted: ${JSON.stringify(uploadPayload)}`);
 
   const uploadState = uploadPayload?.uploadState;
@@ -371,11 +504,11 @@ async function publishChrome({ zipPath, version }) {
   }
 
   if (uploadState === 'IN_PROGRESS') {
-    await waitForChromeUpload(accessToken, publisherId, itemId);
+    await waitForChromeUpload(accessToken, publisherId, extensionId);
   }
 
   const publishResponse = await fetch(
-    `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${itemId}:publish`,
+    `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${extensionId}:publish`,
     {
       method: 'POST',
       headers: {
@@ -389,7 +522,16 @@ async function publishChrome({ zipPath, version }) {
     },
   );
 
-  const publishPayload = await parseJsonResponse(publishResponse, 'Chrome publish');
+  let publishPayload;
+  try {
+    publishPayload = await parseJsonResponse(publishResponse, 'Chrome publish');
+  } catch (error) {
+    if (isChromePermissionDeniedError(error)) {
+      throw new Error(formatChromePermissionDeniedMessage({ extensionId, publisherId }), { cause: error });
+    }
+
+    throw error;
+  }
   console.log(`Chrome publish accepted for version ${version}: ${JSON.stringify(publishPayload)}`);
 }
 
@@ -570,6 +712,11 @@ export function isFirefoxVersionAlreadyExistsError(output) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  if (args.checkChrome) {
+    await preflightChrome();
+    return;
+  }
+
   const target = normalizeTarget(args.target);
   const version = (args.version || process.env.RELEASE_VERSION || '').replace(/^v/, '');
 
