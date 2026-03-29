@@ -18,6 +18,7 @@ const CHROME_STATUS_POLL_INTERVAL_MS = 2000;
 const CHROME_STATUS_POLL_TIMEOUT_MS = 120_000;
 const EDGE_STATUS_POLL_INTERVAL_MS = 2000;
 const EDGE_STATUS_POLL_TIMEOUT_MS = 120_000;
+const EDGE_BENIGN_PUBLISH_ERROR_CODES = new Set(['InProgressSubmission', 'NoModulesUpdated']);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -229,6 +230,28 @@ function runCommand(command, args, description) {
   }
 }
 
+function runCommandCapture(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    env: process.env,
+    encoding: 'utf8',
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.stdout) {
+    process.stdout.write(result.stdout);
+  }
+
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+
+  return result;
+}
+
 async function findNewestFile(directory, extension) {
   const entries = await readdir(directory, { withFileTypes: true });
   const candidates = await Promise.all(
@@ -324,7 +347,7 @@ async function publishChrome({ zipPath, version }) {
   const itemId = requireEnv('CHROME_WEB_STORE_ITEM_ID');
   const accessToken = await getGoogleAccessToken();
   const zip = await readFile(zipPath);
-  const uploadUrl = `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${itemId}:upload`;
+  const uploadUrl = `https://chromewebstore.googleapis.com/upload/v2/publishers/${publisherId}/items/${itemId}:upload`;
 
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
@@ -394,6 +417,13 @@ async function waitForEdgeOperation({ authHeaders, productId, operationId, opera
     }
 
     if (lastStatus !== 'Succeeded') {
+      if (operationKind === 'publish' && isBenignEdgePublishFailure(statusPayload?.errorCode)) {
+        console.log(
+          `Edge publish returned ${statusPayload.errorCode}; treating it as an idempotent no-op: ${JSON.stringify(statusPayload)}`,
+        );
+        return statusPayload;
+      }
+
       throw new Error(
         `Edge ${operationKind} did not succeed. Last status: ${lastStatus ?? 'unknown'}; details: ${JSON.stringify(statusPayload)}`,
       );
@@ -403,6 +433,10 @@ async function waitForEdgeOperation({ authHeaders, productId, operationId, opera
   }
 
   throw new Error(`Timed out waiting for Edge ${operationKind} to finish. Last status: ${lastStatus ?? 'unknown'}`);
+}
+
+export function isBenignEdgePublishFailure(errorCode) {
+  return EDGE_BENIGN_PUBLISH_ERROR_CODES.has(errorCode);
 }
 
 async function publishEdge({ zipPath, version }) {
@@ -490,7 +524,7 @@ async function publishFirefox({ sourceDir, metadataFile, artifactsDir, version }
   await rm(artifactsDir, { force: true, recursive: true });
   await mkdir(artifactsDir, { recursive: true });
 
-  runCommand(
+  const result = runCommandCapture(
     pnpmCommand,
     [
       'exec',
@@ -504,8 +538,19 @@ async function publishFirefox({ sourceDir, metadataFile, artifactsDir, version }
       `--amo-metadata=${metadataFile}`,
       '--approval-timeout=0',
     ],
-    'Firefox AMO publish',
   );
+
+  const combinedOutput = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  if (isFirefoxVersionAlreadyExistsError(combinedOutput)) {
+    console.log(`Firefox AMO already has version ${version}; treating duplicate submission as a no-op.`);
+    return;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(
+      `Firefox AMO publish failed with exit code ${result.status ?? 'unknown'}: ${combinedOutput || '<empty output>'}`,
+    );
+  }
 
   const signedXpi = await findNewestFile(artifactsDir, '.xpi');
   if (!signedXpi) {
@@ -513,6 +558,14 @@ async function publishFirefox({ sourceDir, metadataFile, artifactsDir, version }
   }
 
   console.log(`Firefox publish accepted for version ${version}: ${signedXpi}`);
+}
+
+export function isFirefoxVersionAlreadyExistsError(output) {
+  if (typeof output !== 'string' || output.trim().length === 0) {
+    return false;
+  }
+
+  return /already exists/i.test(output) && /(web-ext|WebExtError|Submission failed)/i.test(output);
 }
 
 async function main() {

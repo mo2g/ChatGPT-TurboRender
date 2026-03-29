@@ -6,7 +6,13 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error - The helper lives in an executable .mjs script.
-import { extractOperationId, normalizeTarget, parseArgs } from '../../scripts/publish-stores.mjs';
+import {
+  extractOperationId,
+  isBenignEdgePublishFailure,
+  isFirefoxVersionAlreadyExistsError,
+  normalizeTarget,
+  parseArgs,
+} from '../../scripts/publish-stores.mjs';
 
 describe('publish store helpers', () => {
   it('parses the store publish CLI arguments', () => {
@@ -55,6 +61,21 @@ describe('publish store helpers', () => {
 
   it('rejects invalid targets', () => {
     expect(() => normalizeTarget('safari')).toThrow('Invalid target: safari');
+  });
+
+  it('recognizes benign edge publish failures that should be treated as no-ops', () => {
+    expect(isBenignEdgePublishFailure('InProgressSubmission')).toBe(true);
+    expect(isBenignEdgePublishFailure('NoModulesUpdated')).toBe(true);
+    expect(isBenignEdgePublishFailure('SubmissionValidationError')).toBe(false);
+  });
+
+  it('recognizes firefox version conflicts that should be treated as no-ops', () => {
+    expect(
+      isFirefoxVersionAlreadyExistsError(
+        'WebExtError: Submission failed (2): Conflict\n{"version":["Version 0.1.3.1 already exists."]}',
+      ),
+    ).toBe(true);
+    expect(isFirefoxVersionAlreadyExistsError('WebExtError: some other failure')).toBe(false);
   });
 });
 
