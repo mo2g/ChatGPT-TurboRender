@@ -294,13 +294,15 @@ function ensureTurboRenderStyles(doc: Document): void {
 
 function getSlotSummaryText(t: Translator, group: ManagedHistoryGroup): string {
   return t('historyBatchSummary', {
-    count: group.capacity,
     start: group.slotPairStartIndex + 1,
     end: group.slotPairEndIndex + 1,
   });
 }
 
 function getFilledSummaryText(t: Translator, group: ManagedHistoryGroup): string {
+  if (group.filledPairCount >= group.capacity) {
+    return getSlotSummaryText(t, group);
+  }
   return `${getSlotSummaryText(t, group)} · ${group.filledPairCount}/${group.capacity}`;
 }
 
@@ -347,9 +349,9 @@ export class StatusBar {
     return false;
   }
 
-  getToggleButton(groupId: string): HTMLButtonElement | null {
-    return this.root?.querySelector<HTMLButtonElement>(
-      `[data-turbo-render-action="toggle-archive-group"][data-group-id="${groupId}"]`,
+  getBatchCardAnchor(groupId: string): HTMLElement | null {
+    return this.root?.querySelector<HTMLElement>(
+      `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"]`,
     ) ?? null;
   }
 
@@ -420,6 +422,8 @@ export class StatusBar {
   private createBatchCard(group: ManagedHistoryGroup): HTMLElement {
     const section = this.doc.createElement('section');
     section.className = UI_CLASS_NAMES.inlineBatchCard;
+    section.dataset.groupId = group.id;
+    section.dataset.turboRenderBatchAnchor = 'true';
     if (group.matchCount > 0) {
       section.classList.add(UI_CLASS_NAMES.inlineBatchHighlight);
     }
@@ -434,26 +438,28 @@ export class StatusBar {
     meta.className = UI_CLASS_NAMES.inlineBatchMeta;
     meta.innerHTML = `<strong>${getFilledSummaryText(this.t, group)}</strong>`;
 
-    const preview = this.doc.createElement('div');
-    preview.className = UI_CLASS_NAMES.inlineBatchPreview;
-    if (group.userPreview.length > 0) {
-      const user = this.doc.createElement('p');
-      user.textContent = this.t('historyBatchPreviewUser', { text: group.userPreview });
-      preview.append(user);
-    }
-    if (group.assistantPreview.length > 0) {
-      const assistant = this.doc.createElement('p');
-      assistant.textContent = this.t('historyBatchPreviewAssistant', { text: group.assistantPreview });
-      preview.append(assistant);
-    }
-    if (group.matchCount > 0) {
-      const matches = this.doc.createElement('p');
-      matches.className = UI_CLASS_NAMES.inlineBatchMatches;
-      matches.textContent = this.t('historyBatchMatches', { count: group.matchCount });
-      preview.append(matches);
-    }
+    if (!group.expanded) {
+      const preview = this.doc.createElement('div');
+      preview.className = UI_CLASS_NAMES.inlineBatchPreview;
+      if (group.userPreview.length > 0) {
+        const user = this.doc.createElement('p');
+        user.textContent = this.t('historyBatchPreviewUser', { text: group.userPreview });
+        preview.append(user);
+      }
+      if (group.assistantPreview.length > 0) {
+        const assistant = this.doc.createElement('p');
+        assistant.textContent = this.t('historyBatchPreviewAssistant', { text: group.assistantPreview });
+        preview.append(assistant);
+      }
+      if (group.matchCount > 0) {
+        const matches = this.doc.createElement('p');
+        matches.className = UI_CLASS_NAMES.inlineBatchMatches;
+        matches.textContent = this.t('historyBatchMatches', { count: group.matchCount });
+        preview.append(matches);
+      }
 
-    meta.append(preview);
+      meta.append(preview);
+    }
     header.append(meta);
     main.append(header);
 
@@ -466,7 +472,7 @@ export class StatusBar {
     button.dataset.turboRenderAction = 'toggle-archive-group';
     button.dataset.groupId = group.id;
     button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
-    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, button));
+    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, section));
     rail.append(button);
 
     section.append(main, rail);

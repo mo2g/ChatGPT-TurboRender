@@ -132,7 +132,79 @@ describe('chatgpt content entrypoint', () => {
     expect(document.querySelector('[data-turbo-render-archive-root="true"]')).toBeNull();
   });
 
-  it('avoids immediate reset when pathname briefly changes without a known session', async () => {
+  it('immediately resets to home when pathname changes to /', async () => {
+    const invalidations: Array<() => void> = [];
+    let poll: (() => void) | null = null;
+    const resetCalls: string[] = [];
+
+    vi.doMock('wxt/browser', () => ({
+      browser: {},
+    }));
+    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+      TurboRenderController: class {
+        start() {}
+        stop() {}
+        setSettings() {}
+        setPaused() {}
+        setInitialTrimSession() {}
+        restoreNearby() {}
+        restoreAll() {}
+        getStatus() {
+          return null;
+        }
+        resetForChatChange(chatId: string) {
+          resetCalls.push(chatId);
+        }
+      },
+    }));
+    vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
+    history.replaceState({}, '', '/c/abc');
+
+    const module = await import('../../entrypoints/chatgpt.content/index');
+    const script = module.default as {
+      main(ctx: {
+        addEventListener(
+          target: Window | Document,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions,
+        ): void;
+        onInvalidated(callback: () => void): void;
+        setInterval(callback: () => void, ms: number): number;
+        isInvalid: boolean;
+      }): Promise<void>;
+    };
+
+    const ctx = {
+      addEventListener(
+        target: Window | Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) {
+        target.addEventListener(type, listener, options);
+      },
+      onInvalidated(callback: () => void) {
+        invalidations.push(callback);
+      },
+      setInterval(callback: () => void) {
+        poll = callback;
+        return 1;
+      },
+      isInvalid: false,
+    };
+
+    await expect(script.main(ctx)).resolves.toBeUndefined();
+    expect(resetCalls).toEqual(['chat:abc']);
+
+    history.replaceState({}, '', '/');
+    poll?.();
+    expect(resetCalls).toEqual(['chat:abc', 'chat:home']);
+
+    invalidations.forEach((callback) => callback());
+  });
+
+  it('avoids immediate reset when pathname briefly changes to unknown route without a known session', async () => {
     const invalidations: Array<() => void> = [];
     let poll: (() => void) | null = null;
     const resetCalls: string[] = [];
@@ -199,7 +271,7 @@ describe('chatgpt content entrypoint', () => {
     await expect(script.main(ctx)).resolves.toBeUndefined();
     expect(resetCalls).toEqual(['chat:abc']);
 
-    history.replaceState({}, '', '/');
+    history.replaceState({}, '', '/unresolved-route');
     poll?.();
     expect(resetCalls).toEqual(['chat:abc']);
 

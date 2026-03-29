@@ -42,8 +42,8 @@ function createContentScriptInstanceId(): string {
   return `turborender-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function isTransientChatId(chatId: string): boolean {
-  return chatId === 'chat:home' || chatId === 'chat:unknown';
+function isHydrationPlaceholderChatId(chatId: string): boolean {
+  return chatId === 'chat:unknown';
 }
 
 export default defineContentScript({
@@ -192,7 +192,7 @@ export default defineContentScript({
       }
 
       const routeChatId = getCurrentChatId();
-      const targetChatId = isTransientChatId(routeChatId) ? lastChatId : routeChatId;
+      const targetChatId = isHydrationPlaceholderChatId(routeChatId) ? lastChatId : routeChatId;
       if (incomingSession.chatId === targetChatId) {
         if (incomingSession.chatId !== lastChatId) {
           commitChatSwitch(incomingSession.chatId, { requestReplay: false });
@@ -289,6 +289,13 @@ export default defineContentScript({
         return;
       }
 
+      // Treat a confirmed `/` route as an intentional switch to a new chat.
+      // Clear previous chat history immediately to avoid cross-chat leakage.
+      if (nextChatId === 'chat:home') {
+        commitChatSwitch(nextChatId, { requestReplay: false });
+        return;
+      }
+
       if (trimSessions.has(nextChatId)) {
         commitChatSwitch(nextChatId, { requestReplay: false });
         return;
@@ -308,9 +315,8 @@ export default defineContentScript({
         return;
       }
 
-      // Keep polling state replay, but do not switch to transient route ids.
-      // ChatGPT can briefly emit route placeholders during hydration.
-      if (isTransientChatId(nextChatId)) {
+      // Keep polling state replay, but do not switch to hydration placeholder ids.
+      if (isHydrationPlaceholderChatId(nextChatId)) {
         requestSessionReplay(nextChatId);
         return;
       }

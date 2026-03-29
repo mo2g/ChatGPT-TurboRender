@@ -7,54 +7,123 @@ function appendText(doc: Document, parent: Node, value: string): void {
   }
 }
 
+function appendInlineCode(doc: Document, parent: HTMLElement, text: string, cursor: number): number | null {
+  if (text[cursor] !== '`') {
+    return null;
+  }
+
+  let tickCount = 1;
+  while (text[cursor + tickCount] === '`') {
+    tickCount += 1;
+  }
+
+  const delimiter = '`'.repeat(tickCount);
+  const closing = text.indexOf(delimiter, cursor + tickCount);
+  if (closing === -1) {
+    appendText(doc, parent, delimiter);
+    return cursor + tickCount;
+  }
+
+  const content = text.slice(cursor + tickCount, closing);
+  const code = doc.createElement('code');
+  code.textContent = content;
+  parent.append(code);
+  return closing + tickCount;
+}
+
+function appendStrong(doc: Document, parent: HTMLElement, text: string, cursor: number): number | null {
+  if (!text.startsWith('**', cursor)) {
+    return null;
+  }
+
+  const closing = text.indexOf('**', cursor + 2);
+  if (closing === -1) {
+    appendText(doc, parent, '**');
+    return cursor + 2;
+  }
+
+  const strong = doc.createElement('strong');
+  appendInlineMarkdown(doc, strong, text.slice(cursor + 2, closing));
+  parent.append(strong);
+  return closing + 2;
+}
+
+function appendLink(doc: Document, parent: HTMLElement, text: string, cursor: number): number | null {
+  if (text[cursor] !== '[') {
+    return null;
+  }
+
+  const labelEnd = text.indexOf(']', cursor + 1);
+  if (labelEnd === -1 || text[labelEnd + 1] !== '(') {
+    appendText(doc, parent, '[');
+    return cursor + 1;
+  }
+
+  const hrefEnd = text.indexOf(')', labelEnd + 2);
+  if (hrefEnd === -1) {
+    appendText(doc, parent, '[');
+    return cursor + 1;
+  }
+
+  const label = text.slice(cursor + 1, labelEnd);
+  const href = text.slice(labelEnd + 2, hrefEnd).trim();
+  if (!/^https?:\/\//.test(href)) {
+    appendText(doc, parent, text.slice(cursor, hrefEnd + 1));
+    return hrefEnd + 1;
+  }
+
+  try {
+    new URL(href);
+    const link = doc.createElement('a');
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    link.textContent = label.length > 0 ? label : href;
+    parent.append(link);
+  } catch {
+    appendText(doc, parent, text.slice(cursor, hrefEnd + 1));
+  }
+
+  return hrefEnd + 1;
+}
+
 function appendInlineMarkdown(doc: Document, parent: HTMLElement, text: string): void {
   let cursor = 0;
-
   while (cursor < text.length) {
-    const inlineCodeMatch = text.slice(cursor).match(/`([^`]+)`/);
-    const linkMatch = text.slice(cursor).match(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/);
-    const codeIndex = inlineCodeMatch?.index ?? Number.POSITIVE_INFINITY;
-    const linkIndex = linkMatch?.index ?? Number.POSITIVE_INFINITY;
-
-    if (!Number.isFinite(codeIndex) && !Number.isFinite(linkIndex)) {
-      appendText(doc, parent, text.slice(cursor));
-      return;
-    }
-
-    if (codeIndex <= linkIndex) {
-      const match = inlineCodeMatch;
-      if (match == null || match.index == null) {
-        break;
-      }
-
-      appendText(doc, parent, text.slice(cursor, cursor + match.index));
-      const code = doc.createElement('code');
-      code.textContent = match[1] ?? '';
-      parent.append(code);
-      cursor += match.index + match[0].length;
+    const codeCursor = appendInlineCode(doc, parent, text, cursor);
+    if (codeCursor != null) {
+      cursor = codeCursor;
       continue;
     }
 
-    const match = linkMatch;
-    if (match == null || match.index == null) {
+    const strongCursor = appendStrong(doc, parent, text, cursor);
+    if (strongCursor != null) {
+      cursor = strongCursor;
+      continue;
+    }
+
+    const linkCursor = appendLink(doc, parent, text, cursor);
+    if (linkCursor != null) {
+      cursor = linkCursor;
+      continue;
+    }
+
+    const nextSpecialChars = ['`', '*', '[']
+      .map((char) => text.indexOf(char, cursor + 1))
+      .filter((index) => index !== -1);
+    const nextSpecial = nextSpecialChars.length > 0 ? Math.min(...nextSpecialChars) : -1;
+    if (nextSpecial === -1) {
+      appendText(doc, parent, text.slice(cursor));
       break;
     }
 
-    appendText(doc, parent, text.slice(cursor, cursor + match.index));
-    const href = match[2] ?? '';
-    try {
-      new URL(href);
-      const link = doc.createElement('a');
-      link.href = href;
-      link.target = '_blank';
-      link.rel = 'noreferrer noopener';
-      link.textContent = match[1] ?? href;
-      parent.append(link);
-    } catch {
-      appendText(doc, parent, match[0]);
-    }
-    cursor += match.index + match[0].length;
+    appendText(doc, parent, text.slice(cursor, nextSpecial));
+    cursor = nextSpecial;
   }
+}
+
+function isCodeFenceLine(line: string): boolean {
+  return line.trimStart().startsWith('```');
 }
 
 function renderParagraph(doc: Document, parent: HTMLElement, text: string): void {
@@ -103,18 +172,23 @@ function renderMarkdownText(doc: Document, parent: HTMLElement, text: string): v
       continue;
     }
 
-    if (line.startsWith('```')) {
-      const language = line.slice(3).trim();
+    if (isCodeFenceLine(line)) {
+      const language = line.trimStart().slice(3).trim();
       const codeLines: string[] = [];
+      const rawBlockLines = [line];
       cursor += 1;
-      while (cursor < lines.length && !lines[cursor]!.startsWith('```')) {
+      while (cursor < lines.length && !isCodeFenceLine(lines[cursor]!.trimEnd())) {
         codeLines.push(lines[cursor]!);
+        rawBlockLines.push(lines[cursor]!);
         cursor += 1;
       }
-      if (cursor < lines.length && lines[cursor]!.startsWith('```')) {
+      if (cursor < lines.length && isCodeFenceLine(lines[cursor]!.trimEnd())) {
+        rawBlockLines.push(lines[cursor]!.trimEnd());
         cursor += 1;
+        renderCodeBlock(doc, parent, language, codeLines);
+      } else {
+        renderParagraph(doc, parent, rawBlockLines.join('\n'));
       }
-      renderCodeBlock(doc, parent, language, codeLines);
       continue;
     }
 
@@ -154,7 +228,7 @@ function renderMarkdownText(doc: Document, parent: HTMLElement, text: string): v
       const nextLine = lines[cursor]!.trimEnd();
       if (
         nextLine.trim().length === 0 ||
-        nextLine.startsWith('```') ||
+        isCodeFenceLine(nextLine) ||
         /^>\s?/.test(nextLine) ||
         /^[-*+]\s+/.test(nextLine) ||
         /^\d+\.\s+/.test(nextLine)

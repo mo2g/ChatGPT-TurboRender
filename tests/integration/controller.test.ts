@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
 import { getChatIdFromPathname } from '../../lib/shared/chat-id';
@@ -140,13 +140,55 @@ describe('TurboRenderController', () => {
 
     const initialBatchButton = inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
     expect(initialBatchButton?.textContent).toBe('Expand');
+    const batchMetaLabels = [...(inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchMeta} strong`) ?? [])]
+      .map((element) => element.textContent?.trim() ?? '');
+    expect(batchMetaLabels[0]).toBe('Pair #1-5');
+    expect(batchMetaLabels[1]).toBe('Pair #6-10 · 2/5');
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineBatchPreview}`)).not.toBeNull();
+    fixture.scroller.scrollTop = 480;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      if (
+        this.matches(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`)
+      ) {
+        const expanded = this.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntries}`) != null;
+        return {
+          top: expanded ? 260 : 200,
+          bottom: expanded ? 380 : 320,
+          left: 0,
+          right: 900,
+          width: 900,
+          height: 120,
+          x: 0,
+          y: expanded ? 260 : 200,
+          toJSON: () => '',
+        } as DOMRect;
+      }
+
+      return {
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => '',
+      } as DOMRect;
+    });
 
     initialBatchButton?.click();
     await flush();
+    rectSpy.mockRestore();
 
     expect(
       inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.textContent,
     ).toBe('Collapse');
+    const expandedFirstCard = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`,
+    );
+    expect(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchPreview}`)).toBeNull();
+    expect(fixture.scroller.scrollTop).toBe(540);
     expect(controller.getStatus().expandedBatchCount).toBeGreaterThan(0);
     expect(fixture.transcript.querySelectorAll('[data-testid^="conversation-turn-"]')).toHaveLength(10);
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
@@ -202,7 +244,7 @@ describe('TurboRenderController', () => {
     });
     session.turns[1] = createSessionTurn(1, {
       role: 'assistant',
-      parts: ['Paragraph\n\n- item one\n- item two\n\n> quoted\n\n```ts\nconst answer = 42;\n```'],
+      parts: ['Paragraph with **打开终端** and ``bash`` and `pnpm test`.\n\n- item one\n- item two\n\n> quoted\n\n```ts\nconst answer = 42;\n```'],
       renderKind: 'markdown-text',
     });
     session.turns[2] = createSessionTurn(2, {
@@ -234,6 +276,14 @@ describe('TurboRenderController', () => {
 
     const entryBodies = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}`) ?? [];
     expect(entryBodies.length).toBeGreaterThan(0);
+    const markdownBodies = [
+      ...(inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"]`) ?? []),
+    ];
+    const formattedMarkdownBody = markdownBodies.find((body) => body.textContent?.includes('打开终端'));
+    expect(formattedMarkdownBody?.querySelector('strong')?.textContent).toBe('打开终端');
+    expect(formattedMarkdownBody?.textContent).not.toContain('**打开终端**');
+    expect(formattedMarkdownBody?.textContent).not.toContain('``bash``');
+    expect(formattedMarkdownBody?.querySelector('code[data-language="ts"]')?.textContent).toContain('const answer = 42;');
 
     const structuredBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="structured-message"]`);
     expect(structuredBody?.textContent).toContain('netstat -lntp');

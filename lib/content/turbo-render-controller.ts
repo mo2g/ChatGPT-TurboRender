@@ -382,7 +382,7 @@ export class TurboRenderController {
     this.updateStatusBar();
 
     this.win.requestAnimationFrame(() => {
-      const nextAnchor = this.statusBar?.getToggleButton(groupId) ?? null;
+      const nextAnchor = this.statusBar?.getBatchCardAnchor(groupId) ?? null;
       if (nextAnchor == null || previousAnchorTop == null || scrollTarget == null) {
         return;
       }
