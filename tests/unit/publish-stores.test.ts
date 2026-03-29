@@ -61,10 +61,14 @@ describe('publish store firefox CLI', () => {
   it('creates a signed firefox artifact without requiring a real pnpm binary', () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), 'turborender-pnpm-'));
     const binDir = path.join(tempDir, 'bin');
+    const sourceDir = path.join(tempDir, 'firefox-mv2');
+    const metadataFile = path.join(tempDir, 'firefox-amo-metadata.json');
     const artifactsDir = path.join(tempDir, 'artifacts');
     const fakePnpm = path.join(binDir, 'pnpm');
 
     mkdirSync(binDir, { recursive: true });
+    mkdirSync(sourceDir, { recursive: true });
+    writeFileSync(metadataFile, '{"id":"dummy@example.com"}');
     writeFileSync(
       fakePnpm,
       `#!/usr/bin/env node
@@ -95,9 +99,9 @@ fs.writeFileSync(path.join(artifactsDir, 'signed.xpi'), 'dummy xpi');
           '--version',
           '1.2.3',
           '--firefox-source-dir',
-          path.join(process.cwd(), '.output', 'firefox-mv2'),
+          sourceDir,
           '--firefox-amo-metadata',
-          path.join(process.cwd(), 'store', 'firefox-amo-metadata.json'),
+          metadataFile,
           '--firefox-artifacts-dir',
           artifactsDir,
         ],
