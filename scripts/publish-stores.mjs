@@ -70,6 +70,10 @@ export function parseArgs(argv) {
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index];
 
+    if (arg === '--') {
+      continue;
+    }
+
     if (arg === '--target') {
       result.target = argv[++index] ?? '';
       continue;

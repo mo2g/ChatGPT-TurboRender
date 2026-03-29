@@ -14,6 +14,7 @@ describe('publish store helpers', () => {
       parseArgs([
         'node',
         'scripts/publish-stores.mjs',
+        '--',
         '--target',
         'firefox',
         '--version',
