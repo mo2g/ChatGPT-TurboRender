@@ -8,6 +8,7 @@ This repository uses [.github/workflows/browser-packages.yml](../.github/workflo
 - The pipeline installs dependencies, runs unit tests once, then builds one package per browser.
 - Chrome and Edge are packaged as `.zip` archives from the built extension output.
 - Firefox is signed with `web-ext sign --channel=unlisted` and published as a `.xpi` file.
+- If AMO already has the same Firefox version, the packaging step reuses the existing signed `.xpi` instead of failing on a duplicate submission.
 - The workflow publishes the release files to a GitHub Release that matches the tag.
 
 ## Browser outputs
