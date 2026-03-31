@@ -47,7 +47,7 @@ function isHydrationPlaceholderChatId(chatId: string): boolean {
 }
 
 export default defineContentScript({
-  matches: ['https://chatgpt.com/*'],
+  matches: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   runAt: 'document_start',
   async main(ctx) {
     const html = document.documentElement;

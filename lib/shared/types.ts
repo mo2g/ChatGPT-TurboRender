@@ -212,6 +212,10 @@ export interface TabStatusResponse {
   settings: Settings;
   paused: boolean;
   runtime: TabRuntimeStatus | null;
+  targetTabId: number | null;
+  activeTabId: number | null;
+  usingWindowFallback: boolean;
+  activeTabSupportedHost: boolean;
 }
 
 export interface TurnGroupPlan {

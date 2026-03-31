@@ -90,6 +90,19 @@ const MESSAGE_CATALOG = {
     stateInspecting: 'Viewing history',
     statusLoading: 'Loading…',
     statusNoSupportedTab: 'No supported ChatGPT tab was found in the active window.',
+    statusNoSupportedConversationPage:
+      'Current tab is on ChatGPT, but this page is not a supported conversation route yet. Open /c/<id> or /share/<id>.',
+    statusFallbackTabSelected:
+      'Showing status from the first supported ChatGPT tab found in this window.',
+    statusInactiveThresholdHint:
+      'Auto-activation starts only after thresholds are reached: {finalized} finalized turns, {nodes} live DOM descendants, or {spikes} frame spikes in {windowMs} ms.',
+    statusUnsupportedReasonMissingMain:
+      'Unsupported on this page: ChatGPT main container was not found.',
+    statusUnsupportedReasonNoTurns:
+      'Unsupported on this page: no conversation turns were detected yet.',
+    statusUnsupportedReasonSplitParents:
+      'Unsupported on this page: conversation turns are split across multiple host containers.',
+    statusUnsupportedReasonGeneric: 'Unsupported on this page due to host layout differences.',
     statusUnavailable: 'Unavailable',
     statusSavedLocally: 'Saved locally.',
     statusResetToDefaults: 'Reset to defaults.',
@@ -244,6 +257,15 @@ const MESSAGE_CATALOG = {
     stateInspecting: '正在查看历史',
     statusLoading: '加载中…',
     statusNoSupportedTab: '当前窗口中没有可用的 ChatGPT 标签页。',
+    statusNoSupportedConversationPage:
+      '当前标签页位于 ChatGPT 域名下，但还不是受支持的会话路由。请打开 /c/<id> 或 /share/<id>。',
+    statusFallbackTabSelected: '当前显示的是本窗口中第一个受支持的 ChatGPT 标签页状态。',
+    statusInactiveThresholdHint:
+      '自动激活只会在阈值满足后触发：已完成消息数达到 {finalized}，或活跃 DOM 后代达到 {nodes}，或 {windowMs} 毫秒内出现 {spikes} 次帧抖动。',
+    statusUnsupportedReasonMissingMain: '当前页面不受支持：未检测到 ChatGPT 主容器。',
+    statusUnsupportedReasonNoTurns: '当前页面不受支持：尚未检测到会话消息节点。',
+    statusUnsupportedReasonSplitParents: '当前页面不受支持：消息节点分散在多个宿主容器中。',
+    statusUnsupportedReasonGeneric: '当前页面不受支持：宿主页结构与扩展预期不一致。',
     statusUnavailable: '不可用',
     statusSavedLocally: '已保存到本地。',
     statusResetToDefaults: '已恢复默认值。',

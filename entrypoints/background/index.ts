@@ -31,8 +31,21 @@ export default defineBackground(() => {
       });
       return {
         id: tab?.id ?? null,
-        url: tab?.url,
+        url: tab?.url ?? null,
+        active: tab?.active ?? false,
+        index: tab?.index ?? 999_999,
       };
+    },
+    async getCurrentWindowTabs() {
+      const tabs = await browser.tabs.query({
+        currentWindow: true,
+      });
+      return tabs.map((tab) => ({
+        id: tab.id ?? null,
+        url: tab.url ?? null,
+        active: tab.active ?? false,
+        index: tab.index ?? 999_999,
+      }));
     },
     async getTabStatus(tabId) {
       return safeSendMessage(tabId, { type: 'GET_TAB_STATUS' });

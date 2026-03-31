@@ -34,6 +34,49 @@ function getRuntimeLabel(status: TabStatusResponse['runtime'], t: ReturnType<typ
   return t('stateMonitoring');
 }
 
+function getUnsupportedReasonLabel(
+  reason: string | null,
+  t: ReturnType<typeof createTranslator>,
+): string {
+  switch (reason) {
+    case 'missing-main':
+      return t('statusUnsupportedReasonMissingMain');
+    case 'no-turns':
+      return t('statusUnsupportedReasonNoTurns');
+    case 'split-parents':
+      return t('statusUnsupportedReasonSplitParents');
+    default:
+      return t('statusUnsupportedReasonGeneric');
+  }
+}
+
+function getRuntimeDetail(status: TabStatusResponse, t: ReturnType<typeof createTranslator>): string {
+  const runtime = status.runtime;
+  if (runtime == null) {
+    return status.activeTabSupportedHost
+      ? t('statusNoSupportedConversationPage')
+      : t('statusNoSupportedTab');
+  }
+  if (status.usingWindowFallback) {
+    return t('statusFallbackTabSelected');
+  }
+  if (!runtime.supported) {
+    return getUnsupportedReasonLabel(runtime.reason, t);
+  }
+  if (runtime.paused) {
+    return t('statusShelfPaused');
+  }
+  if (!runtime.active) {
+    return t('statusInactiveThresholdHint', {
+      finalized: status.settings.minFinalizedBlocks,
+      nodes: status.settings.minDescendants,
+      spikes: status.settings.frameSpikeCount,
+      windowMs: status.settings.frameSpikeWindowMs,
+    });
+  }
+  return t('statusShelfMonitoring');
+}
+
 function formatStartedAt(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
     return '—';
@@ -55,15 +98,13 @@ function render(status: TabStatusResponse): void {
   const initialTrim = runtime?.initialTrimApplied
     ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
     : t('statusHistoryNo');
+  const runtimeDetail = getRuntimeDetail(status, t);
 
   app.innerHTML = `
     <section class="popup-card">
       <h1>${t('appName')}</h1>
-      <p class="popup-status" id="status-copy">${
-        runtime == null
-          ? t('statusNoSupportedTab')
-          : `${getRuntimeLabel(runtime, t)} • ${runtime.chatId}`
-      }</p>
+      <p class="popup-status" id="status-copy">${runtime == null ? t('statusUnavailable') : `${getRuntimeLabel(runtime, t)} • ${runtime.chatId}`}</p>
+      <p class="popup-status">${runtimeDetail}</p>
       <div class="popup-row">
         <label>
           <input type="checkbox" id="enabled-toggle" ${status.settings.enabled ? 'checked' : ''} />
@@ -185,13 +226,21 @@ document.addEventListener('click', async (event) => {
   }
 
   if (target.id === 'restore-nearby') {
-    await browser.runtime.sendMessage({ type: 'RESTORE_NEARBY' });
+    const status = await fetchStatus();
+    await browser.runtime.sendMessage({
+      type: 'RESTORE_NEARBY',
+      ...(status.targetTabId == null ? {} : { tabId: status.targetTabId }),
+    });
     await refresh();
     return;
   }
 
   if (target.id === 'restore-all') {
-    await browser.runtime.sendMessage({ type: 'RESTORE_ALL' });
+    const status = await fetchStatus();
+    await browser.runtime.sendMessage({
+      type: 'RESTORE_ALL',
+      ...(status.targetTabId == null ? {} : { tabId: status.targetTabId }),
+    });
     await refresh();
     return;
   }
@@ -216,6 +265,7 @@ document.addEventListener('click', async (event) => {
       type: 'PAUSE_CHAT',
       chatId: status.runtime.chatId,
       paused: !status.paused,
+      ...(status.targetTabId == null ? {} : { tabId: status.targetTabId }),
     });
     await refresh();
   }

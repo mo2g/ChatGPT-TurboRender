@@ -183,7 +183,8 @@ export function installConversationBootstrap(
       return null;
     }
 
-    const requestUrl = `https://chatgpt.com/share/${shareId ?? route.routeId}`;
+    const origin = doc.location?.origin ?? 'https://chatgpt.com';
+    const requestUrl = `${origin}/share/${shareId ?? route.routeId}`;
     const mappingCount = Object.keys(payload.mapping).length;
     const updateTime =
       typeof (payload as Record<string, unknown>).update_time === 'number'

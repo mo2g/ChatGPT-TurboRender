@@ -25,10 +25,12 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 ## What it does
 
 - Preserves the native ChatGPT UI instead of forcing a custom reader mode
+- Runs on supported ChatGPT conversation routes (`/c/<id>` and `/share/<id>`) on `chatgpt.com` and `chat.openai.com`
 - Keeps the latest 5 interaction pairs live and folds older history inline in the original transcript order
-- Activates automatically when thread size or frame-pressure heuristics cross a threshold
+- Auto-activates only when thresholds are reached (finalized turns, live DOM descendants, or frame-spike count)
 - Trims the initial `/backend-api/conversation/:id` payload in page context and also reads share-page loader data
 - Parks cold message groups and replaces them with compact inline batch cards
+- Popup shows the current tab status, or the first supported ChatGPT tab in the same window when the active tab is not ChatGPT
 - Keeps a sticky `Expand / Collapse` control on the right side of long opened batches
 - Supports English and Simplified Chinese, with auto-follow plus manual override
 - Falls back to a safer soft-fold mode if the host page re-renders aggressively

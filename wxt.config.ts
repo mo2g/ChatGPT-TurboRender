@@ -11,7 +11,7 @@ export default defineConfig({
     description:
       'Keep long ChatGPT conversations responsive by parking cold history blocks and restoring them on demand.',
     permissions: ['storage'],
-    host_permissions: ['https://chatgpt.com/*'],
+    host_permissions: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
     icons: {
       16: ICON_PATH,
       32: ICON_PATH,
