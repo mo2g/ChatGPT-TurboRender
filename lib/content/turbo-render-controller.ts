@@ -262,6 +262,10 @@ export class TurboRenderController {
     if (paused) {
       this.active = false;
       this.restoreAllParking(0);
+      this.statusBar?.destroy();
+    } else if (this.settings.enabled) {
+      this.active = true;
+      this.manualRestoreHoldUntil = 0;
     }
     this.scheduleRefresh();
   }
@@ -849,7 +853,7 @@ export class TurboRenderController {
   }
 
   private updateStatusBar(): void {
-    if (this.statusBar == null) {
+    if (this.statusBar == null || this.paused) {
       return;
     }
 

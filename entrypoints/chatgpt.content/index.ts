@@ -8,10 +8,88 @@ import {
   isChatPaused,
   setChatPaused,
 } from '../../lib/shared/settings';
-import { createDisposableBag, registerOptionalListener } from '../../lib/content/runtime-disposers';
-import { getRuntimeMessageEvent } from '../../lib/shared/extension-api';
+import { createDisposableBag } from '../../lib/content/runtime-disposers';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import type { InitialTrimSession, Settings } from '../../lib/shared/types';
+
+type RuntimeMessageEventTarget = {
+  addListener(handler: (...args: unknown[]) => unknown): void;
+  removeListener(handler: (...args: unknown[]) => unknown): void;
+};
+
+function resolveRuntimeMessageEvent(): {
+  api: RuntimeMessageEventTarget | null;
+  flavor: 'browser' | 'chrome' | null;
+} {
+  const maybeChrome = (globalThis as {
+    chrome?: { runtime?: { id?: string | null; onMessage?: RuntimeMessageEventTarget } };
+  }).chrome;
+  if (maybeChrome?.runtime?.id != null && maybeChrome.runtime.onMessage != null) {
+    return {
+      api: maybeChrome.runtime.onMessage,
+      flavor: 'chrome',
+    };
+  }
+
+  const maybeBrowser = (globalThis as {
+    browser?: { runtime?: { id?: string | null; onMessage?: RuntimeMessageEventTarget } };
+  }).browser;
+  if (maybeBrowser?.runtime?.id != null && maybeBrowser.runtime.onMessage != null) {
+    return {
+      api: maybeBrowser.runtime.onMessage,
+      flavor: 'browser',
+    };
+  }
+
+  return {
+    api: null,
+    flavor: null,
+  };
+}
+
+function registerRuntimeMessageListener(
+  bag: ReturnType<typeof createDisposableBag>,
+  handler: (message: unknown) => unknown,
+): boolean {
+  const { api, flavor } = resolveRuntimeMessageEvent();
+  if (api == null || flavor == null) {
+    return false;
+  }
+
+  const listener = flavor === 'chrome'
+    ? (message: unknown, _sender: unknown, sendResponse: (response: unknown) => void) => {
+        const result = handler(message);
+        if (result === undefined) {
+          return undefined;
+        }
+
+        void Promise.resolve(result)
+          .then((value) => {
+            sendResponse(value);
+          })
+          .catch(() => {
+            sendResponse(null);
+          });
+        return true;
+      }
+    : (message: unknown) => handler(message);
+
+  try {
+    api.addListener(listener);
+  } catch {
+    return false;
+  }
+
+  bag.add(() => {
+    try {
+      api.removeListener(listener);
+    } catch {
+      // Ignore teardown failures when the content-script context is already invalid.
+    }
+  });
+
+  return true;
+}
 
 function whenDocumentReady(callback: () => void, ctx?: { addEventListener?: (...args: unknown[]) => void; isInvalid?: boolean }): void {
   if (document.readyState === 'interactive' || document.readyState === 'complete') {
@@ -273,7 +351,7 @@ export default defineContentScript({
       }
     };
 
-    registerOptionalListener(disposables, getRuntimeMessageEvent<typeof handleRuntimeMessage>(), handleRuntimeMessage);
+    registerRuntimeMessageListener(disposables, handleRuntimeMessage);
     ctx.setInterval(() => {
       syncSettingsSnapshot();
     }, 2000);

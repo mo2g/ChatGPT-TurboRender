@@ -41,6 +41,35 @@ function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+const LEADING_ROLE_PREFIX_PATTERNS = [
+  /^(?:you|you said)\s*[:：]\s*/i,
+  /^(?:assistant|chatgpt)(?:\s+(?:said|says))?\s*[:：]\s*/i,
+  /^(?:你|你说)\s*[:：]\s*/,
+  /^(?:助手|chatgpt)\s*(?:说)?\s*[:：]\s*/i,
+];
+
+export function stripLeadingRolePrefix(text: string): string {
+  let output = text.trimStart();
+
+  for (let pass = 0; pass < 6; pass += 1) {
+    let replaced = false;
+    for (const pattern of LEADING_ROLE_PREFIX_PATTERNS) {
+      if (!pattern.test(output)) {
+        continue;
+      }
+
+      output = output.replace(pattern, '').trimStart();
+      replaced = true;
+      break;
+    }
+    if (!replaced) {
+      break;
+    }
+  }
+
+  return output.trim();
+}
+
 function summarizeText(text: string, maxLength = 72): string {
   const normalized = normalizeText(text);
   if (normalized.length <= maxLength) {
@@ -54,6 +83,10 @@ function pickPreview<T extends PairableTurn>(entries: T[], roles: TurnRole[]): s
   for (const entry of entries) {
     if (roles.includes(entry.role)) {
       const preview = summarizeText(entry.text);
+      const cleaned = summarizeText(stripLeadingRolePrefix(entry.text));
+      if (cleaned.length > 0) {
+        return cleaned;
+      }
       if (preview.length > 0) {
         return preview;
       }
@@ -61,9 +94,13 @@ function pickPreview<T extends PairableTurn>(entries: T[], roles: TurnRole[]): s
   }
 
   for (const entry of entries) {
-    const preview = summarizeText(entry.text);
-    if (preview.length > 0) {
-      return preview;
+    const cleaned = summarizeText(stripLeadingRolePrefix(entry.text));
+    if (cleaned.length > 0) {
+      return cleaned;
+    }
+    const fallback = summarizeText(entry.text);
+    if (fallback.length > 0) {
+      return fallback;
     }
   }
 

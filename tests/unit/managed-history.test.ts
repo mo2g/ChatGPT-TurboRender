@@ -215,4 +215,57 @@ describe('ManagedHistoryStore', () => {
     const hiddenMatches = store.search('is_visually_hidden_from_conversation', 1, 5);
     expect(hiddenMatches).toHaveLength(0);
   });
+
+  it('strips leading role prefixes from DOM-extracted previews', () => {
+    const store = new ManagedHistoryStore();
+    store.setInitialTrimSession(createSession(4, 0));
+
+    store.syncFromRecords([
+      {
+        id: 'live-u-1',
+        index: 0,
+        role: 'user',
+        isStreaming: false,
+        parked: false,
+        node: Object.assign(document.createElement('article'), {
+          textContent: 'You: 你说：how to build a chatbot for pdf',
+        }),
+      },
+      {
+        id: 'live-a-1',
+        index: 1,
+        role: 'assistant',
+        isStreaming: false,
+        parked: false,
+        node: Object.assign(document.createElement('article'), {
+          textContent: 'Assistant: ChatGPT 说：Building a chatbot for PDF can be useful',
+        }),
+      },
+      {
+        id: 'live-u-2',
+        index: 2,
+        role: 'user',
+        isStreaming: false,
+        parked: false,
+        node: Object.assign(document.createElement('article'), { textContent: 'second question' }),
+      },
+      {
+        id: 'live-a-2',
+        index: 3,
+        role: 'assistant',
+        isStreaming: false,
+        parked: false,
+        node: Object.assign(document.createElement('article'), { textContent: 'second answer' }),
+      },
+    ]);
+
+    const groups = store.getArchiveGroups(0, 5, '', new Set());
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.userPreview.startsWith('how to build a chatbot for pdf')).toBe(true);
+    expect(groups[0]?.userPreview).not.toContain('You:');
+    expect(groups[0]?.userPreview).not.toContain('你说：');
+    expect(groups[0]?.assistantPreview.startsWith('Building a chatbot for PDF can be useful')).toBe(true);
+    expect(groups[0]?.assistantPreview).not.toContain('Assistant:');
+    expect(groups[0]?.assistantPreview).not.toContain('ChatGPT 说：');
+  });
 });

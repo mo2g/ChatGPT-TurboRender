@@ -216,6 +216,7 @@ export interface TabStatusResponse {
   activeTabId: number | null;
   usingWindowFallback: boolean;
   activeTabSupportedHost: boolean;
+  activeTabRouteKind: ConversationRouteKind | null;
 }
 
 export interface TurnGroupPlan {

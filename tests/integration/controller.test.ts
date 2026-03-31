@@ -387,4 +387,44 @@ describe('TurboRenderController', () => {
     expect(controller.getStatus().archivedTurnsTotal).toBe(archivedBefore);
     expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).not.toBeNull();
   });
+
+  it('hides plugin UI while paused and restores TurboRender when resumed', async () => {
+    mountTranscriptFixture(document, { turnCount: 18, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    controller.start();
+    await flush();
+
+    expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).not.toBeNull();
+    expect(controller.getStatus().parkedGroups).toBeGreaterThan(0);
+
+    controller.setPaused(true);
+    await flush();
+
+    expect(controller.getStatus().paused).toBe(true);
+    expect(controller.getStatus().parkedGroups).toBe(0);
+    expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).toBeNull();
+
+    controller.setPaused(false);
+    await flush();
+
+    expect(controller.getStatus().paused).toBe(false);
+    expect(controller.getStatus().active).toBe(true);
+    expect(controller.getStatus().parkedGroups).toBeGreaterThan(0);
+    expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).not.toBeNull();
+  });
 });

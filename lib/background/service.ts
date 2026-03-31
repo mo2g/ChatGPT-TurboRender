@@ -1,4 +1,4 @@
-import { getChatIdFromPathname } from '../shared/chat-id';
+import { getChatIdFromPathname, resolveConversationRoute } from '../shared/chat-id';
 import type { RuntimeMessage } from '../shared/messages';
 import type { Settings, TabRuntimeStatus, TabStatusResponse } from '../shared/types';
 
@@ -49,12 +49,25 @@ function getChatIdFromUrl(url: string | null | undefined): string {
   }
 }
 
+function getRouteKindFromUrl(url: string | null | undefined): TabStatusResponse['activeTabRouteKind'] {
+  if (typeof url !== 'string' || url.length === 0) {
+    return null;
+  }
+
+  try {
+    return resolveConversationRoute(new URL(url).pathname).kind;
+  } catch {
+    return null;
+  }
+}
+
 async function findSupportedChatGptTab(
   deps: BackgroundDeps,
   tabs: BackgroundTab[],
   skipTabId: number | null,
 ): Promise<{ tab: BackgroundTab; runtime: TabRuntimeStatus } | null> {
   const orderedTabs = [...tabs].sort((left, right) => (left.index ?? 999_999) - (right.index ?? 999_999));
+  let firstReadableRuntime: { tab: BackgroundTab; runtime: TabRuntimeStatus } | null = null;
 
   for (const tab of orderedTabs) {
     if (tab.id == null || tab.id === skipTabId || !isChatGptHost(tab.url)) {
@@ -62,12 +75,20 @@ async function findSupportedChatGptTab(
     }
 
     const runtime = await deps.getTabStatus(tab.id);
-    if (runtime?.supported) {
+    if (runtime == null) {
+      continue;
+    }
+
+    if (runtime.supported) {
       return { tab, runtime };
+    }
+
+    if (firstReadableRuntime == null) {
+      firstReadableRuntime = { tab, runtime };
     }
   }
 
-  return null;
+  return firstReadableRuntime;
 }
 
 async function buildTabStatus(
@@ -76,10 +97,14 @@ async function buildTabStatus(
 ): Promise<TabStatusResponse> {
   const settings = await deps.getSettings();
   const tabs = await deps.getCurrentWindowTabs();
-  const activeTab = tabs.find((tab) => tab.active) ?? null;
+  const activeTabFromDeps = await deps.getActiveTab();
+  const activeTabFromTabs = tabs.find((tab) => tab.active) ?? null;
+  const activeTab = activeTabFromDeps ?? activeTabFromTabs;
   const activeTabSupportedHost = isChatGptHost(activeTab?.url);
+  const activeTabRouteKind = getRouteKindFromUrl(activeTab?.url);
   let targetTab = explicitTabId != null
-    ? (tabs.find((tab) => tab.id === explicitTabId) ?? { id: explicitTabId, active: false, index: 999_999 })
+    ? (tabs.find((tab) => tab.id === explicitTabId) ??
+      (activeTab?.id === explicitTabId ? activeTab : { id: explicitTabId, active: false, index: 999_999 }))
     : activeTab;
   let runtime = targetTab?.id != null ? await deps.getTabStatus(targetTab.id) : null;
   let usingWindowFallback = false;
@@ -90,6 +115,20 @@ async function buildTabStatus(
       targetTab = fallback.tab;
       runtime = fallback.runtime;
       usingWindowFallback = true;
+    }
+  }
+
+  if (
+    explicitTabId == null &&
+    runtime == null &&
+    tabs.length === 0 &&
+    activeTab?.id != null &&
+    isChatGptHost(activeTab.url)
+  ) {
+    const runtimeFromActiveTab = await deps.getTabStatus(activeTab.id);
+    if (runtimeFromActiveTab != null) {
+      targetTab = activeTab;
+      runtime = runtimeFromActiveTab;
     }
   }
 
@@ -106,6 +145,7 @@ async function buildTabStatus(
     activeTabId: activeTab?.id ?? null,
     usingWindowFallback,
     activeTabSupportedHost,
+    activeTabRouteKind,
   };
 }
 

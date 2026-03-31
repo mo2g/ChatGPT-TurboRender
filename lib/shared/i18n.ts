@@ -20,6 +20,8 @@ const MESSAGE_CATALOG = {
     actionExpandBatch: 'Expand',
     actionCollapseBatch: 'Collapse',
     actionRestore: 'Restore',
+    actionRestoreThisChat: 'Restore this chat',
+    actionTurboRenderThisChat: 'TurboRender this chat',
     actionRestoreNearby: 'Restore nearby',
     actionRestoreAll: 'Restore all',
     actionPauseChat: 'Pause this chat',
@@ -91,7 +93,9 @@ const MESSAGE_CATALOG = {
     statusLoading: 'Loading…',
     statusNoSupportedTab: 'No supported ChatGPT tab was found in the active window.',
     statusNoSupportedConversationPage:
-      'Current tab is on ChatGPT, but this page is not a supported conversation route yet. Open /c/<id> or /share/<id>.',
+      'Current tab is on ChatGPT, but this page is not a supported conversation route yet. Open /c/{chat-id} or /share/{share-id}.',
+    statusSupportedRouteTemporarilyUnavailable:
+      'Current tab is on a supported ChatGPT conversation route, but status is temporarily unavailable. Refresh the page or reopen the popup.',
     statusFallbackTabSelected:
       'Showing status from the first supported ChatGPT tab found in this window.',
     statusInactiveThresholdHint:
@@ -104,6 +108,7 @@ const MESSAGE_CATALOG = {
       'Unsupported on this page: conversation turns are split across multiple host containers.',
     statusUnsupportedReasonGeneric: 'Unsupported on this page due to host layout differences.',
     statusUnavailable: 'Unavailable',
+    statusTemporarilyUnavailable: 'Temporarily unavailable',
     statusSavedLocally: 'Saved locally.',
     statusResetToDefaults: 'Reset to defaults.',
     statusStoredLocally: 'Settings are stored locally in your browser profile.',
@@ -121,7 +126,7 @@ const MESSAGE_CATALOG = {
     supportAction: 'Open support section',
     statusShelfManaged: 'To keep ChatGPT responsive, {count} older turns are tucked away.',
     statusShelfInspecting: 'Viewing {count} managed turns. Auto-parking is temporarily paused.',
-    statusShelfPaused: 'TurboRender is paused for this chat.',
+    statusShelfPaused: 'ChatGPT official rendering is active for this chat. TurboRender is paused.',
     statusShelfMonitoring: 'TurboRender is active and watching this chat.',
     statusShelfMeta:
       '{state} • {handled} handled • {nodes} live nodes • {spikes} recent frame spikes',
@@ -187,6 +192,8 @@ const MESSAGE_CATALOG = {
     actionExpandBatch: '展开',
     actionCollapseBatch: '折叠',
     actionRestore: '恢复',
+    actionRestoreThisChat: '恢复此会话',
+    actionTurboRenderThisChat: 'TurboRender 此会话',
     actionRestoreNearby: '恢复附近',
     actionRestoreAll: '恢复全部',
     actionPauseChat: '暂停此会话',
@@ -258,7 +265,9 @@ const MESSAGE_CATALOG = {
     statusLoading: '加载中…',
     statusNoSupportedTab: '当前窗口中没有可用的 ChatGPT 标签页。',
     statusNoSupportedConversationPage:
-      '当前标签页位于 ChatGPT 域名下，但还不是受支持的会话路由。请打开 /c/<id> 或 /share/<id>。',
+      '当前标签页位于 ChatGPT 域名下，但还不是受支持的会话路由。请打开 /c/{chat-id} 或 /share/{share-id}。',
+    statusSupportedRouteTemporarilyUnavailable:
+      '当前标签页已经是受支持的 ChatGPT 会话路由，但状态暂时不可读。请刷新页面或重新打开 popup。',
     statusFallbackTabSelected: '当前显示的是本窗口中第一个受支持的 ChatGPT 标签页状态。',
     statusInactiveThresholdHint:
       '自动激活只会在阈值满足后触发：已完成消息数达到 {finalized}，或活跃 DOM 后代达到 {nodes}，或 {windowMs} 毫秒内出现 {spikes} 次帧抖动。',
@@ -267,6 +276,7 @@ const MESSAGE_CATALOG = {
     statusUnsupportedReasonSplitParents: '当前页面不受支持：消息节点分散在多个宿主容器中。',
     statusUnsupportedReasonGeneric: '当前页面不受支持：宿主页结构与扩展预期不一致。',
     statusUnavailable: '不可用',
+    statusTemporarilyUnavailable: '状态暂不可读',
     statusSavedLocally: '已保存到本地。',
     statusResetToDefaults: '已恢复默认值。',
     statusStoredLocally: '设置只保存在当前浏览器本地配置中。',
@@ -281,7 +291,7 @@ const MESSAGE_CATALOG = {
     supportAction: '查看支持项目',
     statusShelfManaged: '为保持 ChatGPT 流畅，已有 {count} 条较早历史被收纳。',
     statusShelfInspecting: '正在查看 {count} 条已处理历史，自动重新收纳已临时暂停。',
-    statusShelfPaused: '此会话中的 TurboRender 已暂停。',
+    statusShelfPaused: '此会话当前由 ChatGPT 官方渲染接管，TurboRender 已暂停。',
     statusShelfMonitoring: 'TurboRender 正在监控此会话。',
     statusShelfMeta: '{state} • 已处理 {handled} 条 • {nodes} 个活跃节点 • {spikes} 次近期帧抖动',
     statusHistoryYes: '是（{count} 条冷历史）',

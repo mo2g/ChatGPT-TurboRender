@@ -87,7 +87,7 @@ GitHub Actions 会在 [.github/workflows/browser-packages.yml](./.github/workflo
 如果要让 `chrome-devtools` MCP 调试真正连到“已加载 unpacked 扩展”的浏览器，不要再在 MCP 自启浏览器里手动点 `chrome://extensions`。统一使用仓库内的受控 Chrome 启动命令：
 
 ```bash
-pnpm debug:mcp-chrome -- https://chatgpt.com/share/69c62773-7b4c-83e8-b441-48520275c284
+pnpm debug:mcp-chrome -- https://chatgpt.com/share/69cb7947-c818-83e8-9851-1361e4480e08
 ```
 
 这个命令会拉起一个固定监听 `http://127.0.0.1:9222` 的 Chromium 系浏览器，并预加载 `.output/chrome-mv3`。启动器会优先使用仓库自带的 Playwright 浏览器（`Google Chrome for Testing`）或本地 Chromium，因为稳定版 Google Chrome 已经不再对 unpacked 扩展生效 `--load-extension`。启动后重新打开当前仓库的 Codex 会话，让项目级的 `[.codex/config.toml](./.codex/config.toml)` 把 `chrome-devtools` MCP 指向这个浏览器。

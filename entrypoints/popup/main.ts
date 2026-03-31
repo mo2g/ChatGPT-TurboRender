@@ -7,6 +7,7 @@ import './style.css';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 let currentSupportUrl = getSupportReadmeUrl('en');
+let latestStatus: TabStatusResponse | null = null;
 
 function getSupportAssets(): { wechat: string; alipay: string } {
   return {
@@ -53,15 +54,21 @@ function getUnsupportedReasonLabel(
 function getRuntimeDetail(status: TabStatusResponse, t: ReturnType<typeof createTranslator>): string {
   const runtime = status.runtime;
   if (runtime == null) {
+    if (
+      status.activeTabSupportedHost &&
+      (status.activeTabRouteKind === 'chat' || status.activeTabRouteKind === 'share')
+    ) {
+      return t('statusSupportedRouteTemporarilyUnavailable');
+    }
     return status.activeTabSupportedHost
       ? t('statusNoSupportedConversationPage')
       : t('statusNoSupportedTab');
   }
-  if (status.usingWindowFallback) {
-    return t('statusFallbackTabSelected');
-  }
   if (!runtime.supported) {
     return getUnsupportedReasonLabel(runtime.reason, t);
+  }
+  if (status.usingWindowFallback) {
+    return t('statusFallbackTabSelected');
   }
   if (runtime.paused) {
     return t('statusShelfPaused');
@@ -77,6 +84,20 @@ function getRuntimeDetail(status: TabStatusResponse, t: ReturnType<typeof create
   return t('statusShelfMonitoring');
 }
 
+function getStatusCopy(status: TabStatusResponse, t: ReturnType<typeof createTranslator>): string {
+  if (status.runtime == null) {
+    if (
+      status.activeTabSupportedHost &&
+      (status.activeTabRouteKind === 'chat' || status.activeTabRouteKind === 'share')
+    ) {
+      return t('statusTemporarilyUnavailable');
+    }
+    return t('statusUnavailable');
+  }
+
+  return `${getRuntimeLabel(status.runtime, t)} • ${status.runtime.chatId}`;
+}
+
 function formatStartedAt(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
     return '—';
@@ -89,21 +110,27 @@ function render(status: TabStatusResponse): void {
   if (app == null) {
     return;
   }
+  latestStatus = status;
 
   const language = getExtensionLanguage(status.settings);
   const t = createTranslator(language);
   currentSupportUrl = getSupportReadmeUrl(language);
   const supportAssets = getSupportAssets();
   const runtime = status.runtime;
+  const unavailableCopy =
+    status.activeTabSupportedHost && (status.activeTabRouteKind === 'chat' || status.activeTabRouteKind === 'share')
+      ? t('statusTemporarilyUnavailable')
+      : t('statusUnavailable');
   const initialTrim = runtime?.initialTrimApplied
     ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns })
     : t('statusHistoryNo');
   const runtimeDetail = getRuntimeDetail(status, t);
+  const statusCopy = getStatusCopy(status, t);
 
   app.innerHTML = `
     <section class="popup-card">
       <h1>${t('appName')}</h1>
-      <p class="popup-status" id="status-copy">${runtime == null ? t('statusUnavailable') : `${getRuntimeLabel(runtime, t)} • ${runtime.chatId}`}</p>
+      <p class="popup-status" id="status-copy">${statusCopy}</p>
       <p class="popup-status">${runtimeDetail}</p>
       <div class="popup-row">
         <label>
@@ -126,7 +153,7 @@ function render(status: TabStatusResponse): void {
       <div class="popup-grid">
         ${
           runtime == null
-            ? `<span>${t('labelCurrentTab')}</span><span>${t('statusUnavailable')}</span>`
+            ? `<span>${t('labelCurrentTab')}</span><span>${unavailableCopy}</span>`
             : `
               <span>${t('labelTotalTurns')}</span><span>${runtime.totalTurns}</span>
               <span>${t('labelTotalPairs')}</span><span>${runtime.totalPairs}</span>
@@ -150,14 +177,8 @@ function render(status: TabStatusResponse): void {
         }
       </div>
       <div class="popup-actions">
-        <button id="pause-chat" ${runtime == null || !runtime.supported ? 'disabled' : ''}>
-          ${status.paused ? t('actionResumeChat') : t('actionPauseChat')}
-        </button>
-        <button id="restore-nearby" ${runtime == null || runtime.collapsedBatchCount === 0 ? 'disabled' : ''}>
-          ${t('actionRestoreNearby')}
-        </button>
-        <button id="restore-all" ${runtime == null || runtime.collapsedBatchCount === 0 ? 'disabled' : ''}>
-          ${t('actionRestoreAll')}
+        <button id="toggle-chat-mode" ${runtime == null || !runtime.supported ? 'disabled' : ''}>
+          ${status.paused ? t('actionTurboRenderThisChat') : t('actionRestoreThisChat')}
         </button>
       </div>
     </section>
@@ -225,26 +246,6 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  if (target.id === 'restore-nearby') {
-    const status = await fetchStatus();
-    await browser.runtime.sendMessage({
-      type: 'RESTORE_NEARBY',
-      ...(status.targetTabId == null ? {} : { tabId: status.targetTabId }),
-    });
-    await refresh();
-    return;
-  }
-
-  if (target.id === 'restore-all') {
-    const status = await fetchStatus();
-    await browser.runtime.sendMessage({
-      type: 'RESTORE_ALL',
-      ...(status.targetTabId == null ? {} : { tabId: status.targetTabId }),
-    });
-    await refresh();
-    return;
-  }
-
   if (target.id === 'open-options') {
     await browser.runtime.openOptionsPage();
     return;
@@ -255,8 +256,8 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
-  if (target.id === 'pause-chat') {
-    const status = await fetchStatus();
+  if (target.id === 'toggle-chat-mode') {
+    const status = latestStatus ?? (await fetchStatus());
     if (status.runtime == null) {
       return;
     }

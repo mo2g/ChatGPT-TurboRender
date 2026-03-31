@@ -23,11 +23,17 @@ test('harness parks and restores turns inside the extension build', async () => 
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/harness.html`);
 
-    await expect(page.locator('#harness-status')).toContainText('parked', { timeout: 15_000 });
-    await expect(page.locator('[data-turbo-render-group-id]').first()).toBeVisible();
+    const inlineHistoryRoot = page.locator('[data-turbo-render-inline-history-root="true"]');
+    await expect(inlineHistoryRoot).toBeVisible({ timeout: 15_000 });
 
-    await page.getByRole('button', { name: 'Restore all' }).click();
-    await expect(page.locator('[data-turbo-render-group-id]')).toHaveCount(0);
+    const firstBatch = page.locator('[data-turbo-render-batch-anchor="true"]').first();
+    await expect(firstBatch).toBeVisible();
+    await expect(firstBatch.locator('[data-lane]')).toHaveCount(0);
+
+    const firstToggle = firstBatch.locator('[data-turbo-render-action="toggle-archive-group"]');
+    await expect(firstToggle).toBeVisible();
+    await firstToggle.click();
+    await expect(firstBatch.locator('[data-lane]').first()).toBeVisible();
   } finally {
     await context.close();
     await fs.rm(userDataDir, { recursive: true, force: true });

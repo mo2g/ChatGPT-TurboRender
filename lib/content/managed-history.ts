@@ -1,6 +1,7 @@
 import {
   buildInteractionBatches,
   buildInteractionPairs,
+  stripLeadingRolePrefix,
   type InteractionBatch,
   type InteractionPair,
 } from '../shared/interaction-pairs';
@@ -62,7 +63,7 @@ function extractNodeParts(node: HTMLElement | null): string[] {
 
   return text
     .split(/\n+/)
-    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .map((part) => stripLeadingRolePrefix(part.replace(/\s+/g, ' ').trim()))
     .filter((part) => part.length > 0);
 }
 

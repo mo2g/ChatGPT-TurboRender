@@ -72,6 +72,7 @@ describe('background service', () => {
       targetTabId: 5,
       activeTabId: 5,
       usingWindowFallback: false,
+      activeTabRouteKind: 'chat',
       runtime: {
         chatId: 'chat:abc',
         paused: true,
@@ -281,6 +282,95 @@ describe('background service', () => {
     });
   });
 
+  it('falls back to readable unsupported ChatGPT runtime when no supported runtime exists', async () => {
+    const service = createBackgroundService({
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      setSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      getPausedChats: vi.fn().mockResolvedValue({}),
+      setPausedChat: vi.fn().mockResolvedValue(undefined),
+      getActiveTab: vi.fn().mockResolvedValue({
+        id: 41,
+        url: 'https://example.com/',
+        active: true,
+        index: 0,
+      }),
+      getCurrentWindowTabs: vi.fn().mockResolvedValue([
+        {
+          id: 41,
+          url: 'https://example.com/',
+          active: true,
+          index: 0,
+        },
+        {
+          id: 42,
+          url: 'https://chatgpt.com/share/only-unsupported',
+          active: false,
+          index: 1,
+        },
+      ]),
+      getTabStatus: vi.fn<(tabId: number) => Promise<TabRuntimeStatus | null>>(async (tabId) => {
+        if (tabId === 41) {
+          return null;
+        }
+
+        if (tabId === 42) {
+          return {
+            supported: false,
+            chatId: 'share:only-unsupported',
+            routeKind: 'share',
+            reason: 'no-turns',
+            archiveOnly: false,
+            active: false,
+            paused: false,
+            mode: 'performance',
+            softFallback: false,
+            initialTrimApplied: false,
+            initialTrimmedTurns: 0,
+            totalMappingNodes: 0,
+            activeBranchLength: 0,
+            totalTurns: 0,
+            totalPairs: 0,
+            hotPairsVisible: 0,
+            finalizedTurns: 0,
+            handledTurnsTotal: 0,
+            historyPanelOpen: false,
+            archivedTurnsTotal: 0,
+            expandedArchiveGroups: 0,
+            historyAnchorMode: 'hidden',
+            slotBatchCount: 0,
+            collapsedBatchCount: 0,
+            expandedBatchCount: 0,
+            parkedTurns: 0,
+            parkedGroups: 0,
+            liveDescendantCount: 0,
+            visibleRange: null,
+            observedRootKind: 'archive-only-root',
+            refreshCount: 0,
+            spikeCount: 0,
+            lastError: null,
+            contentScriptInstanceId: 'instance-fallback-unsupported',
+            contentScriptStartedAt: 1_700_000_200_000,
+            buildSignature: 'test-build',
+          };
+        }
+
+        return null;
+      }),
+      forwardToTab: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await service.handle({ type: 'GET_TAB_STATUS' });
+    expect(result).toMatchObject({
+      targetTabId: 42,
+      activeTabId: 41,
+      usingWindowFallback: true,
+      runtime: {
+        supported: false,
+        reason: 'no-turns',
+      },
+    });
+  });
+
   it('uses share runtime ids for paused-state lookup on share pages', async () => {
     const service = createBackgroundService({
       getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
@@ -308,7 +398,159 @@ describe('background service', () => {
     const result = await service.handle({ type: 'GET_TAB_STATUS' });
     expect(result).toMatchObject({
       paused: true,
+      activeTabRouteKind: 'share',
       runtime: null,
+    });
+  });
+
+  it('marks active ChatGPT conversation route when runtime is temporarily unavailable', async () => {
+    const service = createBackgroundService({
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      setSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      getPausedChats: vi.fn().mockResolvedValue({}),
+      setPausedChat: vi.fn().mockResolvedValue(undefined),
+      getActiveTab: vi.fn().mockResolvedValue({
+        id: 77,
+        url: 'https://chatgpt.com/c/e77b97e5-a8b7-4380',
+        active: true,
+        index: 0,
+      }),
+      getCurrentWindowTabs: vi.fn().mockResolvedValue([
+        {
+          id: 77,
+          url: 'https://chatgpt.com/c/e77b97e5-a8b7-4380',
+          active: true,
+          index: 0,
+        },
+      ]),
+      getTabStatus: vi.fn().mockResolvedValue(null),
+      forwardToTab: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await service.handle({ type: 'GET_TAB_STATUS' });
+    expect(result).toMatchObject({
+      runtime: null,
+      activeTabSupportedHost: true,
+      activeTabRouteKind: 'chat',
+      usingWindowFallback: false,
+    });
+  });
+
+  it('uses getActiveTab host and route hints when window tab list is unavailable', async () => {
+    const service = createBackgroundService({
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      setSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      getPausedChats: vi.fn().mockResolvedValue({}),
+      setPausedChat: vi.fn().mockResolvedValue(undefined),
+      getActiveTab: vi.fn().mockResolvedValue({
+        id: 201,
+        url: 'https://chatgpt.com/c/active-only',
+        active: true,
+        index: 0,
+      }),
+      getCurrentWindowTabs: vi.fn().mockResolvedValue([]),
+      getTabStatus: vi.fn().mockResolvedValue(null),
+      forwardToTab: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await service.handle({ type: 'GET_TAB_STATUS' });
+    expect(result).toMatchObject({
+      runtime: null,
+      targetTabId: 201,
+      activeTabId: 201,
+      activeTabSupportedHost: true,
+      activeTabRouteKind: 'chat',
+      usingWindowFallback: false,
+    });
+  });
+
+  it('finds a supported ChatGPT runtime even if no tab is marked active in the list', async () => {
+    const service = createBackgroundService({
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      setSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      getPausedChats: vi.fn().mockResolvedValue({}),
+      setPausedChat: vi.fn().mockResolvedValue(undefined),
+      getActiveTab: vi.fn().mockResolvedValue(null),
+      getCurrentWindowTabs: vi.fn().mockResolvedValue([
+        {
+          id: 301,
+          url: 'https://chatgpt.com/c/fallback-hit',
+          active: false,
+          index: 2,
+        },
+      ]),
+      getTabStatus: vi.fn().mockResolvedValue({
+        supported: true,
+        chatId: 'chat:fallback-hit',
+        routeKind: 'chat',
+        reason: null,
+        archiveOnly: false,
+        active: true,
+        paused: false,
+        mode: 'performance',
+        softFallback: false,
+        initialTrimApplied: false,
+        initialTrimmedTurns: 0,
+        totalMappingNodes: 12,
+        activeBranchLength: 8,
+        totalTurns: 8,
+        totalPairs: 4,
+        hotPairsVisible: 4,
+        finalizedTurns: 8,
+        handledTurnsTotal: 0,
+        historyPanelOpen: false,
+        archivedTurnsTotal: 0,
+        expandedArchiveGroups: 0,
+        historyAnchorMode: 'hidden',
+        slotBatchCount: 0,
+        collapsedBatchCount: 0,
+        expandedBatchCount: 0,
+        parkedTurns: 0,
+        parkedGroups: 0,
+        liveDescendantCount: 12,
+        visibleRange: { start: 0, end: 7 },
+        observedRootKind: 'live-turn-container',
+        refreshCount: 1,
+        spikeCount: 0,
+        lastError: null,
+        contentScriptInstanceId: 'instance-fallback-hit',
+        contentScriptStartedAt: 1_700_000_100_000,
+        buildSignature: 'test-build',
+      }),
+      forwardToTab: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await service.handle({ type: 'GET_TAB_STATUS' });
+    expect(result).toMatchObject({
+      targetTabId: 301,
+      activeTabId: null,
+      usingWindowFallback: true,
+      runtime: {
+        chatId: 'chat:fallback-hit',
+        supported: true,
+      },
+    });
+  });
+
+  it('keeps no-supported-tab context when host and route are undetermined', async () => {
+    const service = createBackgroundService({
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      setSettings: vi.fn().mockResolvedValue(DEFAULT_SETTINGS),
+      getPausedChats: vi.fn().mockResolvedValue({}),
+      setPausedChat: vi.fn().mockResolvedValue(undefined),
+      getActiveTab: vi.fn().mockResolvedValue(null),
+      getCurrentWindowTabs: vi.fn().mockResolvedValue([]),
+      getTabStatus: vi.fn().mockResolvedValue(null),
+      forwardToTab: vi.fn().mockResolvedValue(null),
+    });
+
+    const result = await service.handle({ type: 'GET_TAB_STATUS' });
+    expect(result).toMatchObject({
+      runtime: null,
+      activeTabId: null,
+      activeTabSupportedHost: false,
+      activeTabRouteKind: null,
+      usingWindowFallback: false,
     });
   });
 });

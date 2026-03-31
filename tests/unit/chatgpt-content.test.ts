@@ -65,6 +65,255 @@ describe('chatgpt content entrypoint', () => {
     }).not.toThrow();
   });
 
+  it('responds to runtime messages through chrome sendResponse semantics', async () => {
+    const invalidations: Array<() => void> = [];
+    let runtimeListener:
+      | ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown)
+      | null = null;
+    const statusPayload = {
+      supported: true,
+      chatId: 'share:test-share',
+      routeKind: 'share',
+      reason: null,
+      archiveOnly: false,
+      active: true,
+      paused: false,
+      mode: 'performance' as const,
+      softFallback: false,
+      initialTrimApplied: false,
+      initialTrimmedTurns: 0,
+      totalMappingNodes: 12,
+      activeBranchLength: 8,
+      totalTurns: 8,
+      totalPairs: 4,
+      hotPairsVisible: 4,
+      finalizedTurns: 8,
+      handledTurnsTotal: 0,
+      historyPanelOpen: false,
+      archivedTurnsTotal: 0,
+      expandedArchiveGroups: 0,
+      historyAnchorMode: 'hidden' as const,
+      slotBatchCount: 0,
+      collapsedBatchCount: 0,
+      expandedBatchCount: 0,
+      parkedTurns: 0,
+      parkedGroups: 0,
+      liveDescendantCount: 12,
+      visibleRange: { start: 0, end: 7 },
+      observedRootKind: 'live-turn-container' as const,
+      refreshCount: 1,
+      spikeCount: 0,
+      lastError: null,
+      contentScriptInstanceId: 'instance-runtime-test',
+      contentScriptStartedAt: 1_700_000_000_000,
+      buildSignature: 'test-build',
+    };
+
+    vi.doMock('wxt/browser', () => ({
+      browser: {},
+    }));
+    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+      TurboRenderController: class {
+        start() {}
+        stop() {}
+        setSettings() {}
+        setPaused() {}
+        setInitialTrimSession() {}
+        restoreNearby() {}
+        restoreAll() {}
+        resetForChatChange() {}
+        getStatus() {
+          return statusPayload;
+        }
+      },
+    }));
+    vi.stubGlobal('chrome', {
+      runtime: {
+        id: 'ext-id',
+        onMessage: {
+          addListener(listener: typeof runtimeListener) {
+            runtimeListener = listener;
+          },
+          removeListener() {},
+        },
+      },
+    });
+    vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
+
+    const module = await import('../../entrypoints/chatgpt.content/index');
+    const script = module.default as {
+      main(ctx: {
+        addEventListener(
+          target: Window | Document,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions,
+        ): void;
+        onInvalidated(callback: () => void): void;
+        setInterval(callback: () => void, ms: number): number;
+        isInvalid: boolean;
+      }): Promise<void>;
+    };
+
+    const ctx = {
+      addEventListener(
+        target: Window | Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) {
+        target.addEventListener(type, listener, options);
+      },
+      onInvalidated(callback: () => void) {
+        invalidations.push(callback);
+      },
+      setInterval() {
+        return 1;
+      },
+      isInvalid: false,
+    };
+
+    await expect(script.main(ctx)).resolves.toBeUndefined();
+    expect(runtimeListener).not.toBeNull();
+
+    const sendResponse = vi.fn();
+    expect(runtimeListener?.({ type: 'GET_TAB_STATUS' }, null, sendResponse)).toBe(true);
+    await Promise.resolve();
+
+    expect(sendResponse).toHaveBeenCalledWith(statusPayload);
+    invalidations.forEach((callback) => callback());
+  });
+
+  it('prefers chrome runtime messaging when browser and chrome globals both exist', async () => {
+    const invalidations: Array<() => void> = [];
+    let chromeRuntimeListener:
+      | ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown)
+      | null = null;
+    const browserAddListener = vi.fn();
+    const statusPayload = {
+      supported: true,
+      chatId: 'share:test-share',
+      routeKind: 'share',
+      reason: null,
+      archiveOnly: false,
+      active: true,
+      paused: false,
+      mode: 'performance' as const,
+      softFallback: false,
+      initialTrimApplied: false,
+      initialTrimmedTurns: 0,
+      totalMappingNodes: 12,
+      activeBranchLength: 8,
+      totalTurns: 8,
+      totalPairs: 4,
+      hotPairsVisible: 4,
+      finalizedTurns: 8,
+      handledTurnsTotal: 0,
+      historyPanelOpen: false,
+      archivedTurnsTotal: 0,
+      expandedArchiveGroups: 0,
+      historyAnchorMode: 'hidden' as const,
+      slotBatchCount: 0,
+      collapsedBatchCount: 0,
+      expandedBatchCount: 0,
+      parkedTurns: 0,
+      parkedGroups: 0,
+      liveDescendantCount: 12,
+      visibleRange: { start: 0, end: 7 },
+      observedRootKind: 'live-turn-container' as const,
+      refreshCount: 1,
+      spikeCount: 0,
+      lastError: null,
+      contentScriptInstanceId: 'instance-runtime-test',
+      contentScriptStartedAt: 1_700_000_000_000,
+      buildSignature: 'test-build',
+    };
+
+    vi.doMock('wxt/browser', () => ({
+      browser: {},
+    }));
+    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+      TurboRenderController: class {
+        start() {}
+        stop() {}
+        setSettings() {}
+        setPaused() {}
+        setInitialTrimSession() {}
+        restoreNearby() {}
+        restoreAll() {}
+        resetForChatChange() {}
+        getStatus() {
+          return statusPayload;
+        }
+      },
+    }));
+    vi.stubGlobal('browser', {
+      runtime: {
+        id: 'browser-ext-id',
+        onMessage: {
+          addListener: browserAddListener,
+          removeListener() {},
+        },
+      },
+    });
+    vi.stubGlobal('chrome', {
+      runtime: {
+        id: 'chrome-ext-id',
+        onMessage: {
+          addListener(listener: typeof chromeRuntimeListener) {
+            chromeRuntimeListener = listener;
+          },
+          removeListener() {},
+        },
+      },
+    });
+    vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
+
+    const module = await import('../../entrypoints/chatgpt.content/index');
+    const script = module.default as {
+      main(ctx: {
+        addEventListener(
+          target: Window | Document,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions,
+        ): void;
+        onInvalidated(callback: () => void): void;
+        setInterval(callback: () => void, ms: number): number;
+        isInvalid: boolean;
+      }): Promise<void>;
+    };
+
+    const ctx = {
+      addEventListener(
+        target: Window | Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) {
+        target.addEventListener(type, listener, options);
+      },
+      onInvalidated(callback: () => void) {
+        invalidations.push(callback);
+      },
+      setInterval() {
+        return 1;
+      },
+      isInvalid: false,
+    };
+
+    await expect(script.main(ctx)).resolves.toBeUndefined();
+    expect(browserAddListener).not.toHaveBeenCalled();
+    expect(chromeRuntimeListener).not.toBeNull();
+
+    const sendResponse = vi.fn();
+    expect(chromeRuntimeListener?.({ type: 'GET_TAB_STATUS' }, null, sendResponse)).toBe(true);
+    await Promise.resolve();
+
+    expect(sendResponse).toHaveBeenCalledWith(statusPayload);
+    invalidations.forEach((callback) => callback());
+  });
+
   it('does not start a stale content-script instance after invalidation', async () => {
     const invalidations: Array<() => void> = [];
     const domReadyListeners: EventListenerOrEventListenerObject[] = [];

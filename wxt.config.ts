@@ -10,7 +10,7 @@ export default defineConfig({
     short_name: 'TurboRender',
     description:
       'Keep long ChatGPT conversations responsive by parking cold history blocks and restoring them on demand.',
-    permissions: ['storage'],
+    permissions: ['storage', 'scripting'],
     host_permissions: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
     icons: {
       16: ICON_PATH,
