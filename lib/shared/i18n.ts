@@ -27,6 +27,10 @@ const MESSAGE_CATALOG = {
     actionPauseChat: 'Pause this chat',
     actionResumeChat: 'Resume this chat',
     actionOpenOptions: 'Open options',
+    actionRefreshStatus: 'Refresh status',
+    actionRetryStatus: 'Retry status',
+    actionOpenDemoSharePage: 'Open demo share page',
+    actionViewHelp: 'View help',
     actionSave: 'Save',
     actionResetDefaults: 'Reset defaults',
     actionEnableTurboRender: 'Enable TurboRender',
@@ -91,13 +95,14 @@ const MESSAGE_CATALOG = {
     stateMonitoring: 'Monitoring',
     stateInspecting: 'Viewing history',
     statusLoading: 'Loading…',
-    statusNoSupportedTab: 'No supported ChatGPT tab was found in the active window.',
+    statusNoSupportedTab:
+      'This popup only works on supported ChatGPT conversation pages. No supported ChatGPT tab was found in the active window.',
     statusNoSupportedConversationPage:
       'Current tab is on ChatGPT, but this page is not a supported conversation route yet. Open /c/{chat-id} or /share/{share-id}.',
     statusSupportedRouteTemporarilyUnavailable:
       'Current tab is on a supported ChatGPT conversation route, but status is temporarily unavailable. Refresh the page or reopen the popup.',
     statusFallbackTabSelected:
-      'Showing status from the first supported ChatGPT tab found in this window.',
+      'This popup is showing the status from another supported ChatGPT tab in the same window.',
     statusInactiveThresholdHint:
       'Auto-activation starts only after thresholds are reached: {finalized} finalized turns, {nodes} live DOM descendants, or {spikes} frame spikes in {windowMs} ms.',
     statusUnsupportedReasonMissingMain:
@@ -112,6 +117,29 @@ const MESSAGE_CATALOG = {
     statusSavedLocally: 'Saved locally.',
     statusResetToDefaults: 'Reset to defaults.',
     statusStoredLocally: 'Settings are stored locally in your browser profile.',
+    statusPopupPanelLead: 'Status/control panel for supported ChatGPT conversations.',
+    statusPopupLoading: 'Loading the current ChatGPT status…',
+    statusPopupErrorTitle: 'Could not load popup status',
+    statusPopupErrorBody:
+      'The extension could not read the active tab or receive a status update.',
+    statusPopupErrorDetailPrefix: 'Details',
+    statusPopupRetry: 'Retry status',
+    statusPopupOpenDemo: 'Open demo share page',
+    statusPopupOpenHelp: 'View help',
+    statusPopupRulesTitle: 'Supported URL rules',
+    statusPopupRulesLead: 'TurboRender only runs on these ChatGPT conversation URLs:',
+    statusPopupRuleChatGpt: 'https://chatgpt.com/c/<id>',
+    statusPopupRuleShareGpt: 'https://chatgpt.com/share/<id>',
+    statusPopupRuleChatOpenAI: 'https://chat.openai.com/c/<id>',
+    statusPopupRuleShareOpenAI: 'https://chat.openai.com/share/<id>',
+    statusPopupUnsupportedLead:
+      'Open one of the supported conversation URLs above to use the control panel.',
+    statusPopupHomeUnsupportedLead:
+      'ChatGPT is open, but the home page is not a supported conversation route.',
+    statusPopupUnsupportedRouteLead:
+      'This supported conversation page is still loading, or the content script has not reported status yet.',
+    statusPopupFallbackLead:
+      'This popup is showing the status from another supported ChatGPT tab in the same window.',
     statusPopupTopShelfHint:
       'Older history now stays inline in the conversation as collapsible batches above the latest 5 interaction pairs.',
     statusPopupSettingsHint: 'Fine-tune thresholds, language, and fallback behavior.',
@@ -199,6 +227,10 @@ const MESSAGE_CATALOG = {
     actionPauseChat: '暂停此会话',
     actionResumeChat: '恢复此会话',
     actionOpenOptions: '打开设置',
+    actionRefreshStatus: '刷新状态',
+    actionRetryStatus: '重试状态',
+    actionOpenDemoSharePage: '打开演示分享页',
+    actionViewHelp: '查看帮助',
     actionSave: '保存',
     actionResetDefaults: '恢复默认值',
     actionEnableTurboRender: '启用 TurboRender',
@@ -263,12 +295,12 @@ const MESSAGE_CATALOG = {
     stateMonitoring: '监控中',
     stateInspecting: '正在查看历史',
     statusLoading: '加载中…',
-    statusNoSupportedTab: '当前窗口中没有可用的 ChatGPT 标签页。',
+    statusNoSupportedTab: '这个 popup 只适用于受支持的 ChatGPT 会话页。当前窗口中没有可用的 ChatGPT 会话页。',
     statusNoSupportedConversationPage:
       '当前标签页位于 ChatGPT 域名下，但还不是受支持的会话路由。请打开 /c/{chat-id} 或 /share/{share-id}。',
     statusSupportedRouteTemporarilyUnavailable:
       '当前标签页已经是受支持的 ChatGPT 会话路由，但状态暂时不可读。请刷新页面或重新打开 popup。',
-    statusFallbackTabSelected: '当前显示的是本窗口中第一个受支持的 ChatGPT 标签页状态。',
+    statusFallbackTabSelected: '当前展示的是同窗口中另一个受支持 ChatGPT 标签页的状态。',
     statusInactiveThresholdHint:
       '自动激活只会在阈值满足后触发：已完成消息数达到 {finalized}，或活跃 DOM 后代达到 {nodes}，或 {windowMs} 毫秒内出现 {spikes} 次帧抖动。',
     statusUnsupportedReasonMissingMain: '当前页面不受支持：未检测到 ChatGPT 主容器。',
@@ -280,6 +312,24 @@ const MESSAGE_CATALOG = {
     statusSavedLocally: '已保存到本地。',
     statusResetToDefaults: '已恢复默认值。',
     statusStoredLocally: '设置只保存在当前浏览器本地配置中。',
+    statusPopupPanelLead: '仅用于受支持 ChatGPT 会话的状态/控制面板。',
+    statusPopupLoading: '正在加载当前 ChatGPT 状态…',
+    statusPopupErrorTitle: '无法加载 popup 状态',
+    statusPopupErrorBody: '扩展当前无法读取活动标签页，或无法收到状态更新。',
+    statusPopupErrorDetailPrefix: '详情',
+    statusPopupRetry: '重试状态',
+    statusPopupOpenDemo: '打开演示分享页',
+    statusPopupOpenHelp: '查看帮助',
+    statusPopupRulesTitle: '支持的 URL 规则',
+    statusPopupRulesLead: 'TurboRender 仅在这些 ChatGPT 会话 URL 上运行：',
+    statusPopupRuleChatGpt: 'https://chatgpt.com/c/<id>',
+    statusPopupRuleShareGpt: 'https://chatgpt.com/share/<id>',
+    statusPopupRuleChatOpenAI: 'https://chat.openai.com/c/<id>',
+    statusPopupRuleShareOpenAI: 'https://chat.openai.com/share/<id>',
+    statusPopupUnsupportedLead: '打开上面的任意受支持会话 URL，即可使用这个控制面板。',
+    statusPopupHomeUnsupportedLead: '当前已经打开 ChatGPT，但首页不是受支持的会话路由。',
+    statusPopupUnsupportedRouteLead: '这个受支持会话页可能还在加载，或者内容脚本尚未上报状态。',
+    statusPopupFallbackLead: '当前展示的是同窗口中另一个受支持 ChatGPT 标签页的状态。',
     statusPopupTopShelfHint: '较早历史现在以内联折叠批次的形式保留在对话里，位于最新 5 对交互的上方。',
     statusPopupSettingsHint: '调整阈值、语言和降级行为。',
     statusOptionsIntro: '调整基于交互对的热区窗口、批次大小、语言，以及宿主页激进重渲染时的降级行为。',

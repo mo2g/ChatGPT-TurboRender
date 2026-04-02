@@ -5,6 +5,10 @@ export interface GetTabStatusMessage {
   tabId?: number;
 }
 
+export interface GetRuntimeStatusMessage {
+  type: 'GET_RUNTIME_STATUS';
+}
+
 export interface ToggleGlobalMessage {
   type: 'TOGGLE_GLOBAL';
   enabled: boolean;
@@ -34,6 +38,7 @@ export interface UpdateSettingsMessage {
 
 export type RuntimeMessage =
   | GetTabStatusMessage
+  | GetRuntimeStatusMessage
   | ToggleGlobalMessage
   | PauseChatMessage
   | RestoreNearbyMessage

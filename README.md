@@ -30,7 +30,7 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 - Auto-activates only when thresholds are reached (finalized turns, live DOM descendants, or frame-spike count)
 - Trims the initial `/backend-api/conversation/:id` payload in page context and also reads share-page loader data
 - Parks cold message groups and replaces them with compact inline batch cards
-- Popup shows the current tab status, or the first supported ChatGPT tab in the same window when the active tab is not ChatGPT
+- Popup acts as a status/control panel only on supported ChatGPT conversation pages; when a supported page temporarily loses its runtime, it can show a recovery state for that same page
 - Keeps a sticky `Expand / Collapse` control on the right side of long opened batches
 - Supports English and Simplified Chinese, with auto-follow plus manual override
 - Falls back to a safer soft-fold mode if the host page re-renders aggressively
@@ -136,6 +136,18 @@ Issues and PRs are welcome, especially if you can provide:
 - a performance profile comparing extension on vs. off
 
 <a id="support"></a>
+
+<a id="popup-status-control-panel"></a>
+
+## Popup Status/Control Panel
+
+The popup is a status/control panel for supported ChatGPT conversation pages only.
+
+- Supported routes: `https://chatgpt.com/c/<id>`, `https://chatgpt.com/share/<id>`, `https://chat.openai.com/c/<id>`, `https://chat.openai.com/share/<id>`
+- Unsupported ChatGPT pages show an explicit unsupported state and a link to the supported URL rules
+- When the active tab is a supported ChatGPT conversation page but its runtime is temporarily unavailable, the popup can show a recovery state for that page
+- The demo button opens a stable share page: [https://chatgpt.com/share/69cb7947-c818-83e8-9851-1361e4480e08](https://chatgpt.com/share/69cb7947-c818-83e8-9851-1361e4480e08)
+- The help button opens this section
 
 ## Support
 

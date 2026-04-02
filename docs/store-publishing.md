@@ -31,6 +31,23 @@ Typical outcomes:
 - `403 Forbidden` usually means the service account is not linked to that publisher, or the extension ID does not belong to that item.
 - `404 Not Found` usually means the publisher or extension ID is wrong.
 
+## Local Chrome review check
+
+Before sending a Chrome package to review, run the artifact-level gate:
+
+```bash
+pnpm chrome:review-check
+```
+
+What it checks:
+
+- Builds the Chrome extension output and packages the actual `.zip` artifact.
+- Verifies that the packaged popup HTML references only files that exist inside the zip.
+- Unpacks the zip and smoke-tests the shipped popup bundle in headless Chromium/Chrome for Testing with mocked extension APIs, using the same browser selection logic as `pnpm debug:mcp-chrome`.
+- Runs the Chrome Web Store credential preflight from `pnpm chrome:preflight`.
+
+Use this gate after making popup, packaging, or store-copy changes so the review bundle matches the shipped artifact.
+
 ## Required secrets
 
 ### Chrome Web Store
@@ -53,6 +70,7 @@ One-time setup:
 - Create a Google Cloud service account and link the service account email to the Chrome Web Store developer dashboard.
 - Keep 2-step verification enabled on the Google account that owns the Web Store item, per Chrome's requirements.
 - If Chrome returns `403 PERMISSION_DENIED`, verify the service account email is linked to the same publisher and that the extension ID matches the item owned by that publisher.
+- If the Chrome Web Store asks for a `scripting` permission explanation in the privacy tab, reuse the text in [docs/chrome-web-store-review.md](./chrome-web-store-review.md#permissions-justification-for-scripting).
 
 ### Microsoft Edge Add-ons
 

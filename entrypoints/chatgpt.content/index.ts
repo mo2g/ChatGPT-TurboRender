@@ -338,8 +338,10 @@ export default defineContentScript({
       }
 
       switch (message.type) {
-        case 'GET_TAB_STATUS':
+        case 'GET_RUNTIME_STATUS':
           return controller?.getStatus() ?? null;
+        case 'GET_TAB_STATUS':
+          return undefined;
         case 'RESTORE_NEARBY':
           controller?.restoreNearby();
           return controller?.getStatus() ?? null;

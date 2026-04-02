@@ -1,7 +1,7 @@
 import { resolveConversationRoute } from '../shared/chat-id';
 
 const CHATGPT_HOSTS = new Set(['chatgpt.com', 'chat.openai.com']);
-const RECOVERY_MESSAGE_TYPES = new Set(['GET_TAB_STATUS', 'RESTORE_NEARBY', 'RESTORE_ALL']);
+const RECOVERY_MESSAGE_TYPES = new Set(['GET_RUNTIME_STATUS', 'RESTORE_NEARBY', 'RESTORE_ALL']);
 const RECOVERY_RETRY_DELAY_MS = 120;
 
 export interface RuntimeRecoveryTab {

@@ -176,8 +176,12 @@ describe('chatgpt content entrypoint', () => {
     await expect(script.main(ctx)).resolves.toBeUndefined();
     expect(runtimeListener).not.toBeNull();
 
+    const ignoredResponse = vi.fn();
+    expect(runtimeListener?.({ type: 'GET_TAB_STATUS' }, null, ignoredResponse)).toBeUndefined();
+    expect(ignoredResponse).not.toHaveBeenCalled();
+
     const sendResponse = vi.fn();
-    expect(runtimeListener?.({ type: 'GET_TAB_STATUS' }, null, sendResponse)).toBe(true);
+    expect(runtimeListener?.({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse)).toBe(true);
     await Promise.resolve();
 
     expect(sendResponse).toHaveBeenCalledWith(statusPayload);
@@ -306,8 +310,12 @@ describe('chatgpt content entrypoint', () => {
     expect(browserAddListener).not.toHaveBeenCalled();
     expect(chromeRuntimeListener).not.toBeNull();
 
+    const ignoredResponse = vi.fn();
+    expect(chromeRuntimeListener?.({ type: 'GET_TAB_STATUS' }, null, ignoredResponse)).toBeUndefined();
+    expect(ignoredResponse).not.toHaveBeenCalled();
+
     const sendResponse = vi.fn();
-    expect(chromeRuntimeListener?.({ type: 'GET_TAB_STATUS' }, null, sendResponse)).toBe(true);
+    expect(chromeRuntimeListener?.({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse)).toBe(true);
     await Promise.resolve();
 
     expect(sendResponse).toHaveBeenCalledWith(statusPayload);

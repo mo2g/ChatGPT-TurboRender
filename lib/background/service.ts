@@ -61,6 +61,10 @@ function getRouteKindFromUrl(url: string | null | undefined): TabStatusResponse[
   }
 }
 
+function isSupportedConversationRouteKind(kind: TabStatusResponse['activeTabRouteKind']): boolean {
+  return kind === 'chat' || kind === 'share';
+}
+
 async function findSupportedChatGptTab(
   deps: BackgroundDeps,
   tabs: BackgroundTab[],
@@ -109,7 +113,12 @@ async function buildTabStatus(
   let runtime = targetTab?.id != null ? await deps.getTabStatus(targetTab.id) : null;
   let usingWindowFallback = false;
 
-  if (explicitTabId == null && runtime == null) {
+  if (
+    explicitTabId == null &&
+    runtime == null &&
+    activeTabSupportedHost &&
+    isSupportedConversationRouteKind(activeTabRouteKind)
+  ) {
     const fallback = await findSupportedChatGptTab(deps, tabs, activeTab?.id ?? null);
     if (fallback != null) {
       targetTab = fallback.tab;

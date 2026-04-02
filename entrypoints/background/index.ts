@@ -11,34 +11,8 @@ import {
   setSettings,
 } from '../../lib/shared/settings';
 
-const CHATGPT_HOSTS = new Set(['chatgpt.com', 'chat.openai.com']);
 const CONTENT_SCRIPT_FILE_CHATGPT = 'content-scripts/chatgpt.js';
 const CONTENT_SCRIPT_FILE_BOOTSTRAP = 'content-scripts/chatgpt-bootstrap.js';
-
-function isChatGptTabUrl(url: string | null | undefined): boolean {
-  if (typeof url !== 'string' || url.length === 0) {
-    return false;
-  }
-
-  try {
-    return CHATGPT_HOSTS.has(new URL(url).hostname);
-  } catch {
-    return false;
-  }
-}
-
-function pickPreferredActiveTab(tabs: browser.tabs.Tab[]): browser.tabs.Tab | null {
-  if (tabs.length === 0) {
-    return null;
-  }
-
-  return (
-    tabs.find((tab) => isChatGptTabUrl(tab.url)) ??
-    tabs.find((tab) => typeof tab.url === 'string' && /^https?:\/\//.test(tab.url)) ??
-    tabs[0] ??
-    null
-  );
-}
 
 async function safeSendMessage<T>(tabId: number, message: unknown): Promise<T | null> {
   return sendMessageWithRuntimeRecovery<T>({
@@ -118,11 +92,7 @@ export default defineBackground(() => {
             active: true,
           })
         : [];
-      const tab = pickPreferredActiveTab([
-        ...lastFocusedTabs,
-        ...normalWindowActiveTabs,
-        ...anyWindowActiveTabs,
-      ]);
+      const tab = [...lastFocusedTabs, ...normalWindowActiveTabs, ...anyWindowActiveTabs][0] ?? null;
       return {
         id: tab?.id ?? null,
         url: tab?.url ?? null,
@@ -147,7 +117,7 @@ export default defineBackground(() => {
       }));
     },
     async getTabStatus(tabId) {
-      return safeSendMessage(tabId, { type: 'GET_TAB_STATUS' });
+      return safeSendMessage(tabId, { type: 'GET_RUNTIME_STATUS' });
     },
     async forwardToTab(tabId, message) {
       return safeSendMessage(tabId, message);

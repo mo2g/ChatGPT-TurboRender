@@ -12,6 +12,8 @@ export const STORAGE_KEYS = {
 } as const;
 
 export const PROJECT_REPOSITORY_URL = 'https://github.com/mo2g/ChatGPT-TurboRender';
+export const POPUP_DEMO_SHARE_URL = 'https://chatgpt.com/share/69cb7947-c818-83e8-9851-1361e4480e08';
+export const POPUP_HELP_ANCHOR = 'popup-status-control-panel';
 export const SUPPORT_ASSET_PATHS = {
   wechatSponsor: 'assets/wechat-sponsor.jpg',
   alipaySponsor: 'assets/aliapy-sponsor.jpg',
@@ -21,6 +23,12 @@ export function getSupportReadmeUrl(language: 'en' | 'zh-CN'): string {
   return language === 'zh-CN'
     ? `${PROJECT_REPOSITORY_URL}/blob/main/README.zh-CN.md#support`
     : `${PROJECT_REPOSITORY_URL}/blob/main/README.md#support`;
+}
+
+export function getPopupHelpReadmeUrl(language: 'en' | 'zh-CN'): string {
+  return language === 'zh-CN'
+    ? `${PROJECT_REPOSITORY_URL}/blob/main/README.zh-CN.md#${POPUP_HELP_ANCHOR}`
+    : `${PROJECT_REPOSITORY_URL}/blob/main/README.md#${POPUP_HELP_ANCHOR}`;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

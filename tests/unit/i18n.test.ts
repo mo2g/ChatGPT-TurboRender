@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getSupportReadmeUrl } from '../../lib/shared/constants';
+import { getPopupHelpReadmeUrl, getSupportReadmeUrl } from '../../lib/shared/constants';
 import {
   createTranslator,
   getCatalogKeys,
@@ -43,6 +43,15 @@ describe('i18n helpers', () => {
     );
     expect(getSupportReadmeUrl('zh-CN')).toBe(
       'https://github.com/mo2g/ChatGPT-TurboRender/blob/main/README.zh-CN.md#support',
+    );
+  });
+
+  it('resolves popup help links for both languages', () => {
+    expect(getPopupHelpReadmeUrl('en')).toBe(
+      'https://github.com/mo2g/ChatGPT-TurboRender/blob/main/README.md#popup-status-control-panel',
+    );
+    expect(getPopupHelpReadmeUrl('zh-CN')).toBe(
+      'https://github.com/mo2g/ChatGPT-TurboRender/blob/main/README.zh-CN.md#popup-status-control-panel',
     );
   });
 });

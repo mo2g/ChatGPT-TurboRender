@@ -22,7 +22,7 @@ describe('tab message runtime recovery', () => {
         }),
       },
       7,
-      { type: 'GET_TAB_STATUS' },
+      { type: 'GET_RUNTIME_STATUS' },
     );
 
     expect(result).toEqual({ ok: true });
@@ -46,7 +46,7 @@ describe('tab message runtime recovery', () => {
         }),
       },
       9,
-      { type: 'GET_TAB_STATUS' },
+      { type: 'GET_RUNTIME_STATUS' },
     );
 
     expect(result).toBeNull();
