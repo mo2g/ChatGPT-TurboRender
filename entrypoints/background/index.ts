@@ -14,6 +14,23 @@ import {
 const CONTENT_SCRIPT_FILE_CHATGPT = 'content-scripts/chatgpt.js';
 const CONTENT_SCRIPT_FILE_BOOTSTRAP = 'content-scripts/chatgpt-bootstrap.js';
 
+type TabQuery = Parameters<typeof browser.tabs.query>[0];
+
+interface QueryableTab {
+  id: number | null;
+  url?: string | null;
+  active?: boolean;
+  index?: number;
+}
+
+async function safeQueryTabs(query: TabQuery): Promise<QueryableTab[]> {
+  try {
+    return (await browser.tabs.query(query)) as QueryableTab[];
+  } catch {
+    return [];
+  }
+}
+
 async function safeSendMessage<T>(tabId: number, message: unknown): Promise<T | null> {
   return sendMessageWithRuntimeRecovery<T>({
     async sendMessage(targetTabId, payload) {
@@ -76,39 +93,43 @@ export default defineBackground(() => {
     getPausedChats,
     setPausedChat: setChatPaused,
     async getActiveTab() {
-      const lastFocusedTabs = await browser.tabs.query({
+      const lastFocusedTabs = await safeQueryTabs({
         active: true,
         lastFocusedWindow: true,
         windowType: 'normal',
       });
       const normalWindowActiveTabs = lastFocusedTabs.length === 0
-        ? await browser.tabs.query({
+        ? await safeQueryTabs({
             active: true,
             windowType: 'normal',
           })
         : [];
       const anyWindowActiveTabs = lastFocusedTabs.length === 0 && normalWindowActiveTabs.length === 0
-        ? await browser.tabs.query({
+        ? await safeQueryTabs({
             active: true,
           })
         : [];
       const tab = [...lastFocusedTabs, ...normalWindowActiveTabs, ...anyWindowActiveTabs][0] ?? null;
+      if (tab == null) {
+        return null;
+      }
+
       return {
-        id: tab?.id ?? null,
-        url: tab?.url ?? null,
-        active: tab?.active ?? false,
-        index: tab?.index ?? 999_999,
+        id: tab.id ?? null,
+        url: tab.url ?? null,
+        active: tab.active ?? false,
+        index: tab.index ?? 999_999,
       };
     },
     async getCurrentWindowTabs() {
-      const lastFocusedTabs = await browser.tabs.query({
+      const lastFocusedTabs = await safeQueryTabs({
         lastFocusedWindow: true,
         windowType: 'normal',
       });
       const normalWindowTabs = lastFocusedTabs.length > 0
         ? lastFocusedTabs
-        : await browser.tabs.query({ windowType: 'normal' });
-      const tabs = normalWindowTabs.length > 0 ? normalWindowTabs : await browser.tabs.query({});
+        : await safeQueryTabs({ windowType: 'normal' });
+      const tabs = normalWindowTabs.length > 0 ? normalWindowTabs : await safeQueryTabs({});
       return tabs.map((tab) => ({
         id: tab.id ?? null,
         url: tab.url ?? null,
@@ -128,11 +149,18 @@ export default defineBackground(() => {
     void ensureDefaultSettings();
   });
 
-  browser.runtime.onMessage.addListener((message) => {
+  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isRuntimeMessage(message)) {
       return undefined;
     }
 
-    return service.handle(message);
+    void Promise.resolve(service.handle(message))
+      .then((response) => {
+        sendResponse(response);
+      })
+      .catch(() => {
+        sendResponse(null);
+      });
+    return true;
   });
 });
