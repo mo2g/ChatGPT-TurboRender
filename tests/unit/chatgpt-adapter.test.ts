@@ -39,4 +39,21 @@ describe('chatgpt adapter', () => {
     expect(anchor.mode).toBe('safe-top');
     expect(anchor.shareButton).toBeNull();
   });
+
+  it('ignores TurboRender UI roots when scanning for turns', () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-turbo-render-ui-root="true">
+          <article data-testid="conversation-turn-0" data-message-author-role="user">
+            <p>Should not be scanned as a turn.</p>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const snapshot = scanChatPage(document);
+    expect(snapshot.supported).toBe(false);
+    expect(snapshot.reason).toBe('no-turns');
+    expect(snapshot.turnNodes).toHaveLength(0);
+  });
 });

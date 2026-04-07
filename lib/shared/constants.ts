@@ -2,6 +2,9 @@ import type { Settings } from './types';
 
 export const EXTENSION_NAME = 'ChatGPT TurboRender';
 export const BUILD_SIGNATURE = '2026-03-28-1650-hot-transcript-archive-zone';
+export const TURBO_RENDER_UI_ROOT_ATTRIBUTE = 'data-turbo-render-ui-root';
+export const TURBO_RENDER_UI_ROOT_VALUE = 'true';
+export const TURBO_RENDER_UI_ROOT_SELECTOR = `[${TURBO_RENDER_UI_ROOT_ATTRIBUTE}="${TURBO_RENDER_UI_ROOT_VALUE}"]`;
 
 export const TURN_ID_DATASET = 'turboRenderTurnId';
 export const PLACEHOLDER_GROUP_ATTRIBUTE = 'data-turbo-render-group-id';

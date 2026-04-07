@@ -1,4 +1,5 @@
 import { getChatIdFromPathname } from '../shared/chat-id';
+import { TURBO_RENDER_UI_ROOT_SELECTOR } from '../shared/constants';
 import type { TurnRole } from '../shared/types';
 
 export interface AdapterSnapshot {
@@ -30,6 +31,10 @@ function getOutermostCandidates(candidates: HTMLElement[]): HTMLElement[] {
   );
 }
 
+export function isTurboRenderUiNode(node: Element): boolean {
+  return node.closest(TURBO_RENDER_UI_ROOT_SELECTOR) != null;
+}
+
 function getParentGroups(nodes: HTMLElement[]): HTMLElement[][] {
   const groups = new Map<HTMLElement, HTMLElement[]>();
 
@@ -51,7 +56,7 @@ function resolveCandidates(main: HTMLElement): HTMLElement[] {
     Array.from(main.querySelectorAll<HTMLElement>(selector)),
   );
 
-  const uniquePrimary = getOutermostCandidates([...new Set(primaryMatches)]);
+  const uniquePrimary = getOutermostCandidates([...new Set(primaryMatches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
   if (uniquePrimary.length > 0) {
     return uniquePrimary;
   }
@@ -59,7 +64,7 @@ function resolveCandidates(main: HTMLElement): HTMLElement[] {
   const fallbackMatches = FALLBACK_TURN_SELECTORS.flatMap((selector) =>
     Array.from(main.querySelectorAll<HTMLElement>(selector)),
   );
-  return getOutermostCandidates([...new Set(fallbackMatches)]);
+  return getOutermostCandidates([...new Set(fallbackMatches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
 }
 
 function isScrollable(node: HTMLElement): boolean {
@@ -114,6 +119,10 @@ function countDescendants(root: ParentNode | null): number {
 
 export function isTurnNode(node: Element): node is HTMLElement {
   if (!(node instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (isTurboRenderUiNode(node)) {
     return false;
   }
 

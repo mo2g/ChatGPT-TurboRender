@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
 import { getChatIdFromPathname } from '../../lib/shared/chat-id';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
+import { StatusBar } from '../../lib/content/status-bar';
 import type { InitialTrimSession } from '../../lib/shared/types';
 import { mountGroupedTranscriptFixture, mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
@@ -97,6 +98,7 @@ describe('TurboRenderController', () => {
       controller.stop();
     }
     activeControllers.length = 0;
+    vi.restoreAllMocks();
   });
 
   it('renders archive batches above the hot transcript and keeps only the latest 5 pairs live', async () => {
@@ -137,6 +139,27 @@ describe('TurboRenderController', () => {
       .map((style) => style.textContent ?? '')
       .find((text) => text.includes(`.${UI_CLASS_NAMES.inlineBatchRail}`));
     expect(turboRenderStyle).toContain('position: sticky');
+    expect(turboRenderStyle).toContain('border: 1px solid');
+    expect(turboRenderStyle).toContain('border-radius: 18px');
+    expect(turboRenderStyle).toContain('background: rgba(255, 255, 255, 0.96)');
+    expect(turboRenderStyle).toContain('box-shadow: 0 10px 30px');
+    expect(turboRenderStyle).toContain('background: transparent');
+    expect(turboRenderStyle).toContain('box-shadow: none');
+    expect(turboRenderStyle).not.toContain('border-color: transparent');
+    expect(turboRenderStyle).toContain('justify-self: end');
+    expect(turboRenderStyle).toContain('align-self: start');
+    expect(turboRenderStyle).toContain('max-width: min(68ch, 100%)');
+    expect(turboRenderStyle).toContain('padding: 12px 16px');
+    expect(turboRenderStyle).toContain('border-radius: 18px');
+    expect(turboRenderStyle).toContain('background: rgba(243, 244, 246, 0.96)');
+    expect(turboRenderStyle).toContain('border: 0;');
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"]`);
+    expect(turboRenderStyle).toContain('display: block');
+    expect(turboRenderStyle).toContain('padding: 0');
+    expect(turboRenderStyle).toContain('background: transparent');
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.softFolded}`);
+    expect(turboRenderStyle).toContain('display: none !important');
+    expect(turboRenderStyle).not.toContain('content-visibility: auto');
 
     const initialBatchButton = inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
     expect(initialBatchButton?.textContent).toBe('Expand');
@@ -150,7 +173,7 @@ describe('TurboRenderController', () => {
       if (
         this.matches(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`)
       ) {
-        const expanded = this.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntries}`) != null;
+        const expanded = this.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)?.hidden === false;
         return {
           top: expanded ? 260 : 200,
           bottom: expanded ? 380 : 320,
@@ -187,11 +210,66 @@ describe('TurboRenderController', () => {
     const expandedFirstCard = inlineRoot?.querySelector<HTMLElement>(
       `.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`,
     );
-    expect(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchPreview}`)).toBeNull();
+    expect(expandedFirstCard?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchPreview}`)?.hidden).toBe(true);
+    const userBody = expandedFirstCard?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
+    expect(userBody).not.toBeNull();
+    expect(userBody?.parentElement).toBe(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntry}`));
+    expect(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
+    expect(expandedFirstCard?.querySelector(`[data-lane="assistant"]`)?.parentElement).toBe(
+      expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntry}`),
+    );
     expect(fixture.scroller.scrollTop).toBe(540);
     expect(controller.getStatus().expandedBatchCount).toBeGreaterThan(0);
     expect(fixture.transcript.querySelectorAll('[data-testid^="conversation-turn-"]')).toHaveLength(10);
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
+  });
+
+  it('coalesces rapid expand/collapse toggles and reuses the batch subtree', async () => {
+    mountGroupedTranscriptFixture(document, {
+      turnCount: 12,
+      daySizes: [6, 6],
+      streaming: false,
+    });
+
+    const updateSpy = vi.spyOn(StatusBar.prototype, 'update');
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(20, 10));
+    controller.start();
+    await flush();
+    await flush();
+
+    const toggle = document.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    await flush();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    const entriesBefore = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`);
+    expect(entriesBefore).not.toBeNull();
+
+    const updateBaseline = updateSpy.mock.calls.length;
+    toggle?.click();
+    toggle?.click();
+    await flush();
+    await flush();
+
+    expect(updateSpy.mock.calls.length - updateBaseline).toBe(1);
+    expect(inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)).toBe(entriesBefore);
   });
 
   it('uses soft-fold mode for parked live batches when configured', async () => {
@@ -276,6 +354,11 @@ describe('TurboRenderController', () => {
 
     const entryBodies = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}`) ?? [];
     expect(entryBodies.length).toBeGreaterThan(0);
+    const userBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
+    expect(userBody).not.toBeNull();
+    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
+    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
     const markdownBodies = [
       ...(inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"]`) ?? []),
     ];
@@ -290,6 +373,101 @@ describe('TurboRenderController', () => {
     expect(inlineRoot?.textContent).not.toContain('is_visually_hidden_from_conversation');
     expect(inlineRoot?.textContent).not.toContain('Locate message');
     expect(inlineRoot?.textContent).not.toContain('Show details');
+  });
+
+  it('renders host snapshot user content without an extra visible wrapper', async () => {
+    mountTranscriptFixture(document, { turnCount: 10, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    const session = createInitialTrimSession(14, 4);
+    session.turns[0] = createSessionTurn(0, {
+      role: 'user',
+      renderKind: 'host-snapshot',
+      snapshotHtml: '<div data-message-author-role="user" class="user-turn"><div class="user-bubble">Official bubble text</div></div>',
+      parts: ['Official bubble text'],
+    });
+    session.turns[1] = createSessionTurn(1, {
+      role: 'assistant',
+      parts: ['Reply.'],
+    });
+    session.coldTurns = session.turns.slice(0, session.archivedTurnCount);
+
+    controller.setInitialTrimSession(session);
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const userBody = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"][data-render-kind="host-snapshot"]`,
+    );
+    expect(userBody).not.toBeNull();
+    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(userBody?.innerHTML).toContain('data-message-author-role="user"');
+    expect(userBody?.innerHTML).toContain('Official bubble text');
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
+    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+  });
+
+  it('keeps long user messages in a right-aligned transparent lane', async () => {
+    mountTranscriptFixture(document, { turnCount: 10, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    const session = createInitialTrimSession(14, 4);
+    session.turns[0] = createSessionTurn(0, {
+      role: 'user',
+      parts: [
+        'This is a deliberately long archived user message that should wrap across multiple lines while staying on the right side of the batch card instead of becoming a centered full-width panel.',
+      ],
+    });
+    session.turns[1] = createSessionTurn(1, {
+      role: 'assistant',
+      parts: ['Short reply.'],
+    });
+    session.coldTurns = session.turns.slice(0, session.archivedTurnCount);
+
+    controller.setInitialTrimSession(session);
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const userBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
+    expect(userBody).not.toBeNull();
+    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(userBody?.textContent).toContain('deliberately long archived user message');
+    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
   });
 
   it('keeps inline history visible when transcript parking is unsupported', async () => {
@@ -426,5 +604,42 @@ describe('TurboRenderController', () => {
     expect(controller.getStatus().active).toBe(true);
     expect(controller.getStatus().parkedGroups).toBeGreaterThan(0);
     expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).not.toBeNull();
+  });
+
+  it('keeps archive-only refreshes bounded when expanding a batch', async () => {
+    mountGroupedTranscriptFixture(document, {
+      turnCount: 12,
+      daySizes: [6, 6],
+      streaming: false,
+    });
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(20, 10));
+    controller.start();
+    await flush();
+
+    const refreshBefore = controller.getStatus().refreshCount;
+    const toggle = document.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
+    expect(toggle).not.toBeNull();
+    toggle?.click();
+    await flush();
+    await flush();
+
+    expect(controller.getStatus().refreshCount).toBeLessThanOrEqual(refreshBefore + 4);
+    expect(document.querySelector('[data-turbo-render-ui-root="true"]')).not.toBeNull();
   });
 });

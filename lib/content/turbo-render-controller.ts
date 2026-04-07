@@ -15,7 +15,7 @@ import type {
   TurnRecord,
 } from '../shared/types';
 
-import { detectTurnRole, isStreamingTurn, isTurnNode, scanChatPage } from './chatgpt-adapter';
+import { detectTurnRole, isStreamingTurn, isTurnNode, isTurboRenderUiNode, scanChatPage } from './chatgpt-adapter';
 import { FrameSpikeMonitor } from './frame-spike-monitor';
 import { shouldAutoActivate } from './layout';
 import { ManagedHistoryStore } from './managed-history';
@@ -71,15 +71,26 @@ function toSet(values: string[]): Set<string> {
   return new Set(values);
 }
 
+interface ArchiveUiState {
+  archiveGroups: ManagedHistoryGroup[];
+  collapsedBatchCount: number;
+  expandedBatchCount: number;
+}
+
 function findClosestTurnNode(target: Node | null): HTMLElement | null {
   if (!(target instanceof Element)) {
     return null;
   }
 
-  return (
+  if (isTurboRenderUiNode(target)) {
+    return null;
+  }
+
+  const candidate =
     (isTurnNode(target) ? target : null) ??
-    target.closest<HTMLElement>('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn')
-  );
+    target.closest<HTMLElement>('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn');
+
+  return candidate != null && !isTurboRenderUiNode(candidate) ? candidate : null;
 }
 
 export class TurboRenderController {
@@ -118,6 +129,13 @@ export class TurboRenderController {
   private readonly expandedArchiveBatchIds = new Set<string>();
   private searchQuery = '';
   private ignoreMutationsUntil = 0;
+  private archiveUiSyncHandle: number | null = null;
+  private pendingArchiveToggle: {
+    groupId: string;
+    previousAnchorTop: number | null;
+    previousScrollTop: number;
+    scrollTarget: HTMLElement | null;
+  } | null = null;
   private refreshCount = 0;
   private lastLiveSignature = '';
   private readonly contentScriptInstanceId: string;
@@ -155,8 +173,9 @@ export class TurboRenderController {
         onSearchQueryChange: (query) => {
           this.searchQuery = query.trim();
           this.updateBatchSearchState();
-          this.refreshRuntimeStatusFromCurrentMetrics();
-          this.updateStatusBar();
+          const archiveState = this.collectArchiveState();
+          this.refreshRuntimeStatusFromCurrentMetrics(archiveState);
+          this.updateStatusBar(archiveState);
         },
         onToggleArchiveGroup: (groupId, anchor) => {
           this.toggleArchiveGroup(groupId, anchor);
@@ -182,6 +201,10 @@ export class TurboRenderController {
     if (this.refreshHandle != null) {
       this.win.cancelAnimationFrame?.(this.refreshHandle) ?? this.win.clearTimeout(this.refreshHandle);
       this.refreshHandle = null;
+    }
+    if (this.archiveUiSyncHandle != null) {
+      this.win.cancelAnimationFrame?.(this.archiveUiSyncHandle) ?? this.win.clearTimeout(this.archiveUiSyncHandle);
+      this.archiveUiSyncHandle = null;
     }
     if (this.idleHandle != null) {
       cancelIdleCallbackCompat(this.win, this.idleHandle);
@@ -224,8 +247,14 @@ export class TurboRenderController {
     this.turnContainer = null;
     this.chatId = chatId;
     this.searchQuery = '';
+    if (this.archiveUiSyncHandle != null) {
+      this.win.cancelAnimationFrame?.(this.archiveUiSyncHandle) ?? this.win.clearTimeout(this.archiveUiSyncHandle);
+      this.archiveUiSyncHandle = null;
+    }
+    this.pendingArchiveToggle = null;
     this.setObservedMutationRoot(this.doc.body, 'archive-only-root');
     this.setScrollTarget(null);
+    const archiveState = this.collectArchiveState(0);
     this.runtimeStatus = this.buildStatus({
       supported: false,
       reason: 'chat-change',
@@ -234,8 +263,8 @@ export class TurboRenderController {
       finalizedTurns: 0,
       liveDescendantCount: 0,
       visibleRange: null,
-    });
-    this.updateStatusBar();
+    }, archiveState);
+    this.updateStatusBar(archiveState);
     this.scheduleRefresh();
   }
 
@@ -262,6 +291,11 @@ export class TurboRenderController {
     if (paused) {
       this.active = false;
       this.restoreAllParking(0);
+      if (this.archiveUiSyncHandle != null) {
+        this.win.cancelAnimationFrame?.(this.archiveUiSyncHandle) ?? this.win.clearTimeout(this.archiveUiSyncHandle);
+        this.archiveUiSyncHandle = null;
+      }
+      this.pendingArchiveToggle = null;
       this.statusBar?.destroy();
     } else if (this.settings.enabled) {
       this.active = true;
@@ -314,6 +348,7 @@ export class TurboRenderController {
     }
     this.manualRestoreHoldUntil = this.win.performance.now() + holdMs;
     this.updateBatchSearchState();
+    const archiveState = this.collectArchiveState();
     this.runtimeStatus = this.buildStatus({
       supported: this.runtimeStatus.supported,
       reason: this.runtimeStatus.reason,
@@ -322,8 +357,8 @@ export class TurboRenderController {
       finalizedTurns: this.runtimeStatus.finalizedTurns,
       liveDescendantCount: countLiveDescendants(this.turnContainer),
       visibleRange: this.runtimeStatus.visibleRange,
-    });
-    this.updateStatusBar();
+    }, archiveState);
+    this.updateStatusBar(archiveState);
   }
 
   private bindEvents(): void {
@@ -353,6 +388,10 @@ export class TurboRenderController {
     }
 
     return mutations.some((mutation) => {
+      if (mutation.target instanceof Element && isTurboRenderUiNode(mutation.target)) {
+        return false;
+      }
+
       if (mutation.type === 'attributes') {
         return findClosestTurnNode(mutation.target) != null;
       }
@@ -363,6 +402,9 @@ export class TurboRenderController {
 
       return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
         if (!(node instanceof Element)) {
+          return false;
+        }
+        if (isTurboRenderUiNode(node)) {
           return false;
         }
         return findClosestTurnNode(node) != null || node.querySelector('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') != null;
@@ -381,22 +423,16 @@ export class TurboRenderController {
       this.expandedArchiveBatchIds.add(groupId);
     }
 
-    this.updateBatchSearchState();
-    this.refreshRuntimeStatusFromCurrentMetrics();
-    this.updateStatusBar();
-
-    this.win.requestAnimationFrame(() => {
-      const nextAnchor = this.statusBar?.getBatchCardAnchor(groupId) ?? null;
-      if (nextAnchor == null || previousAnchorTop == null || scrollTarget == null) {
-        return;
-      }
-
-      const nextTop = nextAnchor.getBoundingClientRect().top;
-      scrollTarget.scrollTop = previousScrollTop + (nextTop - previousAnchorTop);
-    });
+    this.pendingArchiveToggle = {
+      groupId,
+      previousAnchorTop,
+      previousScrollTop,
+      scrollTarget,
+    };
+    this.scheduleArchiveUiSync();
   }
 
-  private refreshRuntimeStatusFromCurrentMetrics(): void {
+  private refreshRuntimeStatusFromCurrentMetrics(archiveState = this.collectArchiveState()): void {
     this.runtimeStatus = this.buildStatus({
       supported: this.runtimeStatus.supported,
       reason: this.runtimeStatus.reason,
@@ -405,7 +441,38 @@ export class TurboRenderController {
       finalizedTurns: this.runtimeStatus.finalizedTurns,
       liveDescendantCount: this.runtimeStatus.liveDescendantCount,
       visibleRange: this.runtimeStatus.visibleRange,
+    }, archiveState);
+  }
+
+  private scheduleArchiveUiSync(): void {
+    if (this.archiveUiSyncHandle != null) {
+      return;
+    }
+
+    this.archiveUiSyncHandle = requestAnimationFrameCompat(this.win, () => {
+      this.archiveUiSyncHandle = null;
+      this.flushArchiveUiSync();
     });
+  }
+
+  private flushArchiveUiSync(): void {
+    const archiveState = this.collectArchiveState();
+    this.refreshRuntimeStatusFromCurrentMetrics(archiveState);
+    this.updateStatusBar(archiveState);
+
+    const pending = this.pendingArchiveToggle;
+    this.pendingArchiveToggle = null;
+    if (pending == null || pending.previousAnchorTop == null || pending.scrollTarget == null) {
+      return;
+    }
+
+    const nextAnchor = this.statusBar?.getBatchCardAnchor(pending.groupId) ?? null;
+    if (nextAnchor == null) {
+      return;
+    }
+
+    const nextTop = nextAnchor.getBoundingClientRect().top;
+    pending.scrollTarget.scrollTop = pending.previousScrollTop + (nextTop - pending.previousAnchorTop);
   }
 
   private scheduleRefresh(): void {
@@ -446,6 +513,8 @@ export class TurboRenderController {
         'archive-only-root',
       );
       this.setScrollTarget(snapshot.scrollContainer);
+      this.updateBatchSearchState();
+      const archiveState = this.collectArchiveState(totalPairsBeforeScan);
       this.runtimeStatus = this.buildStatus({
         supported: false,
         reason: snapshot.reason ?? 'unsupported',
@@ -454,9 +523,8 @@ export class TurboRenderController {
         finalizedTurns: totalTurnsBeforeScan,
         liveDescendantCount: snapshot.descendantCount,
         visibleRange: null,
-      });
-      this.updateBatchSearchState();
-      this.updateStatusBar();
+      }, archiveState);
+      this.updateStatusBar(archiveState);
       return;
     }
 
@@ -500,6 +568,8 @@ export class TurboRenderController {
       this.restoreAllParking(0);
     }
 
+    this.updateBatchSearchState();
+    const archiveState = this.collectArchiveState(totalPairs);
     this.runtimeStatus = this.buildStatus({
       supported: true,
       reason: null,
@@ -508,9 +578,8 @@ export class TurboRenderController {
       finalizedTurns,
       liveDescendantCount: snapshot.descendantCount,
       visibleRange,
-    });
-    this.updateBatchSearchState();
-    this.updateStatusBar();
+    }, archiveState);
+    this.updateStatusBar(archiveState);
 
     if (!this.active || this.paused || this.win.performance.now() < this.manualRestoreHoldUntil) {
       return;
@@ -520,13 +589,7 @@ export class TurboRenderController {
       cancelIdleCallbackCompat(this.win, this.idleHandle);
     }
 
-    const hotPairCount = this.getHotPairCount(totalPairs);
-    const archiveGroups = this.managedHistory.getArchiveGroups(
-      hotPairCount,
-      this.getBatchPairCount(),
-      this.searchQuery,
-      this.expandedArchiveBatchIds,
-    );
+    const archiveGroups = archiveState.archiveGroups;
 
     if (
       !liveChanged &&
@@ -539,6 +602,7 @@ export class TurboRenderController {
       this.idleHandle = null;
       this.syncParkedGroups(archiveGroups);
       this.updateBatchSearchState();
+      const idleArchiveState = this.collectArchiveState(this.managedHistory.getTotalPairs());
       this.runtimeStatus = this.buildStatus({
         supported: true,
         reason: null,
@@ -547,8 +611,8 @@ export class TurboRenderController {
         finalizedTurns,
         liveDescendantCount: countLiveDescendants(this.turnContainer),
         visibleRange,
-      });
-      this.updateStatusBar();
+      }, idleArchiveState);
+      this.updateStatusBar(idleArchiveState);
     });
   }
 
@@ -763,7 +827,22 @@ export class TurboRenderController {
     );
   }
 
-  private buildStatus(input: {
+  private collectArchiveState(totalPairs = this.managedHistory.getTotalPairs()): ArchiveUiState {
+    const archiveGroups = this.managedHistory.getArchiveGroups(
+      this.getHotPairCount(totalPairs),
+      this.getBatchPairCount(),
+      this.searchQuery,
+      this.expandedArchiveBatchIds,
+    );
+    return {
+      archiveGroups,
+      collapsedBatchCount: archiveGroups.filter((group) => !group.expanded).length,
+      expandedBatchCount: archiveGroups.filter((group) => group.expanded).length,
+    };
+  }
+
+  private buildStatus(
+    input: {
     supported: boolean;
     reason: string | null;
     totalTurns: number;
@@ -771,16 +850,10 @@ export class TurboRenderController {
     finalizedTurns: number;
     liveDescendantCount: number;
     visibleRange: IndexRange | null;
-  }): TabRuntimeStatus {
+    },
+    archiveState = this.collectArchiveState(input.totalPairs),
+  ): TabRuntimeStatus {
     const hotPairCount = this.getHotPairCount(input.totalPairs);
-    const archiveGroups = this.managedHistory.getArchiveGroups(
-      hotPairCount,
-      this.getBatchPairCount(),
-      this.searchQuery,
-      this.expandedArchiveBatchIds,
-    );
-    const collapsedBatchCount = archiveGroups.filter((group) => !group.expanded).length;
-    const expandedBatchCount = archiveGroups.filter((group) => group.expanded).length;
 
     return {
       supported: input.supported,
@@ -803,11 +876,11 @@ export class TurboRenderController {
       handledTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
       historyPanelOpen: false,
       archivedTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
-      expandedArchiveGroups: expandedBatchCount,
+      expandedArchiveGroups: archiveState.expandedBatchCount,
       historyAnchorMode: 'hidden',
-      slotBatchCount: archiveGroups.length,
-      collapsedBatchCount,
-      expandedBatchCount,
+      slotBatchCount: archiveState.archiveGroups.length,
+      collapsedBatchCount: archiveState.collapsedBatchCount,
+      expandedBatchCount: archiveState.expandedBatchCount,
       parkedTurns: this.parkingLot.getTotalParkedTurns(),
       parkedGroups: this.parkingLot.getSummaries().length,
       liveDescendantCount: input.liveDescendantCount,
@@ -852,7 +925,7 @@ export class TurboRenderController {
     this.statusBar?.setTranslator(this.t);
   }
 
-  private updateStatusBar(): void {
+  private updateStatusBar(archiveState = this.collectArchiveState()): void {
     if (this.statusBar == null || this.paused) {
       return;
     }
@@ -861,14 +934,9 @@ export class TurboRenderController {
       this.runtimeStatus,
       this.historyMountTarget ?? this.turnContainer,
       {
-        archiveGroups: this.managedHistory.getArchiveGroups(
-          this.getHotPairCount(this.managedHistory.getTotalPairs()),
-          this.getBatchPairCount(),
-          this.searchQuery,
-          this.expandedArchiveBatchIds,
-        ),
-        collapsedBatchCount: this.runtimeStatus.collapsedBatchCount,
-        expandedBatchCount: this.runtimeStatus.expandedBatchCount,
+        archiveGroups: archiveState.archiveGroups,
+        collapsedBatchCount: archiveState.collapsedBatchCount,
+        expandedBatchCount: archiveState.expandedBatchCount,
         searchQuery: this.searchQuery,
       },
     );

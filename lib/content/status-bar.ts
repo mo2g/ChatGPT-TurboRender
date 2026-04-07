@@ -1,4 +1,4 @@
-import { UI_CLASS_NAMES } from '../shared/constants';
+import { TURBO_RENDER_UI_ROOT_ATTRIBUTE, UI_CLASS_NAMES } from '../shared/constants';
 import { buildInteractionPairs } from '../shared/interaction-pairs';
 import { createTranslator, type Translator } from '../shared/i18n';
 import type { HistoryAnchorMode, ManagedHistoryEntry, ManagedHistoryGroup, TabRuntimeStatus } from '../shared/types';
@@ -17,14 +17,31 @@ export interface StatusBarActions {
   onToggleArchiveGroup(groupId: string, anchor: HTMLElement | null): void;
 }
 
+interface BatchCardView {
+  root: HTMLElement;
+  main: HTMLElement;
+  header: HTMLElement;
+  meta: HTMLElement;
+  summary: HTMLElement;
+  rail: HTMLElement;
+  button: HTMLButtonElement;
+  preview: HTMLElement;
+  entries: HTMLElement;
+  previewKey: string;
+  entriesKey: string;
+  entriesRendered: boolean;
+  expanded: boolean;
+}
+
 const STYLE_ID = 'turbo-render-style';
 const INLINE_ROOT_ATTRIBUTE = 'data-turbo-render-inline-history-root';
 
 const STYLES = `
 .${UI_CLASS_NAMES.inlineHistoryRoot} {
   display: grid;
-  gap: 14px;
-  margin: 0 0 18px;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 0 8px 0 0;
 }
 
 .${UI_CLASS_NAMES.inlineHistoryRoot} > * {
@@ -34,13 +51,12 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.inlineHistoryToolbar} {
   display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  background: rgba(248, 250, 252, 0.9);
+  gap: 6px;
+  padding: 10px 0 8px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
   color: #0f172a;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  box-shadow: none;
   font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -50,16 +66,16 @@ const STYLES = `
 .${UI_CLASS_NAMES.inlineBatchMatches},
 .${UI_CLASS_NAMES.historyEntryMeta} {
   margin: 0;
-  color: #475569;
+  color: #64748b;
 }
 
 .${UI_CLASS_NAMES.inlineHistorySearch} input {
   width: 100%;
   min-width: 0;
-  padding: 9px 11px;
+  padding: 9px 12px;
   border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 12px;
-  background: #ffffff;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
   color: #0f172a;
   font: inherit;
 }
@@ -68,13 +84,20 @@ const STYLES = `
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  gap: 14px;
+  padding: 14px 16px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
   font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.${UI_CLASS_NAMES.inlineBatchCard}[data-state="expanded"] {
+  background: transparent;
+  box-shadow: none;
+  padding-top: 12px;
+  padding-bottom: 4px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMain} {
@@ -85,22 +108,34 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.inlineBatchHeader} {
   display: grid;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMeta} {
   display: grid;
-  gap: 6px;
+  gap: 4px;
+}
+
+.${UI_CLASS_NAMES.inlineBatchMeta} strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
 }
 
 .${UI_CLASS_NAMES.inlineBatchPreview} {
   display: grid;
-  gap: 4px;
+  gap: 2px;
+  color: #475569;
+}
+
+.${UI_CLASS_NAMES.inlineBatchPreview}[hidden],
+.${UI_CLASS_NAMES.inlineBatchEntries}[hidden] {
+  display: none !important;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMatches} {
-  color: #1d4ed8;
+  color: #2563eb;
   font-weight: 600;
 }
 
@@ -109,8 +144,9 @@ const STYLES = `
   justify-content: flex-end;
   align-self: start;
   position: sticky;
-  top: 16px;
+  top: 12px;
   height: max-content;
+  padding-top: 2px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchAction} {
@@ -123,18 +159,20 @@ const STYLES = `
   padding: 7px 11px;
   font: inherit;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
 }
 
 .${UI_CLASS_NAMES.inlineBatchEntries} {
   display: grid;
-  gap: 18px;
+  gap: 14px;
   min-width: 0;
+  padding-top: 2px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchEntry} {
   display: grid;
-  gap: 14px;
-  padding-top: 14px;
+  gap: 12px;
+  padding-top: 12px;
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
@@ -144,17 +182,7 @@ const STYLES = `
 }
 
 .${UI_CLASS_NAMES.historyEntryCard} {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.${UI_CLASS_NAMES.historyEntryCard}[data-lane="user"] {
-  justify-items: end;
-}
-
-.${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] {
-  justify-items: stretch;
+  display: contents;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody} {
@@ -163,19 +191,41 @@ const STYLES = `
   min-width: 0;
 }
 
-.${UI_CLASS_NAMES.historyEntryCard}[data-lane="user"] .${UI_CLASS_NAMES.historyEntryBody} {
+.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"] {
   justify-self: end;
+  align-self: start;
   width: fit-content;
-  max-width: min(72ch, 100%);
+  max-width: min(68ch, 100%);
   padding: 12px 16px;
-  border-radius: 22px;
-  background: #e9ecef;
+  border-radius: 18px;
+  background: rgba(243, 244, 246, 0.96);
+  border: 0;
+  box-shadow: none;
   color: #0f172a;
 }
 
-.${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] .${UI_CLASS_NAMES.historyEntryBody} {
-  justify-self: center;
-  width: min(82ch, 100%);
+.${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"] {
+  justify-self: stretch;
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  color: #0f172a;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] {
+  display: block;
+  gap: 0;
+  justify-self: stretch;
+  align-self: stretch;
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody} p {
@@ -185,7 +235,7 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] {
   font-size: 13px;
-  line-height: 1.68;
+  line-height: 1.72;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"] a {
@@ -250,20 +300,14 @@ const STYLES = `
 }
 
 .${UI_CLASS_NAMES.softFolded} {
-  content-visibility: auto;
-  contain: layout style paint;
-  max-height: 0 !important;
-  min-height: 0 !important;
-  margin: 0 !important;
-  opacity: 0 !important;
-  overflow: hidden !important;
+  display: none !important;
   pointer-events: none !important;
 }
 
 @media (max-width: 720px) {
   .${UI_CLASS_NAMES.inlineBatchCard} {
     grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
+    gap: 12px;
   }
 
   .${UI_CLASS_NAMES.inlineBatchRail} {
@@ -275,7 +319,7 @@ const STYLES = `
     top: 8px;
   }
 
-  .${UI_CLASS_NAMES.historyEntryCard}[data-lane="assistant"] .${UI_CLASS_NAMES.historyEntryBody} {
+  .${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"] {
     width: 100%;
   }
 }
@@ -312,6 +356,8 @@ export class StatusBar {
   private groupsRoot: HTMLElement | null = null;
   private currentStatus: TabRuntimeStatus | null = null;
   private currentState: StatusBarState | null = null;
+  private readonly groupViews = new Map<string, BatchCardView>();
+  private forceRender = true;
   private t: Translator = createTranslator('en');
 
   constructor(
@@ -321,6 +367,7 @@ export class StatusBar {
 
   setTranslator(translator: Translator): void {
     this.t = translator;
+    this.forceRender = true;
     this.render();
   }
 
@@ -341,6 +388,7 @@ export class StatusBar {
     this.root = null;
     this.searchInput = null;
     this.groupsRoot = null;
+    this.groupViews.clear();
   }
 
   focusArchive(): void {}
@@ -365,6 +413,7 @@ export class StatusBar {
       this.root = this.doc.createElement('section');
       this.root.className = UI_CLASS_NAMES.inlineHistoryRoot;
       this.root.setAttribute(INLINE_ROOT_ATTRIBUTE, 'true');
+      this.root.setAttribute(TURBO_RENDER_UI_ROOT_ATTRIBUTE, 'true');
       this.root.innerHTML = `
         <div class="${UI_CLASS_NAMES.inlineHistoryToolbar}">
           <p class="${UI_CLASS_NAMES.inlineHistorySummary}"></p>
@@ -402,31 +451,118 @@ export class StatusBar {
     }
 
     const summary = this.root.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineHistorySummary}`);
+    const nextSummary = this.t('inlineHistorySummary', {
+      collapsed: this.currentState.collapsedBatchCount,
+      expanded: this.currentState.expandedBatchCount,
+    });
     if (summary != null) {
-      summary.textContent = this.t('inlineHistorySummary', {
-        collapsed: this.currentState.collapsedBatchCount,
-        expanded: this.currentState.expandedBatchCount,
-      });
+      if (summary.textContent !== nextSummary) {
+        summary.textContent = nextSummary;
+      }
     }
 
-    this.searchInput.placeholder = this.t('historySearchPlaceholder');
-    this.searchInput.value = this.currentState.searchQuery;
+    const nextPlaceholder = this.t('historySearchPlaceholder');
+    if (this.searchInput.placeholder !== nextPlaceholder) {
+      this.searchInput.placeholder = nextPlaceholder;
+    }
 
-    this.groupsRoot.replaceChildren();
+    if (this.searchInput.value !== this.currentState.searchQuery) {
+      this.searchInput.value = this.currentState.searchQuery;
+    }
 
-    for (const group of this.currentState.archiveGroups) {
-      this.groupsRoot.append(this.createBatchCard(group));
+    this.syncGroupCards(this.currentState.archiveGroups);
+    this.forceRender = false;
+  }
+
+  private syncGroupCards(groups: ManagedHistoryGroup[]): void {
+    const nextIds = new Set(groups.map((group) => group.id));
+    for (const [groupId, view] of [...this.groupViews.entries()]) {
+      if (nextIds.has(groupId)) {
+        continue;
+      }
+
+      view.root.remove();
+      this.groupViews.delete(groupId);
+    }
+
+    const query = this.currentState?.searchQuery.trim().toLowerCase() ?? '';
+    let anchor: ChildNode | null = this.groupsRoot.firstChild;
+    for (const group of groups) {
+      const previewKey = this.buildPreviewKey(group);
+      let view = this.groupViews.get(group.id);
+      const shouldBuildEntriesKey = group.expanded || (view?.entriesRendered ?? false);
+      const entriesKey = shouldBuildEntriesKey ? this.buildEntriesKey(group, query) : '';
+      if (view == null) {
+        view = this.createBatchCardView(group, query, previewKey, entriesKey);
+        this.groupViews.set(group.id, view);
+      } else if (
+        this.forceRender ||
+        view.expanded !== group.expanded ||
+        view.previewKey !== previewKey ||
+        (view.entriesRendered && view.entriesKey !== entriesKey)
+      ) {
+        this.updateBatchCardView(view, group, query, previewKey, entriesKey);
+      }
+
+      if (view.root.parentNode !== this.groupsRoot || view.root !== anchor) {
+        this.groupsRoot.insertBefore(view.root, anchor);
+      }
+      anchor = view.root.nextSibling;
     }
   }
 
-  private createBatchCard(group: ManagedHistoryGroup): HTMLElement {
-    const section = this.doc.createElement('section');
-    section.className = UI_CLASS_NAMES.inlineBatchCard;
-    section.dataset.groupId = group.id;
-    section.dataset.turboRenderBatchAnchor = 'true';
-    if (group.matchCount > 0) {
-      section.classList.add(UI_CLASS_NAMES.inlineBatchHighlight);
-    }
+  private buildPreviewKey(group: ManagedHistoryGroup): string {
+    return [
+      group.matchCount,
+      group.userPreview,
+      group.assistantPreview,
+      group.slotPairStartIndex,
+      group.slotPairEndIndex,
+      group.filledPairCount,
+      group.capacity,
+    ].join('||');
+  }
+
+  private buildEntriesKey(group: ManagedHistoryGroup, query: string): string {
+    const entriesKey = group.entries
+      .map((entry) =>
+        [
+          entry.id,
+          entry.role,
+          entry.renderKind,
+          entry.hiddenFromConversation ? '1' : '0',
+          entry.liveTurnId ?? '',
+          entry.text,
+          entry.contentType ?? '',
+          entry.snapshotHtml ?? '',
+          entry.structuredDetails ?? '',
+        ].join(':'),
+      )
+      .join('|');
+
+    return [
+      query,
+      group.slotPairStartIndex,
+      group.slotPairEndIndex,
+      group.filledPairCount,
+      group.capacity,
+      group.userPreview,
+      group.assistantPreview,
+      entriesKey,
+    ].join('||');
+  }
+
+  private createBatchCardView(
+    group: ManagedHistoryGroup,
+    query: string,
+    previewKey: string,
+    entriesKey: string,
+  ): BatchCardView {
+    const root = this.doc.createElement('section');
+    root.className = UI_CLASS_NAMES.inlineBatchCard;
+    root.dataset.groupId = group.id;
+    root.dataset.turboRenderBatchAnchor = 'true';
+    root.dataset.state = group.expanded ? 'expanded' : 'collapsed';
 
     const main = this.doc.createElement('div');
     main.className = UI_CLASS_NAMES.inlineBatchMain;
@@ -436,32 +572,17 @@ export class StatusBar {
 
     const meta = this.doc.createElement('div');
     meta.className = UI_CLASS_NAMES.inlineBatchMeta;
-    meta.innerHTML = `<strong>${getFilledSummaryText(this.t, group)}</strong>`;
 
-    if (!group.expanded) {
-      const preview = this.doc.createElement('div');
-      preview.className = UI_CLASS_NAMES.inlineBatchPreview;
-      if (group.userPreview.length > 0) {
-        const user = this.doc.createElement('p');
-        user.textContent = this.t('historyBatchPreviewUser', { text: group.userPreview });
-        preview.append(user);
-      }
-      if (group.assistantPreview.length > 0) {
-        const assistant = this.doc.createElement('p');
-        assistant.textContent = this.t('historyBatchPreviewAssistant', { text: group.assistantPreview });
-        preview.append(assistant);
-      }
-      if (group.matchCount > 0) {
-        const matches = this.doc.createElement('p');
-        matches.className = UI_CLASS_NAMES.inlineBatchMatches;
-        matches.textContent = this.t('historyBatchMatches', { count: group.matchCount });
-        preview.append(matches);
-      }
-
-      meta.append(preview);
-    }
+    const summary = this.doc.createElement('strong');
+    meta.append(summary);
     header.append(meta);
     main.append(header);
+
+    const preview = this.doc.createElement('div');
+    preview.className = UI_CLASS_NAMES.inlineBatchPreview;
+
+    const entries = this.doc.createElement('div');
+    entries.className = UI_CLASS_NAMES.inlineBatchEntries;
 
     const rail = this.doc.createElement('div');
     rail.className = UI_CLASS_NAMES.inlineBatchRail;
@@ -472,18 +593,95 @@ export class StatusBar {
     button.dataset.turboRenderAction = 'toggle-archive-group';
     button.dataset.groupId = group.id;
     button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
-    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, section));
+    button.setAttribute('aria-expanded', String(group.expanded));
+    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, root));
     rail.append(button);
 
-    section.append(main, rail);
+    main.append(preview, entries);
+    root.append(main, rail);
 
-    if (!group.expanded) {
-      return section;
+    const view: BatchCardView = {
+      root,
+      main,
+      header,
+      meta,
+      summary,
+      rail,
+      button,
+      preview,
+      entries,
+      previewKey: '',
+      entriesKey: '',
+      entriesRendered: false,
+      expanded: !group.expanded,
+    };
+    this.updateBatchCardView(view, group, query, previewKey, entriesKey, true);
+    return view;
+  }
+
+  private updateBatchCardView(
+    view: BatchCardView,
+    group: ManagedHistoryGroup,
+    query: string,
+    previewKey: string,
+    entriesKey: string,
+    force = false,
+  ): void {
+    const nextExpanded = group.expanded;
+    const previewChanged = view.previewKey !== previewKey;
+    const entriesChanged = view.entriesRendered && view.entriesKey !== entriesKey;
+    if (!force && !previewChanged && !entriesChanged && view.expanded === nextExpanded) {
+      return;
     }
 
-    const entries = this.doc.createElement('div');
-    entries.className = UI_CLASS_NAMES.inlineBatchEntries;
-    const query = this.currentState?.searchQuery.trim().toLowerCase() ?? '';
+    view.root.classList.toggle(UI_CLASS_NAMES.inlineBatchHighlight, group.matchCount > 0);
+    view.root.dataset.groupId = group.id;
+    view.root.dataset.state = nextExpanded ? 'expanded' : 'collapsed';
+    view.summary.textContent = getFilledSummaryText(this.t, group);
+    view.button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
+    view.button.setAttribute('aria-expanded', String(group.expanded));
+
+    if (force || previewChanged) {
+      this.renderCollapsedPreview(view.preview, group);
+      view.previewKey = previewKey;
+    }
+    view.preview.hidden = nextExpanded;
+
+    const shouldRenderEntries = nextExpanded
+      ? force || entriesChanged || !view.entriesRendered
+      : view.entriesRendered && (force || entriesChanged);
+    if (shouldRenderEntries) {
+      this.renderExpandedEntries(view.entries, group, query);
+      view.entriesKey = entriesKey;
+      view.entriesRendered = true;
+    }
+    view.entries.hidden = !nextExpanded;
+    view.expanded = nextExpanded;
+  }
+
+  private renderCollapsedPreview(preview: HTMLElement, group: ManagedHistoryGroup): void {
+    preview.replaceChildren();
+
+    if (group.userPreview.length > 0) {
+      const user = this.doc.createElement('p');
+      user.textContent = this.t('historyBatchPreviewUser', { text: group.userPreview });
+      preview.append(user);
+    }
+    if (group.assistantPreview.length > 0) {
+      const assistant = this.doc.createElement('p');
+      assistant.textContent = this.t('historyBatchPreviewAssistant', { text: group.assistantPreview });
+      preview.append(assistant);
+    }
+    if (group.matchCount > 0) {
+      const matches = this.doc.createElement('p');
+      matches.className = UI_CLASS_NAMES.inlineBatchMatches;
+      matches.textContent = this.t('historyBatchMatches', { count: group.matchCount });
+      preview.append(matches);
+    }
+  }
+
+  private renderExpandedEntries(entries: HTMLElement, group: ManagedHistoryGroup, query: string): void {
+    entries.replaceChildren();
     let highlighted = false;
 
     for (const pair of buildInteractionPairs(
@@ -504,42 +702,27 @@ export class StatusBar {
         highlighted = true;
       }
 
-      const userEntries = visibleEntries.filter((entry) => entry.role === 'user');
-      const assistantEntries = visibleEntries.filter((entry) => entry.role !== 'user');
-
-      if (userEntries.length > 0) {
-        article.append(this.createEntryLane(userEntries, 'user'));
-      }
-      if (assistantEntries.length > 0) {
-        article.append(this.createEntryLane(assistantEntries, 'assistant'));
+      for (const entry of visibleEntries) {
+        article.append(this.createEntryBody(entry));
       }
       entries.append(article);
     }
-
-    main.append(entries);
-    return section;
   }
 
-  private createEntryLane(entries: ManagedHistoryEntry[], lane: 'user' | 'assistant'): HTMLElement {
-    const laneEl = this.doc.createElement('section');
-    laneEl.className = UI_CLASS_NAMES.historyEntryCard;
-    laneEl.dataset.lane = lane;
-
-    for (const entry of entries) {
-      const body = renderManagedHistoryEntryBody(
-        this.doc,
-        entry,
-        this.t,
-        lane === 'user' ? this.t('roleUser') : this.t('roleAssistant'),
-        false,
-      );
-      body.classList.add(UI_CLASS_NAMES.historyEntryBody);
-      if (lane === 'assistant' && entry.role !== 'assistant') {
-        body.dataset.supplementalRole = entry.role;
-      }
-      laneEl.append(body);
+  private createEntryBody(entry: ManagedHistoryEntry): HTMLElement {
+    const lane = entry.role === 'user' ? 'user' : 'assistant';
+    const body = renderManagedHistoryEntryBody(
+      this.doc,
+      entry,
+      this.t,
+      lane === 'user' ? this.t('roleUser') : this.t('roleAssistant'),
+      false,
+    );
+    body.classList.add(UI_CLASS_NAMES.historyEntryBody);
+    body.dataset.lane = lane;
+    if (lane === 'assistant' && entry.role !== 'assistant') {
+      body.dataset.supplementalRole = entry.role;
     }
-
-    return laneEl;
+    return body;
   }
 }

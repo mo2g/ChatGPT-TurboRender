@@ -33,6 +33,27 @@ describe('history-entry-renderer', () => {
     expect(body.textContent).not.toContain('``bash``');
   });
 
+  it('preserves host snapshot markup without wrapping it in a second visible bubble', () => {
+    const body = renderManagedHistoryEntryBody(
+      document,
+      ManagedHistoryStore.createEntry({
+        id: 'entry-2',
+        turnIndex: 0,
+        role: 'user',
+        parts: ['Official bubble text'],
+        renderKind: 'host-snapshot',
+        snapshotHtml: '<div data-message-author-role="user" class="user-turn"><div class="user-bubble">Official bubble text</div></div>',
+      }),
+      createTranslator('en'),
+      'User',
+      false,
+    );
+
+    expect(body.dataset.renderKind).toBe('host-snapshot');
+    expect(body.innerHTML).toContain('data-message-author-role="user"');
+    expect(body.innerHTML).toContain('Official bubble text');
+  });
+
   it('renders fenced code blocks and falls back to text when fence is unclosed', () => {
     const closedFence = renderManagedHistoryEntryBody(
       document,
