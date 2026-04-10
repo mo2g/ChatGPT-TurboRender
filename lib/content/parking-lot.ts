@@ -14,6 +14,31 @@ export interface ParkRequest {
   pairCount: number;
 }
 
+function resolveParkedNodeMessageId(node: HTMLElement): string | null {
+  const direct = node.getAttribute('data-message-id')?.trim();
+  if (direct != null && direct.length > 0) {
+    return direct;
+  }
+
+  for (const descendant of node.querySelectorAll<HTMLElement>('[data-message-id]')) {
+    const messageId = descendant.getAttribute('data-message-id')?.trim();
+    if (messageId != null && messageId.length > 0) {
+      return messageId;
+    }
+  }
+
+  let current = node.parentElement;
+  while (current != null) {
+    const ancestorId = current.getAttribute('data-message-id')?.trim();
+    if (ancestorId != null && ancestorId.length > 0) {
+      return ancestorId;
+    }
+    current = current.parentElement;
+  }
+
+  return null;
+}
+
 export class ParkingLot {
   private groups = new Map<string, ParkedGroup>();
   private parkedTurnIds = new Set<string>();
@@ -48,6 +73,7 @@ export class ParkingLot {
       startIndex: request.startIndex,
       endIndex: request.endIndex,
       turnIds: [...request.turnIds],
+      messageIds: request.nodes.map((node) => resolveParkedNodeMessageId(node)),
       nodes: [...request.nodes],
       parent: request.parent,
       anchor,

@@ -5,6 +5,8 @@ export const BUILD_SIGNATURE = '2026-03-28-1650-hot-transcript-archive-zone';
 export const TURBO_RENDER_UI_ROOT_ATTRIBUTE = 'data-turbo-render-ui-root';
 export const TURBO_RENDER_UI_ROOT_VALUE = 'true';
 export const TURBO_RENDER_UI_ROOT_SELECTOR = `[${TURBO_RENDER_UI_ROOT_ATTRIBUTE}="${TURBO_RENDER_UI_ROOT_VALUE}"]`;
+export const TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_QUERY = 'turbo-render-debug-actions';
+export const TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_STORAGE_KEY = 'turboRenderDebugShowShareActions';
 
 export const TURN_ID_DATASET = 'turboRenderTurnId';
 export const PLACEHOLDER_GROUP_ATTRIBUTE = 'data-turbo-render-group-id';
@@ -89,6 +91,7 @@ export const UI_CLASS_NAMES = {
   inlineBatchEntries: 'turbo-render-inline-batch__entries',
   inlineBatchEntry: 'turbo-render-inline-batch__entry',
   inlineBatchHighlight: 'turbo-render-inline-batch--highlight',
+  historyEntryFrame: 'turbo-render-history-entry__frame',
   historyDrawer: 'turbo-render-history-drawer',
   historyDrawerHeader: 'turbo-render-history-drawer__header',
   historyDrawerCopy: 'turbo-render-history-drawer__copy',
@@ -102,7 +105,11 @@ export const UI_CLASS_NAMES = {
   historyEntryCard: 'turbo-render-history-entry',
   historyEntryMeta: 'turbo-render-history-entry__meta',
   historyEntryBody: 'turbo-render-history-entry__body',
+  historyEntryActions: 'turbo-render-history-entry__actions',
   historyEntryAction: 'turbo-render-history-entry__action',
+  historyEntryActionMenuAnchor: 'turbo-render-history-entry__action-menu-anchor',
+  historyEntryActionMenu: 'turbo-render-history-entry__action-menu',
+  historyEntryActionMenuItem: 'turbo-render-history-entry__action-menu-item',
   historyEntryHighlight: 'turbo-render-history-entry--highlight',
   placeholder: 'turbo-render-placeholder',
   placeholderSummary: 'turbo-render-placeholder__summary',

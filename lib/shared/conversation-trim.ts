@@ -46,6 +46,13 @@ export interface ConversationPayload {
   [key: string]: unknown;
 }
 
+export interface ReadAloudMessageResolutionContext {
+  entryRole: TurnRole | null;
+  entryText: string | null;
+  entryMessageId?: string | null;
+  syntheticMessageId?: string | null;
+}
+
 export interface ShareLoaderDataPayload {
   sharedConversationId?: string | null;
   serverResponse?: {
@@ -210,6 +217,214 @@ export function buildActiveChain(
   }
 
   return chain.reverse();
+}
+
+function normalizeConversationText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function resolveSyntheticTurnIndex(...candidates: Array<string | null | undefined>): number | null {
+  for (const candidate of candidates) {
+    const messageId = candidate?.trim() ?? '';
+    if (messageId.length === 0 || !messageId.startsWith('turn-')) {
+      continue;
+    }
+
+    const syntheticBody = messageId.slice('turn-'.length);
+    const syntheticParts = syntheticBody.split('-');
+    if (syntheticParts.length < 3) {
+      continue;
+    }
+
+    const turnIndexText = syntheticParts.at(-2) ?? '';
+    if (!/^\d+$/.test(turnIndexText)) {
+      continue;
+    }
+
+    const turnIndex = Number.parseInt(turnIndexText, 10);
+    if (Number.isSafeInteger(turnIndex) && turnIndex >= 0) {
+      return turnIndex;
+    }
+  }
+
+  return null;
+}
+
+function extractConversationMessageText(message: ConversationMessage | null | undefined): string {
+  const fragments: string[] = [];
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 5 || value == null) {
+      return;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        fragments.push(trimmed);
+      }
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach((part) => visit(part, depth + 1));
+      return;
+    }
+
+    if (typeof value !== 'object') {
+      return;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === 'string') {
+      visit(record.text, depth + 1);
+    }
+    if (Array.isArray(record.parts)) {
+      visit(record.parts, depth + 1);
+    }
+    if (Array.isArray(record.content)) {
+      visit(record.content, depth + 1);
+    }
+    if (typeof record.title === 'string') {
+      visit(record.title, depth + 1);
+    }
+  };
+
+  visit(message?.content?.parts ?? []);
+  return fragments.join('\n').trim();
+}
+
+function collectConversationMessageCandidates(payload: ConversationPayload): Array<{
+  id: string;
+  role: TurnRole;
+  text: string;
+  normalizedText: string;
+}> {
+  const mapping = payload.mapping;
+  if (mapping == null) {
+    return [];
+  }
+
+  const activeNodeId = resolveActiveNodeId(payload);
+  const orderedNodeIds = buildActiveChain(mapping, activeNodeId);
+  const sourceIds = orderedNodeIds.length > 0 ? orderedNodeIds : Object.keys(mapping);
+  const candidates: Array<{
+    id: string;
+    role: TurnRole;
+    text: string;
+    normalizedText: string;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const nodeId of sourceIds) {
+    if (seen.has(nodeId)) {
+      continue;
+    }
+    seen.add(nodeId);
+
+    const node = mapping[nodeId];
+    const message = node?.message ?? null;
+    if (message == null) {
+      continue;
+    }
+
+    const role =
+      message.author?.role === 'user' ||
+      message.author?.role === 'assistant' ||
+      message.author?.role === 'system' ||
+      message.author?.role === 'tool'
+        ? message.author.role
+        : 'unknown';
+    const text = extractConversationMessageText(message);
+    const normalizedText = normalizeConversationText(text);
+    if (text.length === 0) {
+      continue;
+    }
+
+    candidates.push({
+      id: message.id?.trim() || node.id,
+      role,
+      text,
+      normalizedText,
+    });
+  }
+
+  return candidates;
+}
+
+export function resolveReadAloudMessageIdFromPayload(
+  payload: ConversationPayload | null | undefined,
+  context: ReadAloudMessageResolutionContext,
+): string | null {
+  if (payload == null) {
+    return null;
+  }
+
+  const candidates = collectConversationMessageCandidates(payload);
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const directEntryMessageId = context.entryMessageId?.trim() ?? '';
+  if (directEntryMessageId.length > 0) {
+    const exactMatch = candidates.find((candidate) => candidate.id === directEntryMessageId);
+    if (exactMatch != null) {
+      return exactMatch.id;
+    }
+  }
+
+  const syntheticTurnIndex = resolveSyntheticTurnIndex(context.syntheticMessageId);
+  const requestedText = normalizeConversationText(context.entryText ?? '');
+  const roleCandidates =
+    context.entryRole == null ? candidates : candidates.filter((candidate) => candidate.role === context.entryRole);
+
+  const tryCandidatesByText = (
+    pool: typeof candidates,
+    normalizedQuery: string,
+  ): string | null => {
+    if (normalizedQuery.length === 0) {
+      return null;
+    }
+
+    const exact = pool.filter((candidate) => candidate.normalizedText === normalizedQuery);
+    if (exact.length === 1) {
+      return exact[0]!.id;
+    }
+    if (exact.length > 1 && syntheticTurnIndex != null) {
+      return exact[Math.min(syntheticTurnIndex, exact.length - 1)]?.id ?? null;
+    }
+
+    const contains = pool.find((candidate) => {
+      return (
+        candidate.normalizedText.includes(normalizedQuery) ||
+        normalizedQuery.includes(candidate.normalizedText)
+      );
+    });
+    return contains?.id ?? null;
+  };
+
+  const exactRoleMatch = tryCandidatesByText(roleCandidates, requestedText);
+  if (exactRoleMatch != null) {
+    return exactRoleMatch;
+  }
+
+  const exactAnyMatch = tryCandidatesByText(candidates, requestedText);
+  if (exactAnyMatch != null) {
+    return exactAnyMatch;
+  }
+
+  if (syntheticTurnIndex != null) {
+    const indexedRoleCandidate = roleCandidates[syntheticTurnIndex] ?? null;
+    if (indexedRoleCandidate != null) {
+      return indexedRoleCandidate.id;
+    }
+
+    const indexedCandidate = candidates[syntheticTurnIndex] ?? null;
+    if (indexedCandidate != null) {
+      return indexedCandidate.id;
+    }
+  }
+
+  return null;
 }
 
 function extractMessageParts(message: ConversationMessage | null | undefined): string[] {

@@ -51,6 +51,7 @@ describe('controlled Chrome launcher helpers', () => {
         targetUrl: 'https://chatgpt.com/share/demo',
       }),
     ).toEqual([
+      '--disable-crashpad-for-testing',
       '--remote-debugging-port=9222',
       '--user-data-dir=/tmp/profile',
       '--disable-extensions-except=/tmp/ext',

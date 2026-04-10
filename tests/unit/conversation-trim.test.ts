@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractShareConversationPayload,
   resolveActiveNodeId,
+  resolveReadAloudMessageIdFromPayload,
   trimConversationPayload,
   type ConversationMappingNode,
   type ConversationPayload,
@@ -183,6 +184,19 @@ describe('conversation trim', () => {
     });
     expect(toolTurn?.parts).toEqual([]);
     expect(toolTurn?.structuredDetails).toContain('iptables-save');
+  });
+
+  it('prefers an exact read-aloud message id match over text matching', () => {
+    const payload = buildPayload();
+
+    expect(
+      resolveReadAloudMessageIdFromPayload(payload, {
+        entryRole: 'assistant',
+        entryText: 'mismatched assistant text',
+        entryMessageId: 'assistant3',
+        syntheticMessageId: 'turn-chat:e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f-3-cwdqxl',
+      }),
+    ).toBe('assistant3');
   });
 
   it('marks visually hidden messages so they can stay out of the restored chat flow', () => {

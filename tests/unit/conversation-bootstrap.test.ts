@@ -344,4 +344,123 @@ describe('conversation bootstrap', () => {
     history.replaceState({}, '', '/');
     delete (window as typeof window & { __reactRouterContext?: unknown }).__reactRouterContext;
   });
+
+  it('rewrites synthetic read aloud ids to the matching host message id by turn order', async () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="text-message min-h-8" data-message-id="real-user-message-id" data-message-author-role="user">
+          <div>User prompt for speech.</div>
+        </div>
+        <div class="text-message min-h-8" data-message-id="real-assistant-message-id" data-message-author-role="assistant">
+          <div>Assistant reply for speech.</div>
+        </div>
+      </main>
+    `;
+
+    const nativeFetch = vi.fn().mockResolvedValue(
+      new Response('', {
+        status: 200,
+        headers: { 'content-type': 'audio/aac' },
+      }),
+    ) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+
+    await window.fetch(
+      'https://chatgpt.com/backend-api/synthesize?message_id=turn-chat:e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f-1-cwdqxl&conversation_id=e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f&voice=cove&format=aac',
+    );
+
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    const forwardedUrl = new URL(nativeFetch.mock.calls[0]![0] as string);
+    expect(forwardedUrl.searchParams.get('message_id')).toBe('real-assistant-message-id');
+    expect(forwardedUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+
+    cleanup();
+  });
+
+  it('rewrites synthetic read aloud ids from a cached conversation endpoint payload', async () => {
+    const conversationId = 'e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f';
+    const bootstrapContext = {
+      conversationId,
+      entryRole: 'assistant' as const,
+      entryText: 'mismatched assistant text',
+      entryKey: 'assistant5',
+      entryMessageId: 'assistant5',
+    };
+    (window as typeof window & { __turboRenderReadAloudContext?: typeof bootstrapContext }).__turboRenderReadAloudContext =
+      bootstrapContext;
+
+    const nativeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.includes(`/backend-api/conversation/${conversationId}`)) {
+        return new Response(JSON.stringify(createConversationPayload()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (requestUrl.includes('/backend-api/synthesize')) {
+        return new Response('', {
+          status: 200,
+          headers: { 'content-type': 'audio/aac' },
+        });
+      }
+
+      throw new Error(`Unexpected fetch request: ${requestUrl}`);
+    }) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_CONFIG',
+          payload: {
+            enabled: true,
+            mode: 'performance',
+            initialTrimEnabled: true,
+            initialHotPairs: 2,
+            minFinalizedBlocks: 4,
+            coldRestoreMode: 'placeholder',
+          },
+        },
+      }),
+    );
+
+    await window.fetch(`https://chatgpt.com/backend-api/conversation/${conversationId}`);
+    const synthesizeResponse = await window.fetch(
+      `https://chatgpt.com/backend-api/synthesize?message_id=turn-chat:${conversationId}-5-9ox7ch&conversation_id=${conversationId}&voice=cove&format=aac`,
+    );
+    expect(synthesizeResponse.ok).toBe(true);
+
+    expect(nativeFetch).toHaveBeenCalledTimes(2);
+    const synthesizeCall = nativeFetch.mock.calls[1]![0];
+    const synthesizeUrl = new URL(
+      typeof synthesizeCall === 'string'
+        ? synthesizeCall
+        : synthesizeCall instanceof URL
+          ? synthesizeCall.toString()
+          : synthesizeCall instanceof Request
+            ? synthesizeCall.url
+            : String(synthesizeCall),
+    );
+
+    expect(synthesizeUrl.searchParams.get('conversation_id')).toBe(conversationId);
+    expect(synthesizeUrl.searchParams.get('message_id')).toBe('assistant5');
+    expect(synthesizeUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+
+    cleanup();
+  });
 });

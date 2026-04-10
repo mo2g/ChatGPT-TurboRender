@@ -34,6 +34,7 @@ Examples:
 Environment:
   CHROME_BIN         Explicit Chromium-compatible binary path.
   CHROME_DEBUG_PORT  Remote debugging port. Default: 9222
+  CHROME_DEBUG_FORCE_RESTART=1  Ignore an already-running browser on the debug port and start a fresh instance.
 `);
 }
 
@@ -47,6 +48,34 @@ function resolveTargetUrl() {
   const separator = args.indexOf('--');
   const urlArg = separator >= 0 ? args[separator + 1] : args[0];
   return urlArg && urlArg.length > 0 ? urlArg : defaultUrl;
+}
+
+async function waitForRemoteDebugEndpoint(port, timeoutMs = 1200) {
+  const startedAt = Date.now();
+  const statusUrl = `http://127.0.0.1:${port}/json/version`;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(statusUrl);
+      if (response.ok) {
+        return true;
+      }
+    } catch {
+      // Keep waiting until the browser is ready.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  return false;
+}
+
+async function openUrlInExistingBrowser(port, url) {
+  try {
+    await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`);
+  } catch {
+    // Reuse still succeeds even if opening a new target is unavailable.
+  }
 }
 
 function ensureBuildExists() {
@@ -76,10 +105,23 @@ async function resolveChromeBinary() {
 const targetUrl = resolveTargetUrl();
 ensureBuildExists();
 
+const forceRestart = process.env.CHROME_DEBUG_FORCE_RESTART === '1';
+const portAlive = !forceRestart && (await waitForRemoteDebugEndpoint(debugPort));
+if (portAlive) {
+  await openUrlInExistingBrowser(debugPort, targetUrl);
+  console.log(`[TurboRender] reusing existing Chrome on http://127.0.0.1:${debugPort}`);
+  console.log(`[TurboRender] extension path: ${extensionPath}`);
+  console.log('[TurboRender] keep the existing browser/profile open to preserve sign-in state.');
+  process.exit(0);
+}
+
 const chromeBinary = await resolveChromeBinary();
 const browserKind = classifyBrowserBinary(chromeBinary);
 const userDataDir = path.join(repoRoot, '.wxt', 'mcp-chrome-profile', `${browserKind}-${debugPort}`);
+const browserHomeDir = path.join(userDataDir, 'home');
 fs.mkdirSync(userDataDir, { recursive: true });
+fs.mkdirSync(path.join(userDataDir, 'Crashpad'), { recursive: true });
+fs.mkdirSync(browserHomeDir, { recursive: true });
 
 const chromeArgs = buildChromeArgs({
   debugPort,
@@ -95,6 +137,12 @@ const launch = buildLaunchCommand({
 
 const child = spawn(launch.command, launch.args, {
   cwd: repoRoot,
+  env: {
+    ...process.env,
+    HOME: browserHomeDir,
+    XDG_CONFIG_HOME: path.join(browserHomeDir, '.config'),
+    XDG_CACHE_HOME: path.join(browserHomeDir, '.cache'),
+  },
   detached: true,
   stdio: 'ignore',
 });

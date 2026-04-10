@@ -144,6 +144,42 @@ describe('ManagedHistoryStore', () => {
     });
   });
 
+  it('prefers live host message ids over synthetic initial-trim ids', () => {
+    const store = new ManagedHistoryStore();
+    const session = createSession(4, 0);
+    session.turns[1] = {
+      ...session.turns[1],
+      id: 'turn-chat:synthetic-message-id',
+    };
+    store.setInitialTrimSession(session);
+
+    const liveTurn = document.createElement('article');
+    liveTurn.setAttribute('data-message-id', 'real-message-id');
+    liveTurn.textContent = 'Assistant reply';
+
+    store.syncFromRecords([
+      {
+        id: 'live-0',
+        index: 0,
+        role: 'user',
+        isStreaming: false,
+        parked: false,
+        node: Object.assign(document.createElement('article'), { textContent: 'User prompt' }),
+      },
+      {
+        id: 'live-1',
+        index: 1,
+        role: 'assistant',
+        isStreaming: false,
+        parked: false,
+        node: liveTurn,
+      },
+    ]);
+
+    const entry = store.getEntries().find((candidate) => candidate.liveTurnId === 'live-1');
+    expect(entry?.messageId).toBe('real-message-id');
+  });
+
   it('upgrades live turns to host snapshots and excludes hidden messages from search', () => {
     const store = new ManagedHistoryStore();
     const session = createSession(12, 8);

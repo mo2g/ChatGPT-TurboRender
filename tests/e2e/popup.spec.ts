@@ -321,35 +321,37 @@ async function withPopupPage(
   scenario: PopupScenario,
   callback: (page: Page) => Promise<void>,
 ) {
-  const handle = await launchControlledBrowser('about:blank');
+  if (browserHandle == null) {
+    throw new Error('Popup smoke-test browser is unavailable.');
+  }
 
+  const context = browserHandle.browser.contexts()[0];
+  if (context == null) {
+    throw new Error('Popup smoke-test browser did not expose a default context.');
+  }
+
+  const page = await context.newPage();
   try {
-    const context = handle.browser.contexts()[0];
-    if (context == null) {
-      throw new Error('Popup smoke-test browser did not expose a default context.');
-    }
-
-    const page = await context.newPage();
-    try {
-      await installPopupMock(page, baseUrl, scenario);
-      await page.goto(`${baseUrl}/popup.html`);
-      await expect(page.locator('[data-popup-state]')).toBeVisible({ timeout: 15_000 });
-      await callback(page);
-    } finally {
-      await page.close();
-    }
+    await installPopupMock(page, baseUrl, scenario);
+    await page.goto(`${baseUrl}/popup.html`);
+    await expect(page.locator('[data-popup-state]')).toBeVisible({ timeout: 15_000 });
+    await callback(page);
   } finally {
-    await handle.cleanup();
+    await page.close();
   }
 }
 
 let server: { baseUrl: string; close(): Promise<void> } | null = null;
+let browserHandle: ControlledBrowserHandle | null = null;
 
 test.beforeAll(async () => {
   server = await createStaticServer(OUTPUT_DIR);
+  browserHandle = await launchControlledBrowser('about:blank');
 });
 
 test.afterAll(async () => {
+  await browserHandle?.cleanup();
+  browserHandle = null;
   await server?.close();
   server = null;
 });

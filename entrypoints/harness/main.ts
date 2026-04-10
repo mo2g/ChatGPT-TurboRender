@@ -30,13 +30,16 @@ if (stage == null || statusEl == null) {
   throw new Error('Harness UI missing');
 }
 
+const harnessRoute = new URL(window.location.href).searchParams.get('route');
+history.replaceState({}, '', harnessRoute === 'share' ? '/share/share-123' : '/chat/harness');
+
 let streaming = true;
 let controller: TurboRenderController | null = null;
 
 function boot(turnCount: number): void {
   controller?.stop();
-  stage.innerHTML = '';
   mountTranscriptFixture(document, { turnCount, streaming });
+  document.body.insertBefore(app, document.body.firstChild);
   controller = new TurboRenderController({
     settings: {
       ...DEFAULT_SETTINGS,
@@ -59,10 +62,15 @@ function refreshStatus(): void {
     return;
   }
   const status = controller.getStatus();
+  statusEl.dataset.refreshCount = String(status.refreshCount);
+  statusEl.dataset.routeKind = status.routeKind;
+  statusEl.dataset.collapsedBatchCount = String(status.collapsedBatchCount);
+  statusEl.dataset.expandedBatchCount = String(status.expandedBatchCount);
+  statusEl.dataset.parkedTurns = String(status.parkedTurns);
   statusEl.textContent = `${status.active ? 'Active' : 'Monitoring'} • ${status.parkedTurns}/${status.totalTurns} parked • ${status.liveDescendantCount} live descendants`;
 }
 
-boot(180);
+boot(40);
 window.setInterval(refreshStatus, 500);
 
 document.addEventListener('click', (event) => {

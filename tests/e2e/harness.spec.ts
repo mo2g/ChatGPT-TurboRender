@@ -3,7 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { launchControlledBrowser } from './controlled-browser';
+import { launchControlledBrowser, type ControlledBrowserHandle } from './controlled-browser';
 
 const OUTPUT_DIR = path.resolve('.output/chrome-mv3');
 
@@ -71,24 +71,33 @@ function createStaticServer(rootDir: string): Promise<{ baseUrl: string; close()
   });
 }
 
+let browserHandle: ControlledBrowserHandle | null = null;
+
+test.beforeAll(async () => {
+  browserHandle = await launchControlledBrowser('about:blank');
+});
+
+test.afterAll(async () => {
+  await browserHandle?.cleanup();
+  browserHandle = null;
+});
+
 async function withHarnessPage(baseUrl: string, callback: (page: Page) => Promise<void>) {
-  const handle = await launchControlledBrowser('about:blank');
+  if (browserHandle == null) {
+    throw new Error('Controlled browser is unavailable.');
+  }
 
+  const context = browserHandle.browser.contexts()[0];
+  if (context == null) {
+    throw new Error('Controlled browser did not expose a default context.');
+  }
+
+  const page = await context.newPage();
   try {
-    const context = handle.browser.contexts()[0];
-    if (context == null) {
-      throw new Error('Controlled browser did not expose a default context.');
-    }
-
-    const page = await context.newPage();
-    try {
-      await page.goto(`${baseUrl}/harness.html`);
-      await callback(page);
-    } finally {
-      await page.close();
-    }
+    await page.goto(`${baseUrl}/harness.html`);
+    await callback(page);
   } finally {
-    await handle.cleanup();
+    await page.close();
   }
 }
 

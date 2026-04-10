@@ -74,3 +74,11 @@ pnpm debug:mcp-chrome -- https://chatgpt.com/share/<share-id>
 ```
 
 The launcher starts a dedicated Chromium-based profile with `.output/chrome-mv3` preloaded. It prefers the repo-managed Playwright browser (`Google Chrome for Testing`) or a local Chromium build, because stable Google Chrome no longer loads unpacked extensions through `--load-extension`. Restart Codex after launching it so the MCP session reconnects to that controlled browser.
+
+If you already have a logged-in controlled browser on `9222`, prefer reloading the extension in place instead of restarting the browser:
+
+```bash
+pnpm reload:mcp-chrome
+```
+
+That keeps the existing profile and sign-in state intact while refreshing ChatGPT tabs after `pnpm build`.

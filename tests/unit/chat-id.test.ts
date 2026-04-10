@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getChatIdFromPathname, resolveConversationRoute } from '../../lib/shared/chat-id';
+import { getChatIdFromPathname, getRouteIdFromRuntimeId, resolveConversationRoute } from '../../lib/shared/chat-id';
 
 describe('chat id parser', () => {
   it('maps root path to home', () => {
@@ -29,6 +29,13 @@ describe('chat id parser', () => {
       routeId: 'abc123',
       runtimeId: 'share:abc123',
     });
+  });
+
+  it('extracts route ids from runtime ids', () => {
+    expect(getRouteIdFromRuntimeId('chat:abc123')).toBe('abc123');
+    expect(getRouteIdFromRuntimeId('share:xyz789')).toBe('xyz789');
+    expect(getRouteIdFromRuntimeId('chat:home')).toBeNull();
+    expect(getRouteIdFromRuntimeId('chat:unknown')).toBeNull();
   });
 
   it('treats incomplete /c routes and non-chat routes as transient unknown', () => {

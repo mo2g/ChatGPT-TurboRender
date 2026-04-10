@@ -124,6 +124,24 @@ function isHydrationPlaceholderChatId(chatId: string): boolean {
   return chatId === 'chat:unknown';
 }
 
+function getRuntimeExtensionId(): string | null {
+  const chromeRuntimeId = (globalThis as {
+    chrome?: { runtime?: { id?: string | null } };
+  }).chrome?.runtime?.id;
+  if (typeof chromeRuntimeId === 'string' && chromeRuntimeId.trim().length > 0) {
+    return chromeRuntimeId.trim();
+  }
+
+  const browserRuntimeId = (globalThis as {
+    browser?: { runtime?: { id?: string | null } };
+  }).browser?.runtime?.id;
+  if (typeof browserRuntimeId === 'string' && browserRuntimeId.trim().length > 0) {
+    return browserRuntimeId.trim();
+  }
+
+  return null;
+}
+
 export default defineContentScript({
   matches: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   runAt: 'document_start',
@@ -131,6 +149,15 @@ export default defineContentScript({
     const html = document.documentElement;
     if (html != null) {
       html.dataset.turborenderBuild = BUILD_SIGNATURE;
+    }
+    const extensionId = getRuntimeExtensionId();
+    if (extensionId != null) {
+      if (html != null) {
+        html.dataset.turboRenderExtensionId = extensionId;
+      }
+      if (document.body != null) {
+        document.body.dataset.turboRenderExtensionId = extensionId;
+      }
     }
     console.info(`[TurboRender] content-script build ${BUILD_SIGNATURE}`);
 
@@ -282,7 +309,26 @@ export default defineContentScript({
       }
     };
 
+    const handleExtensionReloadRequest = (event: MessageEvent) => {
+      if (!isAlive() || event.source !== window) {
+        return;
+      }
+
+      const data = event.data as
+        | { namespace?: string; type?: string }
+        | null
+        | undefined;
+      if (data?.namespace !== 'chatgpt-turborender' || data.type !== 'TURBO_RENDER_REQUEST_EXTENSION_RELOAD') {
+        return;
+      }
+
+      if (typeof chrome?.runtime?.reload === 'function') {
+        chrome.runtime.reload();
+      }
+    };
+
     ctx.addEventListener(window, 'message', handlePageMessage);
+    ctx.addEventListener(window, 'message', handleExtensionReloadRequest);
     syncPageConfig(settings);
     requestSessionReplay(lastChatId);
 

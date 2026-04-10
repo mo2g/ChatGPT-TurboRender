@@ -58,6 +58,20 @@ export function getChatIdFromPathname(pathname: string): string {
   return resolveConversationRoute(pathname).runtimeId;
 }
 
+export function getRouteIdFromRuntimeId(runtimeId: string): string | null {
+  const separatorIndex = runtimeId.indexOf(':');
+  if (separatorIndex === -1) {
+    return null;
+  }
+
+  const routeId = runtimeId.slice(separatorIndex + 1).trim();
+  if (routeId.length === 0 || routeId === 'home' || routeId === 'unknown') {
+    return null;
+  }
+
+  return routeId;
+}
+
 export function getRouteKindFromRuntimeId(runtimeId: string): ConversationRouteKind {
   if (runtimeId.startsWith('share:')) {
     return 'share';

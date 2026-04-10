@@ -1,20 +1,54 @@
 import { TURBO_RENDER_UI_ROOT_ATTRIBUTE, UI_CLASS_NAMES } from '../shared/constants';
+import { getChatIdFromPathname, getRouteIdFromRuntimeId } from '../shared/chat-id';
 import { buildInteractionPairs } from '../shared/interaction-pairs';
 import { createTranslator, type Translator } from '../shared/i18n';
 import type { HistoryAnchorMode, ManagedHistoryEntry, ManagedHistoryGroup, TabRuntimeStatus } from '../shared/types';
 
+import type {
+  ArchiveEntryAction,
+  EntryActionAvailability,
+  EntryActionAvailabilityMap,
+  EntryActionMenuSelection,
+  EntryActionRequest,
+  EntryActionSelection,
+  EntryActionTemplateMap,
+  EntryActionSelectionMap,
+  EntryMoreMenuAction,
+} from './message-actions';
+import {
+  ENTRY_ACTION_LANE,
+  findHostActionButton,
+  getArchiveEntrySelectionKey,
+  instantiateHostActionTemplate,
+} from './message-actions';
 import { renderManagedHistoryEntryBody } from './history-entry-renderer';
+import { resolvePreferredMessageId } from './managed-history';
 
 export interface StatusBarState {
+  conversationId: string | null;
   archiveGroups: ManagedHistoryGroup[];
   collapsedBatchCount: number;
   expandedBatchCount: number;
   searchQuery: string;
+  entryActionAvailability: EntryActionAvailabilityMap;
+  entryActionSelection: EntryActionSelectionMap;
+  entryActionTemplates: EntryActionTemplateMap;
+  entryHostMessageIds: Record<string, string>;
+  entryActionMenu: EntryActionMenuSelection | null;
+  entryActionSpeakingEntryKey: string | null;
+  showShareActions: boolean;
+  preferHostMorePopover: boolean;
 }
 
 export interface StatusBarActions {
   onSearchQueryChange(query: string): void;
   onToggleArchiveGroup(groupId: string, anchor: HTMLElement | null): void;
+  onEntryAction(request: EntryActionRequest): void;
+  onMoreMenuAction(request: {
+    groupId: string;
+    entryId: string;
+    action: EntryMoreMenuAction;
+  }): void;
 }
 
 interface BatchCardView {
@@ -35,7 +69,14 @@ interface BatchCardView {
 
 const STYLE_ID = 'turbo-render-style';
 const INLINE_ROOT_ATTRIBUTE = 'data-turbo-render-inline-history-root';
-
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ENTRY_ACTION_TEST_IDS: Record<ArchiveEntryAction, string> = {
+  copy: 'copy-turn-action-button',
+  like: 'good-response-turn-action-button',
+  dislike: 'bad-response-turn-action-button',
+  share: 'share-turn-action-button',
+  more: 'more-turn-action-button',
+};
 const STYLES = `
 .${UI_CLASS_NAMES.inlineHistoryRoot} {
   display: grid;
@@ -82,8 +123,6 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.inlineBatchCard} {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
   gap: 14px;
   padding: 14px 16px 12px;
   border: 1px solid rgba(15, 23, 42, 0.12);
@@ -91,30 +130,49 @@ const STYLES = `
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
   font: 12px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-anchor: none;
 }
 
 .${UI_CLASS_NAMES.inlineBatchCard}[data-state="expanded"] {
   background: transparent;
   box-shadow: none;
-  padding-top: 12px;
-  padding-bottom: 4px;
+  position: relative;
+  padding: 6px 0 0;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMain} {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
+  width: 100%;
+  overflow-anchor: none;
 }
 
 .${UI_CLASS_NAMES.inlineBatchHeader} {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
   min-width: 0;
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  padding: 2px 0 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88));
+  backdrop-filter: blur(4px);
+  overflow-anchor: none;
+}
+
+.${UI_CLASS_NAMES.inlineBatchCard}[data-state="expanded"] .${UI_CLASS_NAMES.inlineBatchHeader} {
+  top: 12px;
+  padding-inline: 16px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMeta} {
   display: grid;
   gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMeta} strong {
@@ -142,11 +200,11 @@ const STYLES = `
 .${UI_CLASS_NAMES.inlineBatchRail} {
   display: flex;
   justify-content: flex-end;
+  align-items: flex-start;
   align-self: start;
-  position: sticky;
-  top: 12px;
   height: max-content;
   padding-top: 2px;
+  overflow-anchor: none;
 }
 
 .${UI_CLASS_NAMES.inlineBatchAction} {
@@ -164,15 +222,21 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.inlineBatchEntries} {
   display: grid;
-  gap: 14px;
+  gap: 8px;
   min-width: 0;
-  padding-top: 2px;
+  width: 100%;
+  padding-top: 0;
+  padding-inline: 16px;
+  overflow-anchor: none;
 }
 
 .${UI_CLASS_NAMES.inlineBatchEntry} {
   display: grid;
-  gap: 12px;
-  padding-top: 12px;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: stretch;
+  width: 100%;
+  padding-top: 0;
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
@@ -181,8 +245,20 @@ const STYLES = `
   border-top: 0;
 }
 
-.${UI_CLASS_NAMES.historyEntryCard} {
-  display: contents;
+.${UI_CLASS_NAMES.historyEntryFrame} {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  align-items: start;
+}
+
+.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"] {
+  justify-items: start;
+}
+
+.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="user"] {
+  justify-items: end;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody} {
@@ -205,11 +281,154 @@ const STYLES = `
 }
 
 .${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"] {
-  justify-self: stretch;
-  align-self: stretch;
+  justify-self: start;
+  align-self: start;
   width: 100%;
   max-width: none;
   color: #0f172a;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions} {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow-anchor: none;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"] {
+  justify-self: end;
+  align-self: start;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"] {
+  justify-self: start;
+  align-self: start;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions}[data-menu-open="true"] {
+  z-index: 2;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction} {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  line-height: 0;
+  box-shadow: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenuAnchor} {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenuAnchor} > button {
+  flex: 0 0 auto;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction}:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #111827;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction}:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.45);
+  outline-offset: 2px;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction}[aria-pressed="true"] {
+  color: #111827;
+}
+
+button[data-turbo-render-action][aria-pressed="true"] {
+  color: #111827 !important;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction} svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+
+.${UI_CLASS_NAMES.historyEntryAction}:disabled {
+  cursor: default;
+  opacity: 0.45;
+  background: transparent;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenu} {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: auto;
+  top: auto;
+  z-index: 3;
+  display: grid;
+  gap: 4px;
+  min-width: 184px;
+  padding: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  overflow-anchor: none;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenu}[data-lane="user"] {
+  display: none;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenuItem} {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #0f172a;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenuItem}:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.${UI_CLASS_NAMES.historyEntryActionMenuItem}:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.45);
+  outline-offset: 2px;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions} > button {
+  flex: 0 0 auto;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions} :is(svg, path, circle, rect) {
+  pointer-events: none;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] {
@@ -226,6 +445,30 @@ const STYLES = `
   background: transparent;
   box-shadow: none;
   color: inherit;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"][data-lane="user"] {
+  justify-self: end;
+  align-self: start;
+  width: fit-content;
+  max-width: min(68ch, 100%);
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] > :first-child {
+  margin-inline: 0 !important;
+  padding-inline: 0 !important;
+  max-width: none !important;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] > :first-child > :first-child {
+  margin-inline: 0 !important;
+  max-width: none !important;
+}
+
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"][data-lane="user"] > :first-child,
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"][data-lane="user"] > :first-child > :first-child {
+  width: fit-content !important;
+  max-width: 100% !important;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody} p {
@@ -306,17 +549,11 @@ const STYLES = `
 
 @media (max-width: 720px) {
   .${UI_CLASS_NAMES.inlineBatchCard} {
-    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
 
-  .${UI_CLASS_NAMES.inlineBatchRail} {
-    justify-self: end;
-    z-index: 1;
-  }
-
-  .${UI_CLASS_NAMES.inlineBatchRail} {
-    top: 8px;
+  .${UI_CLASS_NAMES.inlineBatchHeader} {
+    gap: 10px;
   }
 
   .${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"] {
@@ -324,6 +561,76 @@ const STYLES = `
   }
 }
 `;
+
+function createSvgIcon(doc: Document, action: ArchiveEntryAction): SVGSVGElement {
+  const svg = doc.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 20 20');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+
+  const commonStroke = {
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+    'stroke-width': '1.6',
+  } as const;
+
+  switch (action) {
+    case 'copy': {
+      const back = doc.createElementNS(SVG_NS, 'rect');
+      back.setAttribute('x', '7');
+      back.setAttribute('y', '5');
+      back.setAttribute('width', '8');
+      back.setAttribute('height', '8');
+      back.setAttribute('rx', '1.6');
+      Object.entries(commonStroke).forEach(([name, value]) => back.setAttribute(name, value));
+
+      const front = doc.createElementNS(SVG_NS, 'rect');
+      front.setAttribute('x', '4');
+      front.setAttribute('y', '8');
+      front.setAttribute('width', '8');
+      front.setAttribute('height', '8');
+      front.setAttribute('rx', '1.6');
+      Object.entries(commonStroke).forEach(([name, value]) => front.setAttribute(name, value));
+
+      svg.append(back, front);
+      return svg;
+    }
+    case 'like':
+    case 'dislike': {
+      const thumb = doc.createElementNS(SVG_NS, 'path');
+      thumb.setAttribute(
+        'd',
+        'M5.5 9.8h2.2V17H5.5V9.8Zm3.1-1.3 1.4-4.7h2.2l-.6 4.7H16l-1 6H8.2c-.6 0-1.1-.5-1.1-1.1V8.5Z',
+      );
+      Object.entries(commonStroke).forEach(([name, value]) => thumb.setAttribute(name, value));
+      if (action === 'dislike') {
+        thumb.setAttribute('transform', 'translate(20 20) scale(-1 -1)');
+      }
+      svg.append(thumb);
+      return svg;
+    }
+    case 'share': {
+      const arrow = doc.createElementNS(SVG_NS, 'path');
+      arrow.setAttribute('d', 'M10 4.5v8.2M6.6 7.9 10 4.5l3.4 3.4M4.5 11.8V15a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3.2');
+      Object.entries(commonStroke).forEach(([name, value]) => arrow.setAttribute(name, value));
+      svg.append(arrow);
+      return svg;
+    }
+    case 'more': {
+      for (const cx of [6, 10, 14]) {
+        const dot = doc.createElementNS(SVG_NS, 'circle');
+        dot.setAttribute('cx', String(cx));
+        dot.setAttribute('cy', '10');
+        dot.setAttribute('r', '1.1');
+        dot.setAttribute('fill', 'currentColor');
+        svg.append(dot);
+      }
+      return svg;
+    }
+  }
+}
 
 function ensureTurboRenderStyles(doc: Document): void {
   if (doc.getElementById(STYLE_ID) != null) {
@@ -356,6 +663,7 @@ export class StatusBar {
   private groupsRoot: HTMLElement | null = null;
   private currentStatus: TabRuntimeStatus | null = null;
   private currentState: StatusBarState | null = null;
+  private currentConversationId: string | null = null;
   private readonly groupViews = new Map<string, BatchCardView>();
   private forceRender = true;
   private t: Translator = createTranslator('en');
@@ -378,6 +686,10 @@ export class StatusBar {
   update(status: TabRuntimeStatus, target: HTMLElement | null, state: StatusBarState): HistoryAnchorMode {
     this.currentStatus = status;
     this.currentState = state;
+    const nextConversationId = state.conversationId?.trim() ?? null;
+    if (nextConversationId !== this.currentConversationId) {
+      this.currentConversationId = nextConversationId;
+    }
     this.mount(target);
     this.render();
     return 'hidden';
@@ -400,6 +712,30 @@ export class StatusBar {
   getBatchCardAnchor(groupId: string): HTMLElement | null {
     return this.root?.querySelector<HTMLElement>(
       `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"]`,
+    ) ?? null;
+  }
+
+  getBatchCardHeaderAnchor(groupId: string): HTMLElement | null {
+    return this.root?.querySelector<HTMLElement>(
+      `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"] .${UI_CLASS_NAMES.inlineBatchHeader}`,
+    ) ?? null;
+  }
+
+  getBatchCardActionButton(groupId: string): HTMLButtonElement | null {
+    return this.root?.querySelector<HTMLButtonElement>(
+      `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"] .${UI_CLASS_NAMES.inlineBatchAction}`,
+    ) ?? null;
+  }
+
+  getEntryActionAnchor(groupId: string, entryId: string): HTMLElement | null {
+    return this.root?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"]`,
+    ) ?? null;
+  }
+
+  getEntryActionButton(groupId: string, entryId: string, action: ArchiveEntryAction): HTMLElement | null {
+    return this.root?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"] button[data-turbo-render-action="${action}"]`,
     ) ?? null;
   }
 
@@ -471,6 +807,7 @@ export class StatusBar {
     }
 
     this.syncGroupCards(this.currentState.archiveGroups);
+    this.positionOpenEntryActionMenus();
     this.forceRender = false;
   }
 
@@ -486,12 +823,13 @@ export class StatusBar {
     }
 
     const query = this.currentState?.searchQuery.trim().toLowerCase() ?? '';
+    const conversationId = this.getConversationId() ?? '';
     let anchor: ChildNode | null = this.groupsRoot.firstChild;
     for (const group of groups) {
-      const previewKey = this.buildPreviewKey(group);
+      const previewKey = this.buildPreviewKey(group, conversationId);
       let view = this.groupViews.get(group.id);
       const shouldBuildEntriesKey = group.expanded || (view?.entriesRendered ?? false);
-      const entriesKey = shouldBuildEntriesKey ? this.buildEntriesKey(group, query) : '';
+      const entriesKey = shouldBuildEntriesKey ? this.buildEntriesKey(group, query, conversationId) : '';
       if (view == null) {
         view = this.createBatchCardView(group, query, previewKey, entriesKey);
         this.groupViews.set(group.id, view);
@@ -511,8 +849,62 @@ export class StatusBar {
     }
   }
 
-  private buildPreviewKey(group: ManagedHistoryGroup): string {
+  private positionOpenEntryActionMenus(): void {
+    if (this.root == null || this.currentState?.entryActionMenu == null) {
+      return;
+    }
+
+    const openMenus = this.root.querySelectorAll<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`,
+    );
+    if (openMenus.length === 0) {
+      return;
+    }
+
+    const menuGap = 8;
+
+    for (const menu of openMenus) {
+      const menuGroupId = menu.dataset.groupId ?? '';
+      const menuEntryId = menu.dataset.entryId ?? '';
+      const menuLane = menu.dataset.lane === 'user' ? 'user' : 'assistant';
+      const selector = `button[data-turbo-render-action="more"][data-group-id="${menuGroupId}"][data-entry-id="${menuEntryId}"]`;
+      const anchor = menu.closest<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenuAnchor}`) ?? menu.parentElement;
+      const button =
+        anchor?.querySelector<HTMLElement>(selector) ??
+        this.root.querySelector<HTMLElement>(
+          `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="${menuLane}"][data-group-id="${menuGroupId}"][data-entry-id="${menuEntryId}"] button[data-turbo-render-action="more"]`,
+        ) ??
+        this.root.querySelector<HTMLElement>(
+          `button[data-turbo-render-action="more"][data-group-id="${menuGroupId}"][data-entry-id="${menuEntryId}"]`,
+        );
+
+      if (button == null) {
+        continue;
+      }
+
+      const buttonRect = button.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      if (menuRect.width <= 0 || menuRect.height <= 0) {
+        continue;
+      }
+
+      const anchorRect = menu.parentElement?.getBoundingClientRect();
+      const left = anchorRect != null ? 0 : buttonRect.left;
+
+      menu.style.position = 'absolute';
+      menu.style.left = typeof left === 'number' ? `${left}px` : left;
+      menu.style.top = anchorRect != null ? 'auto' : `${Math.max(0, Math.round(buttonRect.top - menuRect.height - menuGap))}px`;
+      menu.style.right = 'auto';
+      menu.style.bottom = anchorRect != null ? `calc(100% + ${menuGap}px)` : 'auto';
+      menu.style.transform = 'none';
+      menu.style.zIndex = '40';
+      menu.dataset.popoverPosition = 'absolute';
+    }
+  }
+
+  private buildPreviewKey(group: ManagedHistoryGroup, conversationId: string): string {
     return [
+      conversationId,
       group.matchCount,
       group.userPreview,
       group.assistantPreview,
@@ -523,24 +915,50 @@ export class StatusBar {
     ].join('||');
   }
 
-  private buildEntriesKey(group: ManagedHistoryGroup, query: string): string {
+  private buildEntriesKey(group: ManagedHistoryGroup, query: string, conversationId: string): string {
+    const routeKind = this.currentStatus?.routeKind ?? 'unknown';
     const entriesKey = group.entries
-      .map((entry) =>
-        [
+      .map((entry) => {
+        const lane = entry.role === 'user' ? 'user' : entry.role === 'assistant' ? 'assistant' : null;
+        const entryKey = getArchiveEntrySelectionKey(entry);
+        const menuState = this.currentState?.entryActionMenu;
+        const menuOpen = menuState?.entryId === entryKey && menuState?.groupId === group.id ? '1' : '0';
+        return [
           entry.id,
+          entryKey,
           entry.role,
           entry.renderKind,
           entry.hiddenFromConversation ? '1' : '0',
           entry.liveTurnId ?? '',
+          this.currentState?.entryHostMessageIds[entryKey] ?? '',
           entry.text,
           entry.contentType ?? '',
           entry.snapshotHtml ?? '',
           entry.structuredDetails ?? '',
-        ].join(':'),
-      )
+          this.currentState?.entryActionSelection[entryKey] ?? '',
+          menuOpen,
+          this.currentState?.entryActionSpeakingEntryKey === entryKey ? '1' : '0',
+          lane != null ? this.currentState?.entryActionTemplates[lane]?.html ?? '' : '',
+        ].join(':');
+      })
+      .join('|');
+    const actionsKey = group.entries
+      .map((entry) => {
+        const availability = this.getEntryActionAvailability(entry);
+        return [
+          entry.id,
+          availability.copy ? '1' : '0',
+          availability.like ? '1' : '0',
+          availability.dislike ? '1' : '0',
+          availability.share ? '1' : '0',
+          availability.more ? '1' : '0',
+        ].join(':');
+      })
       .join('|');
 
     return [
+      routeKind,
+      conversationId,
       query,
       group.slotPairStartIndex,
       group.slotPairEndIndex,
@@ -549,6 +967,8 @@ export class StatusBar {
       group.userPreview,
       group.assistantPreview,
       entriesKey,
+      actionsKey,
+      this.currentState?.showShareActions ? '1' : '0',
     ].join('||');
   }
 
@@ -563,9 +983,7 @@ export class StatusBar {
     root.dataset.groupId = group.id;
     root.dataset.turboRenderBatchAnchor = 'true';
     root.dataset.state = group.expanded ? 'expanded' : 'collapsed';
-
-    const main = this.doc.createElement('div');
-    main.className = UI_CLASS_NAMES.inlineBatchMain;
+    root.dataset.conversationId = this.getConversationId() ?? '';
 
     const header = this.doc.createElement('div');
     header.className = UI_CLASS_NAMES.inlineBatchHeader;
@@ -575,8 +993,6 @@ export class StatusBar {
 
     const summary = this.doc.createElement('strong');
     meta.append(summary);
-    header.append(meta);
-    main.append(header);
 
     const preview = this.doc.createElement('div');
     preview.className = UI_CLASS_NAMES.inlineBatchPreview;
@@ -594,11 +1010,17 @@ export class StatusBar {
     button.dataset.groupId = group.id;
     button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
     button.setAttribute('aria-expanded', String(group.expanded));
-    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, root));
+    this.bindHostEventShield(button);
+    button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, button));
     rail.append(button);
 
+    header.append(meta, rail);
+    root.append(header);
+
+    const main = this.doc.createElement('div');
+    main.className = UI_CLASS_NAMES.inlineBatchMain;
     main.append(preview, entries);
-    root.append(main, rail);
+    root.append(main);
 
     const view: BatchCardView = {
       root,
@@ -636,6 +1058,7 @@ export class StatusBar {
 
     view.root.classList.toggle(UI_CLASS_NAMES.inlineBatchHighlight, group.matchCount > 0);
     view.root.dataset.groupId = group.id;
+    view.root.dataset.conversationId = this.getConversationId() ?? '';
     view.root.dataset.state = nextExpanded ? 'expanded' : 'collapsed';
     view.summary.textContent = getFilledSummaryText(this.t, group);
     view.button.textContent = group.expanded ? this.t('actionCollapseBatch') : this.t('actionExpandBatch');
@@ -697,19 +1120,42 @@ export class StatusBar {
 
       const article = this.doc.createElement('article');
       article.className = UI_CLASS_NAMES.inlineBatchEntry;
+      this.applyEntryMetadata(article, group, null);
       if (!highlighted && query.length > 0 && pair.searchText.toLowerCase().includes(query)) {
         article.classList.add(UI_CLASS_NAMES.inlineBatchHighlight);
         highlighted = true;
       }
 
       for (const entry of visibleEntries) {
-        article.append(this.createEntryBody(entry));
+        const lane = entry.role === 'user' ? 'user' : 'assistant';
+        const frame = this.doc.createElement('div');
+        frame.className = UI_CLASS_NAMES.historyEntryFrame;
+        frame.dataset.lane = lane;
+        this.applyEntryMetadata(frame, group, entry);
+        const body = this.createEntryBody(group, entry);
+        const renderedHostMessageId = this.resolveRenderedBodyMessageId(body, lane);
+        if (renderedHostMessageId != null) {
+          this.applyResolvedMessageId(frame, renderedHostMessageId);
+          this.applyResolvedMessageId(body, renderedHostMessageId);
+        }
+        frame.append(body);
+        const actionRow = this.createEntryActions(group, entry);
+        if (actionRow != null) {
+          if (renderedHostMessageId != null) {
+            this.applyResolvedMessageId(actionRow, renderedHostMessageId);
+            for (const candidate of actionRow.querySelectorAll<HTMLElement>('button, [role="menuitem"]')) {
+              this.applyResolvedMessageId(candidate, renderedHostMessageId);
+            }
+          }
+          frame.append(actionRow);
+        }
+        article.append(frame);
       }
       entries.append(article);
     }
   }
 
-  private createEntryBody(entry: ManagedHistoryEntry): HTMLElement {
+  private createEntryBody(group: ManagedHistoryGroup, entry: ManagedHistoryEntry): HTMLElement {
     const lane = entry.role === 'user' ? 'user' : 'assistant';
     const body = renderManagedHistoryEntryBody(
       this.doc,
@@ -720,9 +1166,522 @@ export class StatusBar {
     );
     body.classList.add(UI_CLASS_NAMES.historyEntryBody);
     body.dataset.lane = lane;
+    this.applyEntryMetadata(body, group, entry);
     if (lane === 'assistant' && entry.role !== 'assistant') {
       body.dataset.supplementalRole = entry.role;
     }
     return body;
+  }
+
+  private getEntryActionAvailability(entry: ManagedHistoryEntry): EntryActionAvailability {
+    if (entry.role !== 'assistant') {
+      return {
+        copy: true,
+        like: false,
+        dislike: false,
+        share: false,
+        more: false,
+      };
+    }
+
+    const availability = this.currentState?.entryActionAvailability[getArchiveEntrySelectionKey(entry)];
+    return {
+      copy: availability?.copy ?? true,
+      like: availability?.like ?? true,
+      dislike: availability?.dislike ?? true,
+      share: availability?.share ?? true,
+      more: availability?.more ?? true,
+    };
+  }
+
+  private createEntryActions(group: ManagedHistoryGroup, entry: ManagedHistoryEntry): HTMLElement | null {
+    if (this.currentStatus?.routeKind === 'share' && !this.currentState?.showShareActions) {
+      return null;
+    }
+
+    if (entry.role !== 'user' && entry.role !== 'assistant') {
+      return null;
+    }
+
+    const lane = entry.role === 'user' ? 'user' : 'assistant';
+    const entryKey = getArchiveEntrySelectionKey(entry);
+    const selectedAction = this.currentState?.entryActionSelection[entryKey] ?? null;
+    const menuState = this.currentState?.entryActionMenu;
+    const menuOpen = menuState?.entryId === entryKey && menuState?.groupId === group.id;
+    const speaking = this.currentState?.entryActionSpeakingEntryKey === entryKey;
+
+    const actions = this.doc.createElement('div');
+    actions.className = UI_CLASS_NAMES.historyEntryActions;
+    this.applyEntryMetadata(actions, group, entry);
+    actions.dataset.lane = lane;
+    actions.dataset.menuOpen = String(menuOpen);
+    actions.dataset.speaking = String(speaking);
+
+    const template = this.currentState?.entryActionTemplates[lane] ?? null;
+    if (template != null) {
+      const templateRoot = instantiateHostActionTemplate(this.doc, template);
+      if (templateRoot != null) {
+        this.prepareActionTemplateButtons(templateRoot, group, entry, lane, selectedAction, menuOpen, entryKey);
+        if (!this.shouldPreferHostMorePopover()) {
+          this.wrapTemplateMoreButtonWithMenu(templateRoot, group, entry, lane, menuOpen, entryKey, speaking);
+        }
+        actions.dataset.template = 'host';
+        actions.append(templateRoot);
+        return actions;
+      }
+    }
+
+    actions.dataset.template = 'fallback';
+    for (const action of ENTRY_ACTION_LANE[lane]) {
+      if (lane === 'assistant' && (action === 'like' || action === 'dislike') && selectedAction != null && selectedAction !== action) {
+        continue;
+      }
+
+      if (action === 'more') {
+        const anchor = this.createMoreActionAnchor(group, entry, lane, selectedAction, menuOpen, entryKey, speaking);
+        actions.append(anchor);
+        continue;
+      }
+
+      actions.append(this.createFallbackActionButton(group, entry, action, selectedAction, menuOpen, entryKey));
+    }
+
+    return actions;
+  }
+
+  private createMoreActionAnchor(
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry,
+    lane: 'user' | 'assistant',
+    selectedAction: EntryActionSelection | null,
+    menuOpen: boolean,
+    entryKey: string,
+    speaking: boolean,
+  ): HTMLElement {
+    if (this.shouldPreferHostMorePopover()) {
+      return this.createFallbackActionButton(group, entry, 'more', selectedAction, menuOpen, entryKey);
+    }
+
+    const anchor = this.doc.createElement('div');
+    anchor.className = UI_CLASS_NAMES.historyEntryActionMenuAnchor;
+    anchor.dataset.groupId = group.id;
+    anchor.dataset.entryId = entry.id;
+    anchor.dataset.entryKey = entryKey;
+    anchor.dataset.lane = lane;
+
+    const button = this.createFallbackActionButton(group, entry, 'more', selectedAction, menuOpen, entryKey);
+    anchor.append(button);
+
+    const menu = this.createMoreActionMenu(group, entry, lane, menuOpen, entryKey, speaking);
+    if (menu != null) {
+      anchor.append(menu);
+    }
+
+    return anchor;
+  }
+
+  private prepareActionTemplateButtons(
+    root: ParentNode,
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry,
+    lane: 'user' | 'assistant',
+    selectedAction: EntryActionSelection | null,
+    menuOpen: boolean,
+    entryKey: string,
+  ): void {
+    const availability = this.getEntryActionAvailability(entry);
+    for (const action of ENTRY_ACTION_LANE[lane]) {
+      if (lane === 'assistant' && (action === 'like' || action === 'dislike') && selectedAction != null && selectedAction !== action) {
+        const hidden = this.findTemplateActionButton(root, action);
+        if (hidden != null) {
+          hidden.remove();
+        }
+        continue;
+      }
+
+      const button = this.findTemplateActionButton(root, action);
+      if (button == null) {
+        continue;
+      }
+
+      const label = this.getEntryActionLabel(action);
+      const templatePressed = button.getAttribute('aria-pressed') === 'true';
+      const isSelected = action === 'like' || action === 'dislike' ? selectedAction === action || templatePressed : false;
+      button.type = 'button';
+      this.applyEntryMetadata(button, group, entry);
+      button.setAttribute('data-action', action);
+      button.setAttribute('data-testid', ENTRY_ACTION_TEST_IDS[action]);
+      button.dataset.turboRenderAction = action;
+      button.dataset.turboRenderTestid = ENTRY_ACTION_TEST_IDS[action];
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+      this.bindHostEventShield(button);
+      if (action === 'like' || action === 'dislike') {
+        button.setAttribute('aria-pressed', String(isSelected));
+        this.setSelectedActionVisualState(button, isSelected);
+      } else if (action === 'more') {
+        const menuId = this.getEntryActionMenuId(group.id, entryKey);
+        button.setAttribute('aria-haspopup', 'menu');
+        button.setAttribute('aria-expanded', String(menuOpen));
+        if (menuOpen) {
+          button.setAttribute('aria-controls', menuId);
+        } else {
+          button.removeAttribute('aria-controls');
+        }
+        button.setAttribute('data-menu-open', String(menuOpen));
+      } else {
+        button.removeAttribute('aria-pressed');
+      }
+      button.disabled = !availability[action];
+      button.addEventListener('pointerdown', this.stopHostEventPropagation);
+      button.addEventListener('click', (event) => {
+        this.stopHostEventPropagation(event);
+        if (!button.disabled) {
+          this.actions.onEntryAction({
+            groupId: group.id,
+            entryId: entry.id,
+            action,
+            selectedAction: action === 'like' || action === 'dislike' ? selectedAction : null,
+          });
+        }
+      });
+    }
+  }
+
+  private wrapTemplateMoreButtonWithMenu(
+    root: ParentNode,
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry,
+    lane: 'user' | 'assistant',
+    menuOpen: boolean,
+    entryKey: string,
+    speaking: boolean,
+  ): void {
+    const moreButton = this.findTemplateActionButton(root, 'more');
+    if (moreButton == null) {
+      return;
+    }
+
+    const parent = moreButton.parentNode;
+    if (parent == null) {
+      return;
+    }
+
+    const anchor = this.doc.createElement('div');
+    anchor.className = UI_CLASS_NAMES.historyEntryActionMenuAnchor;
+    anchor.dataset.groupId = group.id;
+    anchor.dataset.entryId = entry.id;
+    anchor.dataset.entryKey = entryKey;
+    anchor.dataset.lane = lane;
+
+    parent.insertBefore(anchor, moreButton);
+    anchor.append(moreButton);
+
+    const menu = this.createMoreActionMenu(group, entry, lane, menuOpen, entryKey, speaking);
+    if (menu != null) {
+      anchor.append(menu);
+    }
+  }
+
+  private createFallbackActionButton(
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry,
+    action: ArchiveEntryAction,
+    selectedAction: EntryActionSelection | null,
+    menuOpen: boolean,
+    entryKey: string,
+  ): HTMLButtonElement {
+    const button = this.doc.createElement('button');
+    const label = this.getEntryActionLabel(action);
+    const availability = this.getEntryActionAvailability(entry);
+
+    button.type = 'button';
+    button.className = UI_CLASS_NAMES.historyEntryAction;
+    this.applyEntryMetadata(button, group, entry);
+    button.setAttribute('data-action', action);
+    button.setAttribute('data-testid', ENTRY_ACTION_TEST_IDS[action]);
+    button.dataset.turboRenderAction = action;
+    button.dataset.turboRenderTestid = ENTRY_ACTION_TEST_IDS[action];
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+    if (action === 'like' || action === 'dislike') {
+      const isSelected = selectedAction === action;
+      button.setAttribute('aria-pressed', String(isSelected));
+      this.setSelectedActionVisualState(button, isSelected);
+    } else if (action === 'more') {
+      const menuId = this.getEntryActionMenuId(group.id, entryKey);
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-expanded', String(menuOpen));
+      if (menuOpen) {
+        button.setAttribute('aria-controls', menuId);
+      } else {
+        button.removeAttribute('aria-controls');
+      }
+      button.setAttribute('data-menu-open', String(menuOpen));
+    }
+    button.append(createSvgIcon(this.doc, action));
+    button.disabled = !availability[action];
+    this.bindHostEventShield(button);
+    button.addEventListener('click', (event) => {
+      this.stopHostEventPropagation(event);
+      if (!button.disabled) {
+        this.actions.onEntryAction({
+          groupId: group.id,
+          entryId: entry.id,
+          action,
+          selectedAction: action === 'like' || action === 'dislike' ? selectedAction : null,
+        });
+      }
+    });
+    return button;
+  }
+
+  private findTemplateActionButton(root: ParentNode, action: ArchiveEntryAction): HTMLButtonElement | null {
+    const button = findHostActionButton(root, action);
+    return button instanceof HTMLButtonElement ? button : null;
+  }
+
+  private setSelectedActionVisualState(button: HTMLButtonElement, selected: boolean): void {
+    button.classList.toggle('text-token-text-primary', selected);
+    button.classList.toggle('text-token-text-secondary', !selected);
+
+    if (selected) {
+      button.style.setProperty('color', '#111827', 'important');
+      button.style.setProperty('fill', '#111827', 'important');
+      button.style.setProperty('stroke', '#111827', 'important');
+    } else {
+      button.style.removeProperty('color');
+      button.style.removeProperty('fill');
+      button.style.removeProperty('stroke');
+    }
+
+    for (const svg of button.querySelectorAll<SVGElement>('svg')) {
+      if (selected) {
+        svg.style.setProperty('color', '#111827', 'important');
+        svg.style.setProperty('fill', '#111827', 'important');
+        svg.style.setProperty('stroke', '#111827', 'important');
+        svg.style.setProperty('filter', 'brightness(0)', 'important');
+      } else {
+        svg.style.removeProperty('color');
+        svg.style.removeProperty('fill');
+        svg.style.removeProperty('stroke');
+        svg.style.removeProperty('filter');
+      }
+    }
+  }
+
+  private getEntryActionLabel(action: ArchiveEntryAction): string {
+    return this.t(
+      action === 'copy'
+        ? 'messageActionCopy'
+        : action === 'like'
+          ? 'messageActionLike'
+          : action === 'dislike'
+            ? 'messageActionDislike'
+            : action === 'share'
+              ? 'messageActionShare'
+              : 'messageActionMore',
+    );
+  }
+
+  private createMoreActionMenu(
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry,
+    lane: 'user' | 'assistant',
+    menuOpen: boolean,
+    entryKey: string,
+    speaking: boolean,
+  ): HTMLElement | null {
+    if (this.shouldPreferHostMorePopover() || !menuOpen || lane !== 'assistant') {
+      return null;
+    }
+
+    const menu = this.doc.createElement('div');
+    menu.className = UI_CLASS_NAMES.historyEntryActionMenu;
+    this.applyEntryMetadata(menu, group, entry);
+    menu.dataset.lane = lane;
+    menu.dataset.turboRenderEntryMenu = 'true';
+    menu.id = this.getEntryActionMenuId(group.id, entryKey);
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', this.getEntryActionLabel('more'));
+
+    const menuActions: EntryMoreMenuAction[] = speaking ? ['branch', 'stop-read-aloud'] : ['branch', 'read-aloud'];
+    for (const action of menuActions) {
+      const button = this.doc.createElement('button');
+      button.type = 'button';
+      button.className = UI_CLASS_NAMES.historyEntryActionMenuItem;
+      button.setAttribute('role', 'menuitem');
+      button.setAttribute('data-action', action);
+      button.dataset.turboRenderMenuAction = action;
+      button.dataset.turboRenderTestid = this.getMoreMenuActionTestId(action);
+      button.setAttribute('data-testid', this.getMoreMenuActionTestId(action));
+      const label = this.getMoreMenuActionLabel(action);
+      button.setAttribute('aria-label', label);
+      button.textContent = label;
+      this.bindHostEventShield(button);
+      button.addEventListener('click', (event) => {
+        this.stopHostEventPropagation(event);
+        this.actions.onMoreMenuAction({
+          groupId: group.id,
+          entryId: entry.id,
+          action,
+        });
+      }, true);
+      menu.append(button);
+    }
+
+    return menu;
+  }
+
+  private getEntryActionMenuId(groupId: string, entryId: string): string {
+    return `turbo-render-entry-more-menu-${groupId}-${entryId}`;
+  }
+
+  private getConversationId(): string | null {
+    const stateConversationId = this.currentState?.conversationId?.trim() ?? '';
+    if (stateConversationId.length > 0) {
+      return stateConversationId;
+    }
+
+    const pathConversationId = getRouteIdFromRuntimeId(getChatIdFromPathname(this.doc.location?.pathname ?? '/'));
+    if (pathConversationId != null && pathConversationId.length > 0) {
+      return pathConversationId;
+    }
+
+    const runtimeId = this.currentStatus?.chatId ?? '';
+    const routeId = getRouteIdFromRuntimeId(runtimeId);
+    if (routeId != null && routeId.length > 0) {
+      return routeId;
+    }
+
+    if (runtimeId.length > 0) {
+      return runtimeId;
+    }
+
+    return null;
+  }
+
+  private shouldPreferHostMorePopover(): boolean {
+    const hostname = this.doc.location.hostname;
+    const isHost =
+      hostname === 'chatgpt.com' ||
+      hostname.endsWith('.chatgpt.com') ||
+      hostname === 'chat.openai.com' ||
+      hostname.endsWith('.chat.openai.com');
+
+    if (!isHost) {
+      return false;
+    }
+
+    return !this.doc.location.pathname.includes('/share/');
+  }
+
+  private getEntryHostMessageId(entry: ManagedHistoryEntry): string | null {
+    const entryKey = getArchiveEntrySelectionKey(entry);
+    const hostMessageId = this.currentState?.entryHostMessageIds[entryKey]?.trim() ?? '';
+    if (hostMessageId.length > 0) {
+      return hostMessageId;
+    }
+
+    return resolvePreferredMessageId(entry.messageId, entry.liveTurnId, entry.turnId);
+  }
+
+  private resolveRenderedBodyMessageId(body: HTMLElement, lane: 'user' | 'assistant'): string | null {
+    const roleCandidates = [
+      ...body.querySelectorAll<HTMLElement>(
+        `[data-message-author-role="${lane}"][data-host-message-id], [data-message-author-role="${lane}"][data-message-id]`,
+      ),
+    ];
+    for (const candidate of roleCandidates) {
+      const messageId =
+        candidate.getAttribute('data-host-message-id')?.trim() ??
+        candidate.getAttribute('data-message-id')?.trim() ??
+        '';
+      if (messageId.length > 0) {
+        return messageId;
+      }
+    }
+
+    const fallbackCandidates = [...body.querySelectorAll<HTMLElement>('[data-host-message-id], [data-message-id]')];
+    for (const candidate of fallbackCandidates) {
+      const messageId =
+        candidate.getAttribute('data-host-message-id')?.trim() ??
+        candidate.getAttribute('data-message-id')?.trim() ??
+        '';
+      if (messageId.length > 0) {
+        return messageId;
+      }
+    }
+
+    return null;
+  }
+
+  private applyResolvedMessageId(target: HTMLElement, messageId: string): void {
+    target.dataset.messageId = messageId;
+    target.dataset.hostMessageId = messageId;
+  }
+
+  private applyEntryMetadata(
+    target: HTMLElement,
+    group: ManagedHistoryGroup,
+    entry: ManagedHistoryEntry | null,
+  ): void {
+    const conversationId = this.getConversationId();
+    target.dataset.groupId = group.id;
+    target.dataset.conversationId = conversationId ?? '';
+
+    if (entry == null) {
+      return;
+    }
+
+    const entryKey = getArchiveEntrySelectionKey(entry);
+    const messageId = this.getEntryHostMessageId(entry);
+    target.dataset.entryId = entry.id;
+    target.dataset.entryKey = entryKey;
+    target.dataset.messageAuthorRole = entry.role;
+    target.dataset.messageId = messageId ?? '';
+    target.dataset.hostMessageId = messageId ?? '';
+  }
+
+  private getMoreMenuActionLabel(action: EntryMoreMenuAction): string {
+    if (action === 'branch') {
+      return this.t('messageActionBranchInNewChat');
+    }
+    if (action === 'stop-read-aloud') {
+      return this.t('messageActionStopReadAloud');
+    }
+    return this.t('messageActionReadAloud');
+  }
+
+  private getMoreMenuActionTestId(action: EntryMoreMenuAction): string {
+    if (action === 'branch') {
+      return 'branch-in-new-chat-turn-action-button';
+    }
+    if (action === 'stop-read-aloud') {
+      return 'stop-read-aloud-turn-action-button';
+    }
+    return 'read-aloud-turn-action-button';
+  }
+
+  private bindHostEventShield(target: HTMLElement): void {
+    target.addEventListener('pointerdown', this.shieldHostEventPropagation, true);
+    target.addEventListener('pointerup', this.shieldHostEventPropagation, true);
+    target.addEventListener('mousedown', this.shieldHostEventPropagation, true);
+    target.addEventListener('mouseup', this.shieldHostEventPropagation, true);
+    target.addEventListener('auxclick', this.shieldHostEventPropagation, true);
+    target.addEventListener('contextmenu', this.shieldHostEventPropagation, true);
+  }
+
+  private shieldHostEventPropagation(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  private stopHostEventPropagation(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if ('stopImmediatePropagation' in event) {
+      event.stopImmediatePropagation();
+    }
   }
 }

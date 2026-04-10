@@ -91,7 +91,8 @@ export async function launchControlledBrowser(targetUrl = 'about:blank'): Promis
       debugPort: explicitDebugPort,
       userDataDir,
       async cleanup() {
-        await browser.close();
+        // Intentionally keep the connected browser alive so an already logged-in
+        // Chrome for Testing profile survives test teardown.
       },
     };
   }
@@ -102,21 +103,29 @@ export async function launchControlledBrowser(targetUrl = 'about:blank'): Promis
     extensionPath,
   });
 
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${launch.debugPort}`);
+  try {
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${launch.debugPort}`);
 
-  return {
-    browser,
-    debugPort: launch.debugPort,
-    userDataDir: launch.userDataDir,
-    async cleanup() {
-      try {
-        await browser.close();
-      } finally {
-        if (launch.child.exitCode == null && launch.child.signalCode == null) {
-          launch.child.kill('SIGTERM');
+    return {
+      browser,
+      debugPort: launch.debugPort,
+      userDataDir: launch.userDataDir,
+      async cleanup() {
+        try {
+          await browser.close();
+        } finally {
+          if (launch.child.exitCode == null && launch.child.signalCode == null) {
+            launch.child.kill('SIGTERM');
+          }
+          await fs.rm(launch.userDataDir, { recursive: true, force: true });
         }
-        await fs.rm(launch.userDataDir, { recursive: true, force: true });
-      }
-    },
-  };
+      },
+    };
+  } catch (error) {
+    if (launch.child.exitCode == null && launch.child.signalCode == null) {
+      launch.child.kill('SIGTERM');
+    }
+    await fs.rm(launch.userDataDir, { recursive: true, force: true });
+    throw error;
+  }
 }

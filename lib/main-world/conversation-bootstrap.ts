@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS } from '../shared/constants';
+import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../shared/constants';
 import { resolveConversationRoute } from '../shared/chat-id';
 import { shouldReplaceSession } from '../shared/session-precedence';
 import {
@@ -6,6 +6,8 @@ import {
   extractConversationIdFromUrl,
   isConversationEndpoint,
   trimConversationPayload,
+  resolveActiveNodeId,
+  resolveReadAloudMessageIdFromPayload,
   type ConversationMappingNode,
   type ConversationPayload,
 } from '../shared/conversation-trim';
@@ -19,6 +21,9 @@ import type { InitialTrimSession, ResolvedConversationRoute } from '../shared/ty
 
 interface BootstrapWindow extends Window {
   __turboRenderConversationBootstrapInstalled__?: boolean;
+  __turboRenderReadAloudContext?: ReadAloudContext;
+  __turboRenderConversationPayloadCache?: Record<string, ConversationPayload>;
+  __turboRenderNativeFetch__?: typeof fetch;
   __reactRouterContext?: {
     state?: {
       loaderData?: Record<string, unknown>;
@@ -31,7 +36,21 @@ interface SessionRecord {
   coldMapping: Record<string, ConversationMappingNode>;
 }
 
+interface ReadAloudContext {
+  conversationId: string | null;
+  entryRole: 'user' | 'assistant' | null;
+  entryText: string | null;
+  entryKey: string | null;
+  entryMessageId: string | null;
+}
+
+interface ConversationSnapshotRecord {
+  payload: ConversationPayload;
+  activeNodeId: string | null;
+}
+
 const SHARE_LOADER_KEY = 'routes/share.$shareId.($action)';
+const READ_ALOUD_SNAPSHOT_QUERY = '__turbo_render_read_aloud_snapshot';
 
 function resolveTrimRoute(doc: Document, conversationId: string | null): ResolvedConversationRoute {
   const route = resolveConversationRoute(doc.location?.pathname ?? '/');
@@ -93,8 +112,219 @@ function safeJsonStringify(value: unknown): string | null {
   }
 }
 
+function getReadAloudContext(doc: Document, win: Window): ReadAloudContext {
+  const globalContext = (win as BootstrapWindow).__turboRenderReadAloudContext ?? null;
+  const body = doc.body;
+  const documentElement = doc.documentElement;
+  const read = (key: keyof ReadAloudContext, datasetKey: string): string | null => {
+    const globalValue = globalContext?.[key];
+    if (typeof globalValue === 'string' && globalValue.trim().length > 0) {
+      return globalValue.trim();
+    }
+
+    const bodyValue = body?.dataset[datasetKey as keyof DOMStringMap] as string | undefined;
+    if (typeof bodyValue === 'string' && bodyValue.trim().length > 0) {
+      return bodyValue.trim();
+    }
+
+    const docValue = documentElement?.dataset[datasetKey as keyof DOMStringMap] as string | undefined;
+    if (typeof docValue === 'string' && docValue.trim().length > 0) {
+      return docValue.trim();
+    }
+
+    return null;
+  };
+
+  const normalizeReadAloudRole = (role: string | null | undefined): ReadAloudContext['entryRole'] => {
+    if (role === 'user' || role === 'assistant') {
+      return role;
+    }
+    return null;
+  };
+
+  return {
+    conversationId: read('conversationId', 'turboRenderReadAloudConversationId'),
+    entryRole: normalizeReadAloudRole(read('entryRole', 'turboRenderReadAloudEntryRole')),
+    entryText: read('entryText', 'turboRenderReadAloudEntryText'),
+    entryKey: read('entryKey', 'turboRenderReadAloudEntryKey'),
+    entryMessageId: read('entryMessageId', 'turboRenderReadAloudEntryMessageId'),
+  };
+}
+
+function resolveReadAloudMessageIdFromConversationSnapshot(
+  snapshot: ConversationSnapshotRecord | null | undefined,
+  requestUrl: URL,
+  context: ReadAloudContext,
+): string | null {
+  if (snapshot == null) {
+    return null;
+  }
+
+  const currentMessageId = requestUrl.searchParams.get('message_id')?.trim() ?? '';
+  if (currentMessageId.length === 0 || !currentMessageId.startsWith('turn-')) {
+    return null;
+  }
+
+  return resolveReadAloudMessageIdFromPayload(snapshot.payload, {
+    entryRole: context.entryRole,
+    entryText: context.entryText,
+    entryMessageId: context.entryMessageId,
+    syntheticMessageId: currentMessageId,
+  });
+}
+
+function resolveSyntheticTurnIndex(...candidates: Array<string | null | undefined>): number | null {
+  for (const candidate of candidates) {
+    const messageId = candidate?.trim() ?? '';
+    if (messageId.length === 0 || !messageId.startsWith('turn-')) {
+      continue;
+    }
+
+    const syntheticBody = messageId.slice('turn-'.length);
+    const syntheticParts = syntheticBody.split('-');
+    if (syntheticParts.length < 3) {
+      continue;
+    }
+
+    const turnIndexText = syntheticParts.at(-2) ?? '';
+    if (!/^\d+$/.test(turnIndexText)) {
+      continue;
+    }
+
+    const turnIndex = Number.parseInt(turnIndexText, 10);
+    if (Number.isSafeInteger(turnIndex) && turnIndex >= 0) {
+      return turnIndex;
+    }
+  }
+
+  return null;
+}
+
 function canCaptureInitialSession(config: TurboRenderPageConfig): boolean {
   return config.enabled && config.initialTrimEnabled && config.mode === 'performance';
+}
+
+function resolveReadAloudMessageIdFromDom(doc: Document, requestUrl: URL): string | null {
+  const messageId = requestUrl.searchParams.get('message_id')?.trim() ?? '';
+  if (messageId.length === 0 || !messageId.startsWith('turn-')) {
+    return null;
+  }
+
+  const turnIndex = resolveSyntheticTurnIndex(messageId);
+  if (turnIndex != null) {
+    const turnCandidates = [...doc.querySelectorAll<HTMLElement>(
+      '[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn, article',
+    )].filter((candidate) => candidate.closest(`[data-turbo-render-ui-root="true"]`) == null);
+    const indexedCandidate = turnCandidates[turnIndex] ?? null;
+    const directMessageId =
+      indexedCandidate?.getAttribute('data-host-message-id')?.trim() ??
+      indexedCandidate?.getAttribute('data-message-id')?.trim() ??
+      '';
+    if (directMessageId.length > 0 && !directMessageId.startsWith('turn-')) {
+      return directMessageId;
+    }
+
+    const textMessageCandidates = [...doc.querySelectorAll<HTMLElement>(
+      'div.text-message[data-message-author-role][data-host-message-id], div.text-message[data-message-author-role][data-message-id]',
+    )].filter((candidate) => candidate.closest(`[data-turbo-render-ui-root="true"]`) == null);
+    const indexedTextCandidate = textMessageCandidates[turnIndex] ?? null;
+    const directTextMessageId =
+      indexedTextCandidate?.getAttribute('data-host-message-id')?.trim() ??
+      indexedTextCandidate?.getAttribute('data-message-id')?.trim() ??
+      '';
+    if (directTextMessageId.length > 0 && !directTextMessageId.startsWith('turn-')) {
+      return directTextMessageId;
+    }
+  }
+
+  const groupId = doc.body?.dataset.turboRenderDebugReadAloudRequestGroupId?.trim() ?? '';
+  const entryId = doc.body?.dataset.turboRenderDebugReadAloudRequestEntryId?.trim() ?? '';
+  const lane = doc.body?.dataset.turboRenderDebugReadAloudRequestLane?.trim() ?? '';
+  if (groupId.length === 0 || entryId.length === 0 || (lane !== 'user' && lane !== 'assistant')) {
+    return null;
+  }
+
+  const escapedGroupId = CSS.escape(groupId);
+  const escapedEntryId = CSS.escape(entryId);
+  const actionAnchor = doc.querySelector<HTMLElement>(
+    `[data-group-id="${escapedGroupId}"][data-entry-id="${escapedEntryId}"]`,
+  );
+  const entryRoot = actionAnchor?.closest<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`) ?? null;
+  const batchRoot = entryRoot?.closest<HTMLElement>(`[data-turbo-render-batch-anchor="true"]`) ?? null;
+  if (entryRoot == null || batchRoot == null) {
+    return null;
+  }
+
+  const pairEntries = [...batchRoot.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`)];
+  const pairIndex = pairEntries.indexOf(entryRoot);
+  if (pairIndex < 0) {
+    return null;
+  }
+
+  const hostCandidates = [...doc.querySelectorAll<HTMLElement>(
+    `div.text-message[data-message-author-role="${lane}"][data-host-message-id], div.text-message[data-message-author-role="${lane}"][data-message-id]`,
+  )].filter((candidate) => candidate.closest(`[data-turbo-render-ui-root="true"]`) == null);
+
+  const candidate = hostCandidates[pairIndex] ?? hostCandidates.find((node) => {
+    const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return text.length > 0;
+  }) ?? null;
+
+  const directMessageId =
+    candidate?.getAttribute('data-host-message-id')?.trim() ??
+    candidate?.getAttribute('data-message-id')?.trim() ??
+    '';
+  if (directMessageId.length === 0 || directMessageId.startsWith('turn-')) {
+    return null;
+  }
+
+  return directMessageId;
+}
+
+function maybeRewriteReadAloudUrl(
+  doc: Document,
+  requestUrl: string,
+  conversationSnapshots: Map<string, ConversationSnapshotRecord>,
+  conversationPayloadCache: Record<string, ConversationPayload>,
+  context: ReadAloudContext,
+): string | null {
+  const url = new URL(requestUrl, doc.location.origin);
+  if (!url.pathname.endsWith('/backend-api/synthesize')) {
+    return null;
+  }
+
+  const currentMessageId = url.searchParams.get('message_id')?.trim() ?? '';
+  if (currentMessageId.length === 0 || !currentMessageId.startsWith('turn-')) {
+    return null;
+  }
+
+  const conversationId =
+    url.searchParams.get('conversation_id')?.trim() ||
+    context.conversationId ||
+    extractConversationIdFromUrl(requestUrl) ||
+    null;
+  const cachedConversationPayload =
+    conversationId != null ? conversationPayloadCache[conversationId] ?? null : null;
+  const snapshot = conversationId != null ? conversationSnapshots.get(conversationId) ?? null : null;
+  const rewrittenMessageId =
+    (snapshot != null
+      ? resolveReadAloudMessageIdFromConversationSnapshot(snapshot, url, context)
+      : null) ??
+    (cachedConversationPayload != null
+      ? resolveReadAloudMessageIdFromPayload(cachedConversationPayload, {
+          entryRole: context.entryRole,
+          entryText: context.entryText,
+          entryMessageId: context.entryMessageId,
+          syntheticMessageId: context.entryMessageId,
+        })
+      : null) ??
+    resolveReadAloudMessageIdFromDom(doc, url);
+  if (rewrittenMessageId == null || rewrittenMessageId === currentMessageId) {
+    return null;
+  }
+
+  url.searchParams.set('message_id', rewrittenMessageId);
+  return url.toString();
 }
 
 export function installConversationBootstrap(
@@ -109,6 +339,8 @@ export function installConversationBootstrap(
 
   let config = toPageConfig(DEFAULT_SETTINGS);
   const sessions = new Map<string, SessionRecord>();
+  const conversationSnapshots = new Map<string, ConversationSnapshotRecord>();
+  const conversationPayloadCache = ((bootstrapWindow as BootstrapWindow).__turboRenderConversationPayloadCache ??= {});
   const shareSignatures = new Map<string, string>();
   let shareSyncHandle: number | null = null;
   let shareSyncAttempts = 0;
@@ -152,14 +384,40 @@ export function installConversationBootstrap(
   };
 
   const rewriteConversationText = (requestUrl: string, bodyText: string): string | null => {
-    if (!canCaptureInitialSession(config)) {
-      return null;
-    }
-
     let payload: ConversationPayload;
     try {
       payload = JSON.parse(bodyText) as ConversationPayload;
     } catch {
+      return null;
+    }
+
+    const parsedUrl = new URL(requestUrl, doc.location.origin);
+    const conversationId = extractConversationIdFromUrl(requestUrl);
+    const readAloudSnapshotRequest = parsedUrl.searchParams.get(READ_ALOUD_SNAPSHOT_QUERY) === '1';
+    if (conversationId != null) {
+      conversationPayloadCache[conversationId] = payload;
+      const readAloudContext = getReadAloudContext(doc, bootstrapWindow);
+      const resolvedReadAloudMessageId = resolveReadAloudMessageIdFromPayload(payload, {
+        entryRole: readAloudContext.entryRole,
+        entryText: readAloudContext.entryText,
+        entryMessageId: readAloudContext.entryMessageId,
+        syntheticMessageId: readAloudContext.entryMessageId,
+      });
+      if (resolvedReadAloudMessageId != null) {
+        if (doc.body != null) {
+          doc.body.dataset.turboRenderReadAloudResolvedMessageId = resolvedReadAloudMessageId;
+        }
+        if (doc.documentElement != null) {
+          doc.documentElement.dataset.turboRenderReadAloudResolvedMessageId = resolvedReadAloudMessageId;
+        }
+      }
+      conversationSnapshots.set(conversationId, {
+        payload,
+        activeNodeId: resolveActiveNodeId(payload),
+      });
+    }
+
+    if (readAloudSnapshotRequest || !canCaptureInitialSession(config)) {
       return null;
     }
 
@@ -299,8 +557,8 @@ export function installConversationBootstrap(
   scheduleShareSync();
 
   const nativeFetch = win.fetch.bind(win);
+  bootstrapWindow.__turboRenderNativeFetch__ = nativeFetch;
   win.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await nativeFetch(input, init);
     const requestUrl =
       typeof input === 'string'
         ? input
@@ -309,6 +567,22 @@ export function installConversationBootstrap(
           : input instanceof Request
             ? input.url
             : String(input);
+    const rewrittenUrl = maybeRewriteReadAloudUrl(
+      doc,
+      requestUrl,
+      conversationSnapshots,
+      conversationPayloadCache,
+      getReadAloudContext(doc, win),
+    );
+    if (rewrittenUrl != null) {
+      if (typeof input === 'string' || input instanceof URL) {
+        input = rewrittenUrl;
+      } else if (input instanceof Request) {
+        input = new Request(rewrittenUrl, input);
+      }
+    }
+
+    const response = await nativeFetch(input, init);
 
     if (!isConversationEndpoint(requestUrl)) {
       return response;
@@ -375,6 +649,27 @@ export function installConversationBootstrap(
     this.addEventListener('readystatechange', handleReadyStateChange);
     xhrSend.call(this, body);
   };
+
+  const nativeAudioSrcDescriptor = Object.getOwnPropertyDescriptor(win.HTMLMediaElement.prototype, 'src');
+  if (nativeAudioSrcDescriptor?.configurable === true && nativeAudioSrcDescriptor.get != null && nativeAudioSrcDescriptor.set != null) {
+    Object.defineProperty(win.HTMLMediaElement.prototype, 'src', {
+      configurable: true,
+      enumerable: nativeAudioSrcDescriptor.enumerable ?? false,
+      get(this: HTMLMediaElement): string {
+        return nativeAudioSrcDescriptor.get!.call(this) as string;
+      },
+      set(this: HTMLMediaElement, value: string) {
+        const rewritten = maybeRewriteReadAloudUrl(
+          doc,
+          value,
+          conversationSnapshots,
+          conversationPayloadCache,
+          getReadAloudContext(doc, win),
+        );
+        nativeAudioSrcDescriptor.set!.call(this, rewritten ?? value);
+      },
+    });
+  }
 
   return () => {
     clearShareSync();

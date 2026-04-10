@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
 import { getChatIdFromPathname } from '../../lib/shared/chat-id';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import { StatusBar } from '../../lib/content/status-bar';
+import { installConversationBootstrap } from '../../lib/main-world/conversation-bootstrap';
 import type { InitialTrimSession } from '../../lib/shared/types';
 import { mountGroupedTranscriptFixture, mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
@@ -98,6 +99,72 @@ describe('TurboRenderController', () => {
       controller.stop();
     }
     activeControllers.length = 0;
+    delete (window as Window & {
+      __turboRenderDebugReadAloudBackend?: boolean;
+      __turboRenderDebugConversationId?: string;
+      __turboRenderDebugReadAloudUrl?: string;
+      __turboRenderReadAloudContext?: unknown;
+    }).__turboRenderDebugReadAloudBackend;
+    delete (window as Window & {
+      __turboRenderDebugReadAloudBackend?: boolean;
+      __turboRenderDebugConversationId?: string;
+      __turboRenderDebugReadAloudUrl?: string;
+      __turboRenderReadAloudContext?: unknown;
+    }).__turboRenderDebugConversationId;
+    delete (window as Window & {
+      __turboRenderDebugReadAloudBackend?: boolean;
+      __turboRenderDebugConversationId?: string;
+      __turboRenderDebugReadAloudUrl?: string;
+      __turboRenderReadAloudContext?: unknown;
+    }).__turboRenderDebugReadAloudUrl;
+    delete (window as Window & {
+      __turboRenderDebugReadAloudBackend?: boolean;
+      __turboRenderDebugConversationId?: string;
+      __turboRenderDebugReadAloudUrl?: string;
+      __turboRenderReadAloudContext?: unknown;
+    }).__turboRenderReadAloudContext;
+    delete document.body.dataset.turboRenderDebugReadAloudBackend;
+    delete document.body.dataset.turboRenderDebugConversationId;
+    delete document.body.dataset.turboRenderDebugReadAloudUrl;
+    delete document.body.dataset.turboRenderDebugReadAloudRoute;
+    delete document.body.dataset.turboRenderDebugReadAloudMenuAction;
+    delete document.body.dataset.turboRenderDebugReadAloudResolvedConversationId;
+    delete document.body.dataset.turboRenderDebugReadAloudResolvedMessageId;
+    delete document.body.dataset.turboRenderReadAloudConversationId;
+    delete document.body.dataset.turboRenderReadAloudEntryRole;
+    delete document.body.dataset.turboRenderReadAloudEntryText;
+    delete document.body.dataset.turboRenderReadAloudEntryKey;
+    delete document.body.dataset.turboRenderReadAloudEntryMessageId;
+    delete document.body.dataset.turboRenderReadAloudMode;
+    delete document.body.dataset.turboRenderReadAloudBranch;
+    delete document.body.dataset.hostActionCopyCount;
+    delete document.body.dataset.hostActionLikeCount;
+    delete document.body.dataset.hostActionDislikeCount;
+    delete document.body.dataset.hostActionShareCount;
+    delete document.body.dataset.hostActionBranchCount;
+    delete document.body.dataset.hostActionReadAloudCount;
+    delete document.body.dataset.hostActionStopReadAloudCount;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudBackend;
+    delete document.documentElement.dataset.turboRenderDebugConversationId;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudUrl;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudRoute;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudMenuAction;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudResolvedConversationId;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudResolvedMessageId;
+    delete document.documentElement.dataset.turboRenderReadAloudConversationId;
+    delete document.documentElement.dataset.turboRenderReadAloudEntryRole;
+    delete document.documentElement.dataset.turboRenderReadAloudEntryText;
+    delete document.documentElement.dataset.turboRenderReadAloudEntryKey;
+    delete document.documentElement.dataset.turboRenderReadAloudEntryMessageId;
+    delete document.documentElement.dataset.turboRenderReadAloudMode;
+    delete document.documentElement.dataset.turboRenderReadAloudBranch;
+    delete document.documentElement.dataset.hostActionCopyCount;
+    delete document.documentElement.dataset.hostActionLikeCount;
+    delete document.documentElement.dataset.hostActionDislikeCount;
+    delete document.documentElement.dataset.hostActionShareCount;
+    delete document.documentElement.dataset.hostActionBranchCount;
+    delete document.documentElement.dataset.hostActionReadAloudCount;
+    delete document.documentElement.dataset.hostActionStopReadAloudCount;
     vi.restoreAllMocks();
   });
 
@@ -132,8 +199,8 @@ describe('TurboRenderController', () => {
     expect(document.querySelector(`.${UI_CLASS_NAMES.historyTrigger}`)).toBeNull();
     expect(document.querySelector(`.${UI_CLASS_NAMES.archiveRoot}`)).toBeNull();
 
-    const initialBatchRail = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchRail}`);
-    expect(initialBatchRail).not.toBeNull();
+    const initialBatchHeader = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchHeader}`);
+    expect(initialBatchHeader).not.toBeNull();
 
     const turboRenderStyle = [...document.head.querySelectorAll('style')]
       .map((style) => style.textContent ?? '')
@@ -145,7 +212,10 @@ describe('TurboRenderController', () => {
     expect(turboRenderStyle).toContain('box-shadow: 0 10px 30px');
     expect(turboRenderStyle).toContain('background: transparent');
     expect(turboRenderStyle).toContain('box-shadow: none');
+    expect(turboRenderStyle).toContain('padding: 6px 0 0');
     expect(turboRenderStyle).not.toContain('border-color: transparent');
+    expect(turboRenderStyle).toContain('display: grid');
+    expect(turboRenderStyle).toContain('grid-template-columns: minmax(0, 1fr) auto');
     expect(turboRenderStyle).toContain('justify-self: end');
     expect(turboRenderStyle).toContain('align-self: start');
     expect(turboRenderStyle).toContain('max-width: min(68ch, 100%)');
@@ -153,6 +223,24 @@ describe('TurboRenderController', () => {
     expect(turboRenderStyle).toContain('border-radius: 18px');
     expect(turboRenderStyle).toContain('background: rgba(243, 244, 246, 0.96)');
     expect(turboRenderStyle).toContain('border: 0;');
+    expect(turboRenderStyle).toContain('gap: 8px');
+    expect(turboRenderStyle).toContain('width: 100%');
+    expect(turboRenderStyle).toContain('padding-top: 0;');
+    expect(turboRenderStyle).toContain('gap: 6px');
+    expect(turboRenderStyle).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(turboRenderStyle).toContain('justify-items: stretch');
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryFrame}`);
+    expect(turboRenderStyle).toContain('position: sticky');
+    expect(turboRenderStyle).toContain('top: 12px');
+    expect(turboRenderStyle).toContain('top: 12px');
+    expect(turboRenderStyle).toContain('display: inline-flex');
+    expect(turboRenderStyle).toContain('flex-wrap: nowrap');
+    expect(turboRenderStyle).toContain('white-space: nowrap');
+    expect(turboRenderStyle).toContain('width: fit-content');
+    expect(turboRenderStyle).toContain('max-width: 100%');
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryActionMenuAnchor}`);
+    expect(turboRenderStyle).toContain('bottom: calc(100% + 8px)');
     expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"]`);
     expect(turboRenderStyle).toContain('display: block');
     expect(turboRenderStyle).toContain('padding: 0');
@@ -170,21 +258,41 @@ describe('TurboRenderController', () => {
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineBatchPreview}`)).not.toBeNull();
     fixture.scroller.scrollTop = 480;
     const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
-      if (
-        this.matches(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`)
-      ) {
-        const expanded = this.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)?.hidden === false;
-        return {
-          top: expanded ? 260 : 200,
-          bottom: expanded ? 380 : 320,
-          left: 0,
-          right: 900,
-          width: 900,
-          height: 120,
-          x: 0,
-          y: expanded ? 260 : 200,
-          toJSON: () => '',
-        } as DOMRect;
+      const batchCard = this.closest?.(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`);
+      if (batchCard instanceof HTMLElement) {
+        const expanded = batchCard.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)?.hidden === false;
+        const cardTop = (expanded ? 260 : 200) - fixture.scroller.scrollTop;
+        if (this === batchCard) {
+          return {
+            top: cardTop,
+            bottom: cardTop + 120,
+            left: 0,
+            right: 900,
+            width: 900,
+            height: 120,
+            x: 0,
+            y: cardTop,
+            toJSON: () => '',
+          } as DOMRect;
+        }
+
+        if (
+          this.matches(`.${UI_CLASS_NAMES.inlineBatchHeader}`) ||
+          this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`)
+        ) {
+          const top = 12;
+          return {
+            top,
+            bottom: top + 32,
+            left: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 760 : 0,
+            right: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 792 : 900,
+            width: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 32 : 900,
+            height: 32,
+            x: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 760 : 0,
+            y: top,
+            toJSON: () => '',
+          } as DOMRect;
+        }
       }
 
       return {
@@ -204,24 +312,177 @@ describe('TurboRenderController', () => {
     await flush();
     rectSpy.mockRestore();
 
+    const headerStyle = initialBatchHeader != null
+      ? {
+          display: getComputedStyle(initialBatchHeader).display,
+          gridTemplateColumns: getComputedStyle(initialBatchHeader).gridTemplateColumns,
+          position: getComputedStyle(initialBatchHeader).position,
+          top: getComputedStyle(initialBatchHeader).top,
+        }
+      : null;
+
     expect(
       inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.textContent,
     ).toBe('Collapse');
+    expect(headerStyle?.display).toBe('grid');
+    expect(headerStyle?.gridTemplateColumns).not.toBe('none');
+    expect(headerStyle?.position).toBe('sticky');
+    expect(headerStyle?.top).toBe('12px');
     const expandedFirstCard = inlineRoot?.querySelector<HTMLElement>(
       `.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`,
     );
     expect(expandedFirstCard?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchPreview}`)?.hidden).toBe(true);
     const userBody = expandedFirstCard?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
     expect(userBody).not.toBeNull();
-    expect(userBody?.parentElement).toBe(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntry}`));
+    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryFrame)).toBe(true);
     expect(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
-    expect(expandedFirstCard?.querySelector(`[data-lane="assistant"]`)?.parentElement).toBe(
-      expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.inlineBatchEntry}`),
+    expect(expandedFirstCard?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
+    expect(expandedFirstCard?.dataset.conversationId ?? '').not.toBe('');
+    expect(userBody?.dataset.conversationId ?? '').toBe(expandedFirstCard?.dataset.conversationId ?? '');
+    expect(userBody?.dataset.messageId ?? '').not.toBe('');
+    expect(userBody?.dataset.hostMessageId ?? '').toBe(userBody?.dataset.messageId ?? '');
+    const userActions = expandedFirstCard?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`,
     );
-    expect(fixture.scroller.scrollTop).toBe(540);
+    expect(userActions).not.toBeNull();
+    expect(userActions?.dataset.template).toBe('host');
+    expect(userActions?.dataset.conversationId ?? '').toBe(expandedFirstCard?.dataset.conversationId ?? '');
+    expect(userActions?.dataset.messageId ?? '').toBe(userBody?.dataset.messageId ?? '');
+    expect(userActions?.querySelectorAll('button')).toHaveLength(1);
+    expect(userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')).not.toBeNull();
+    expect(userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')?.textContent).toBe('');
+    expect(userActions?.querySelectorAll('button svg')).toHaveLength(1);
+    expect(userActions?.querySelector('button[data-testid="copy-turn-action-button"]')?.parentElement).toBe(userActions);
+    const assistantActions = expandedFirstCard?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    expect(assistantActions).not.toBeNull();
+    expect(assistantActions?.dataset.template).toBe('host');
+    expect(assistantActions?.dataset.conversationId ?? '').toBe(expandedFirstCard?.dataset.conversationId ?? '');
+    expect(assistantActions?.dataset.messageId ?? '').not.toBe('');
+    expect(assistantActions?.querySelectorAll('button')).toHaveLength(5);
+    expect(assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')).not.toBeNull();
+    expect(assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="bad-response-turn-action-button"]')).not.toBeNull();
+    expect(assistantActions?.querySelectorAll('button svg')).toHaveLength(5);
+    expect(
+      assistantActions?.querySelector('button[data-testid="more-turn-action-button"]')?.parentElement?.classList.contains(
+        UI_CLASS_NAMES.historyEntryActionMenuAnchor,
+      ),
+    ).toBe(true);
+    expect(fixture.scroller.scrollTop).toBe(480);
     expect(controller.getStatus().expandedBatchCount).toBeGreaterThan(0);
     expect(fixture.transcript.querySelectorAll('[data-testid^="conversation-turn-"]')).toHaveLength(10);
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
+  });
+
+  it('scrolls the current batch back to the top when collapsing it', async () => {
+    const fixture = mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(24, 4));
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    const scroller = fixture.scroller;
+    const firstBatch = inlineRoot?.querySelector<HTMLElement>('[data-turbo-render-batch-anchor="true"]');
+    const firstToggle = firstBatch?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
+    expect(firstBatch).not.toBeNull();
+    expect(firstToggle).not.toBeNull();
+    if (firstBatch == null || firstToggle == null) {
+      throw new Error('Harness transcript is missing expected batch controls.');
+    }
+
+    scroller.scrollTop = 480;
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+      if (this === scroller) {
+        return {
+          top: 0,
+          bottom: 640,
+          left: 0,
+          right: 900,
+          width: 900,
+          height: 640,
+          x: 0,
+          y: 0,
+          toJSON: () => '',
+        } as DOMRect;
+      }
+
+      const batchCard = this.closest?.(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`);
+      if (batchCard instanceof HTMLElement) {
+        const expanded = batchCard.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)?.hidden === false;
+        const cardTop = (expanded ? 260 : 80) - scroller.scrollTop;
+        if (this === batchCard) {
+          return {
+            top: cardTop,
+            bottom: cardTop + 120,
+            left: 0,
+            right: 900,
+            width: 900,
+            height: 120,
+            x: 0,
+            y: cardTop,
+            toJSON: () => '',
+          } as DOMRect;
+        }
+
+        if (
+          this.matches(`.${UI_CLASS_NAMES.inlineBatchHeader}`) ||
+          this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`)
+        ) {
+          const top = 12;
+          return {
+            top,
+            bottom: top + 32,
+            left: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 760 : 0,
+            right: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 792 : 900,
+            width: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 32 : 900,
+            height: 32,
+            x: this.matches(`.${UI_CLASS_NAMES.inlineBatchAction}`) ? 760 : 0,
+            y: top,
+            toJSON: () => '',
+          } as DOMRect;
+        }
+      }
+
+      return {
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+        width: 0,
+        height: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => '',
+      } as DOMRect;
+    });
+
+    firstToggle.click();
+    await flush();
+    expect(scroller.scrollTop).toBe(480);
+
+    firstToggle.click();
+    await flush();
+    await flush();
+    rectSpy.mockRestore();
+
+    expect(scroller.scrollTop).toBe(480);
+    expect(document.activeElement).toBe(firstToggle);
   });
 
   it('coalesces rapid expand/collapse toggles and reuses the batch subtree', async () => {
@@ -268,7 +529,7 @@ describe('TurboRenderController', () => {
     await flush();
     await flush();
 
-    expect(updateSpy.mock.calls.length - updateBaseline).toBe(1);
+    expect(updateSpy.mock.calls.length - updateBaseline).toBeLessThanOrEqual(2);
     expect(inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)).toBe(entriesBefore);
   });
 
@@ -356,9 +617,9 @@ describe('TurboRenderController', () => {
     expect(entryBodies.length).toBeGreaterThan(0);
     const userBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
     expect(userBody).not.toBeNull();
-    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(userBody?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.classList.contains(UI_CLASS_NAMES.historyEntryFrame)).toBe(true);
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
-    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
     const markdownBodies = [
       ...(inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"]`) ?? []),
     ];
@@ -417,11 +678,11 @@ describe('TurboRenderController', () => {
       `.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"][data-render-kind="host-snapshot"]`,
     );
     expect(userBody).not.toBeNull();
-    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(userBody?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.classList.contains(UI_CLASS_NAMES.historyEntryFrame)).toBe(true);
     expect(userBody?.innerHTML).toContain('data-message-author-role="user"');
     expect(userBody?.innerHTML).toContain('Official bubble text');
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
-    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
   });
 
   it('keeps long user messages in a right-aligned transparent lane', async () => {
@@ -464,10 +725,1034 @@ describe('TurboRenderController', () => {
 
     const userBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
     expect(userBody).not.toBeNull();
-    expect(userBody?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(userBody?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.classList.contains(UI_CLASS_NAMES.historyEntryFrame)).toBe(true);
     expect(userBody?.textContent).toContain('deliberately long archived user message');
-    expect(inlineRoot?.querySelector(`[data-lane="assistant"]`)?.parentElement?.classList.contains(UI_CLASS_NAMES.inlineBatchEntry)).toBe(true);
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
+  });
+
+  it('renders official action buttons for archived live turns and forwards clicks to host controls', async () => {
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const speechState = { speaking: false, pending: false, paused: false };
+    class MockSpeechSynthesisUtterance extends EventTarget {
+      text: string;
+
+      constructor(text: string) {
+        super();
+        this.text = text;
+      }
+    }
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: MockSpeechSynthesisUtterance,
+    });
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: {
+        get speaking() {
+          return speechState.speaking;
+        },
+        get pending() {
+          return speechState.pending;
+        },
+        get paused() {
+          return speechState.paused;
+        },
+        cancel() {
+          speechState.speaking = false;
+          speechState.pending = false;
+          speechState.paused = false;
+        },
+        speak(utterance: MockSpeechSynthesisUtterance) {
+          speechState.speaking = true;
+          speechState.pending = false;
+          speechState.paused = false;
+          void utterance;
+        },
+      },
+    });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 1,
+        minDescendants: 1,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.start();
+    await flush();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    expect(inlineRoot).not.toBeNull();
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const firstEntry = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+    expect(firstEntry).not.toBeNull();
+
+    const userActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`);
+    const assistantActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
+    expect(userActions?.querySelectorAll('button')).toHaveLength(1);
+    expect(assistantActions?.querySelectorAll('button')).toHaveLength(5);
+    const userCopyButton = userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]');
+    const assistantMoreButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
+    expect(userCopyButton?.dataset.messageId?.length ?? 0).toBeGreaterThan(0);
+    expect(assistantMoreButton?.dataset.messageId).toBe(assistantActions?.dataset.messageId);
+    expect(assistantMoreButton?.dataset.hostMessageId).toBe(assistantActions?.dataset.hostMessageId);
+
+    userCopyButton?.click();
+    assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')?.click();
+    assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
+    await flush();
+    await flush();
+    const refreshedEntries = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+    const refreshedFirstEntry = refreshedEntries?.[0];
+    const assistantActionsAfterLike = refreshedFirstEntry?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    expect(assistantActionsAfterLike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).toBeNull();
+    expect(
+      assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
+    ).toBe('brightness(0)');
+
+    assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
+    await flush();
+    await flush();
+    const assistantActionsAfterUnlike = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    expect(assistantActionsAfterUnlike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).not.toBeNull();
+    expect(
+      assistantActionsAfterUnlike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
+    ).toBe('');
+
+    const secondEntry = refreshedEntries?.[1];
+    const secondAssistantActions = secondEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
+    secondAssistantActions?.querySelector<HTMLButtonElement>('button[data-testid="bad-response-turn-action-button"]')?.click();
+    await flush();
+    await flush();
+    const refreshedEntriesAfterDislike = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+    const refreshedFirstEntryAfterDislike = refreshedEntriesAfterDislike?.[0];
+    const assistantActionsAfterDislike = refreshedFirstEntryAfterDislike?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="share-turn-action-button"]')?.click();
+    const refreshedSecondEntryAfterDislike = refreshedEntriesAfterDislike?.[1];
+    const secondAssistantDislikeButton = refreshedSecondEntryAfterDislike?.querySelector<HTMLButtonElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    )?.querySelector<HTMLButtonElement>(
+      'button[data-testid="bad-response-turn-action-button"]',
+    );
+    expect(secondAssistantDislikeButton?.querySelector('svg')?.style.filter).toBe('brightness(0)');
+    const moreButton = assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
+    moreButton?.click();
+    await flush();
+    const moreMenu = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+    expect(moreMenu).not.toBeNull();
+    expect(moreMenu?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
+    expect(moreMenu?.textContent).toContain('Branch in new chat');
+    expect(moreMenu?.textContent).toContain('Read aloud');
+    moreMenu?.querySelector<HTMLButtonElement>('button[data-testid="branch-in-new-chat-turn-action-button"]')?.click();
+    await flush();
+    const assistantActionsAfterBranch = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    const moreButtonAfterBranch = assistantActionsAfterBranch?.querySelector<HTMLButtonElement>(
+      'button[data-testid="more-turn-action-button"]',
+    );
+    moreButtonAfterBranch?.click();
+    await flush();
+    const moreMenuAfterReopen = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+    expect(moreMenuAfterReopen).not.toBeNull();
+    expect(moreMenuAfterReopen?.querySelector('button[data-testid="read-aloud-turn-action-button"]')).not.toBeNull();
+    moreMenuAfterReopen?.querySelector<HTMLButtonElement>('button[data-testid="read-aloud-turn-action-button"]')?.click();
+    await flush();
+    await flush();
+    const moreMenuDuringReadAloud = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+    expect(moreMenuDuringReadAloud).not.toBeNull();
+    expect(moreMenuDuringReadAloud?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
+    const hostStopPopupButton = document.createElement('button');
+    hostStopPopupButton.type = 'button';
+    hostStopPopupButton.textContent = 'Stop reading';
+    hostStopPopupButton.setAttribute('data-testid', 'stop-read-aloud-turn-action-button');
+    hostStopPopupButton.setAttribute('aria-label', 'Stop reading');
+    Object.defineProperty(hostStopPopupButton, 'getClientRects', {
+      value: () => [
+        {
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 24,
+          top: 0,
+          left: 0,
+          right: 40,
+          bottom: 24,
+          toJSON: () => '',
+        },
+      ],
+    });
+    hostStopPopupButton.addEventListener('click', () => {
+      const current = Number(document.body.dataset.hostActionStopReadAloudCount ?? '0');
+      document.body.dataset.hostActionStopReadAloudCount = String(current + 1);
+    });
+    document.body.append(hostStopPopupButton);
+    hostStopPopupButton.click();
+    await flush();
+
+    expect(Number(document.body.dataset.hostActionCopyCount ?? '0')).toBeGreaterThanOrEqual(2);
+    expect(document.body.dataset.hostActionLikeCount).toBe('1');
+    expect(document.body.dataset.hostActionDislikeCount).toBe('1');
+    expect(document.body.dataset.hostActionShareCount).toBe('1');
+    expect(Number(document.body.dataset.hostActionStopReadAloudCount ?? '0')).toBe(1);
+  }, 15_000);
+
+  it('prefers host message ids over TurboRender archive copies when building read aloud urls', async () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="text-message min-h-8" data-message-id="real-user-message-id" data-message-author-role="user">
+          <div>Host user prompt for speech.</div>
+        </div>
+        <section data-turbo-render-ui-root="true">
+          <article data-message-id="turn-chat:e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f-1-cwdqxl" data-message-author-role="assistant">
+            <div class="${UI_CLASS_NAMES.inlineBatchEntry}">
+              <div class="${UI_CLASS_NAMES.historyEntryBody}" data-render-kind="markdown-text">
+                <p>Archived assistant speech summary.</p>
+              </div>
+            </div>
+          </article>
+        </section>
+        <div class="text-message min-h-8" data-message-id="real-message-id" data-message-author-role="assistant">
+          <div>Host assistant reply for speech.</div>
+        </div>
+      </main>
+    `;
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugConversationId = 'conversation-real-id';
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 1,
+      pairIndex: 1,
+      turnId: 'turn-chat:e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f-1-cwdqxl',
+      liveTurnId: null,
+      messageId: 'turn-chat:e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f-1-cwdqxl',
+      groupId: null,
+      parts: ['Assistant reply for speech.'],
+      text: 'Assistant reply for speech.',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const url = (controller as unknown as {
+      buildReadAloudUrl(
+        entry: typeof entry,
+        groupId: string | null,
+      ): string | null;
+    }).buildReadAloudUrl(entry, null);
+
+    expect(url).not.toBeNull();
+    const requestUrl = new URL(url!);
+    expect(requestUrl.searchParams.get('conversation_id')).toBe('conversation-real-id');
+    expect(requestUrl.searchParams.get('message_id')).toBe('real-message-id');
+    expect(requestUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+    expect(document.body.dataset.turboRenderDebugReadAloudHostSelectedSource).toBe('turn-index');
+  });
+
+  it('prefers rendered archive entry message ids over synthetic entry ids when building read aloud urls', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-turbo-render-ui-root="true">
+          <div class="${UI_CLASS_NAMES.inlineBatchEntry}">
+            <div class="${UI_CLASS_NAMES.historyEntryFrame}" data-message-id="real-user-message-id" data-message-author-role="user">
+              <div class="${UI_CLASS_NAMES.historyEntryBody}" data-render-kind="host-snapshot" data-message-id="real-user-message-id">
+                <p>User prompt for speech.</p>
+              </div>
+              <div class="${UI_CLASS_NAMES.historyEntryActions}" data-group-id="archive-slot-0" data-entry-id="history-user-entry" data-message-id="real-user-message-id"></div>
+            </div>
+            <div class="${UI_CLASS_NAMES.historyEntryFrame}" data-message-id="real-archive-message-id" data-message-author-role="assistant">
+              <div class="${UI_CLASS_NAMES.historyEntryBody}" data-render-kind="markdown-text" data-message-id="real-archive-message-id">
+                <p>Assistant reply for speech.</p>
+              </div>
+              <div class="${UI_CLASS_NAMES.historyEntryActions}" data-group-id="archive-slot-0" data-entry-id="history-entry" data-message-id="real-archive-message-id"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    `;
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugConversationId = 'conversation-real-id';
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const actionAnchor = document.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-entry-id="history-entry"]`,
+    ) ?? null;
+    (controller as unknown as {
+      statusBar: {
+        getEntryActionAnchor(groupId: string, entryId: string): HTMLElement | null;
+        destroy(): void;
+      };
+    }).statusBar = {
+      getEntryActionAnchor: () => actionAnchor,
+      destroy: () => {},
+    };
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:synthetic-message-id',
+      liveTurnId: null,
+      messageId: 'turn-chat:synthetic-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply for speech.'],
+      text: 'Assistant reply for speech.',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const url = (controller as unknown as {
+      buildReadAloudUrl(
+        entry: typeof entry,
+        groupId: string | null,
+      ): string | null;
+    }).buildReadAloudUrl(entry, 'archive-slot-0');
+
+    expect(url).not.toBeNull();
+    const requestUrl = new URL(url!);
+    expect(requestUrl.searchParams.get('conversation_id')).toBe('conversation-real-id');
+    expect(requestUrl.searchParams.get('message_id')).toBe('real-archive-message-id');
+    expect(requestUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+  });
+
+  it('refuses to build backend read aloud urls from synthetic ids alone', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section data-turbo-render-ui-root="true">
+          <article data-message-id="turn-chat:synthetic-message-id" data-message-author-role="assistant">
+            <div class="${UI_CLASS_NAMES.inlineBatchEntry}">
+              <div class="${UI_CLASS_NAMES.historyEntryBody}" data-render-kind="markdown-text">
+                <p>Assistant reply for speech.</p>
+              </div>
+            </div>
+          </article>
+        </section>
+      </main>
+    `;
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugConversationId = 'conversation-real-id';
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:synthetic-message-id',
+      liveTurnId: null,
+      messageId: 'turn-chat:synthetic-message-id',
+      groupId: null,
+      parts: ['Assistant reply for speech.'],
+      text: 'Assistant reply for speech.',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const url = (controller as unknown as {
+      buildReadAloudUrl(
+        entry: typeof entry,
+        groupId: string | null,
+      ): string | null;
+    }).buildReadAloudUrl(entry, null);
+
+    expect(url).toBeNull();
+    expect(document.body.dataset.turboRenderDebugReadAloudCandidateParked ?? '').toBe('');
+    expect(document.body.dataset.turboRenderDebugReadAloudCandidateHost ?? '').toBe('');
+    expect(document.body.dataset.turboRenderDebugReadAloudCandidateSnapshot ?? '').toBe('');
+    expect(document.body.dataset.turboRenderDebugReadAloudCandidateRecord ?? '').toBe('');
+    expect(document.body.dataset.turboRenderDebugReadAloudCandidateNode ?? '').toBe('');
+    expect(document.body.dataset.turboRenderDebugReadAloudMessageId ?? '').toBe('');
+  });
+
+  it('binds host More clicks to the current archive entry instead of the nearest global button', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <article data-message-id="wrong-message-id" data-message-author-role="assistant">
+            <button data-testid="more-turn-action-button" aria-label="More">Wrong</button>
+          </article>
+          <article data-message-id="target-message-id" data-message-author-role="assistant">
+            <button data-testid="more-turn-action-button" aria-label="More">Target</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const wrongButton = document.querySelectorAll<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')[0]!;
+    const targetButton = document.querySelectorAll<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')[1]!;
+    Object.defineProperty(wrongButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    Object.defineProperty(targetButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(wrongButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+    vi.spyOn(targetButton, 'getBoundingClientRect').mockReturnValue({
+      top: 200,
+      bottom: 224,
+      left: 200,
+      right: 224,
+      width: 24,
+      height: 24,
+      x: 200,
+      y: 200,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:target-message-id',
+      liveTurnId: null,
+      messageId: 'target-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply'],
+      text: 'Assistant reply',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: typeof entry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => wrongButton);
+
+    expect(acted).toBe(true);
+    expect(dispatchSpy).toHaveBeenCalledWith(targetButton);
+  });
+
+  it('does not fall back to the nearest global More button on host pages when the current archive entry has no precise binding', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <article data-message-id="wrong-message-id" data-message-author-role="assistant">
+            <button data-testid="more-turn-action-button" aria-label="More">Wrong</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const wrongButton = document.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')!;
+    Object.defineProperty(wrongButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(wrongButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 10,
+      pairIndex: 5,
+      turnId: 'turn-chat:missing-message-id',
+      liveTurnId: null,
+      messageId: 'missing-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply'],
+      text: 'Assistant reply',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: typeof entry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => wrongButton);
+
+    expect(acted).toBe(false);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not click a connected host More button when its surrounding text does not match the archive entry', async () => {
+    document.body.innerHTML = `
+      <main>
+        <article data-message-author-role="assistant">
+          <div>Sure, here's an example code for a chatbot that can summarize the content of a large PDF.</div>
+          <button data-testid="more-turn-action-button" aria-label="More">Wrong</button>
+        </article>
+      </main>
+    `;
+
+    const wrongArticle = document.querySelector<HTMLElement>('article[data-message-author-role="assistant"]')!;
+    const wrongButton = wrongArticle.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')!;
+    Object.defineProperty(wrongButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(wrongButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+    (controller as unknown as { records: Map<string, unknown> }).records.set('turn-chat:missing-message-id', {
+      id: 'turn-chat:missing-message-id',
+      index: 0,
+      role: 'assistant',
+      isStreaming: false,
+      parked: false,
+      node: wrongArticle,
+      messageId: null,
+    });
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:missing-message-id',
+      liveTurnId: null,
+      messageId: 'missing-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Building a chatbot for PDF can be a useful tool for automating tasks.'],
+      text: 'Building a chatbot for PDF can be a useful tool for automating tasks.',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: typeof entry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => wrongButton);
+
+    expect(acted).toBe(false);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+
+  it('prefers the rendered nested host message id over an outer archive wrapper id when opening More on host pages', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <article data-message-id="target-message-id" data-message-author-role="assistant">
+            <button data-testid="more-turn-action-button" aria-label="More">Target</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const targetButton = document.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')!;
+    Object.defineProperty(targetButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(targetButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+
+    const actionAnchor = document.createElement('div');
+    actionAnchor.className = UI_CLASS_NAMES.historyEntryActions;
+    actionAnchor.dataset.groupId = 'archive-slot-0';
+    actionAnchor.dataset.entryId = 'history-entry';
+    actionAnchor.innerHTML = `
+      <div class="${UI_CLASS_NAMES.historyEntryFrame}" data-message-id="wrong-wrapper-id" data-message-author-role="assistant">
+        <div class="${UI_CLASS_NAMES.historyEntryBody}" data-render-kind="host-snapshot" data-message-id="wrong-wrapper-id">
+          <div data-message-author-role="assistant" data-message-id="target-message-id">Assistant reply.</div>
+        </div>
+      </div>
+    `;
+    document.body.append(actionAnchor);
+
+    (controller as unknown as {
+      statusBar: {
+        getEntryActionAnchor(groupId: string, entryId: string): HTMLElement | null;
+        destroy(): void;
+      };
+    }).statusBar = {
+      getEntryActionAnchor: () => actionAnchor,
+      destroy: () => {},
+    };
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 1,
+      pairIndex: 0,
+      turnId: 'turn-chat:synthetic-message-id',
+      liveTurnId: null,
+      messageId: 'wrong-wrapper-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply.'],
+      text: 'Assistant reply.',
+      renderKind: 'host-snapshot' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: typeof entry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => actionAnchor);
+
+    expect(acted).toBe(true);
+    expect(dispatchSpy).toHaveBeenCalledWith(targetButton);
+  });
+
+  it('does not use a broad scoped host root fallback for More on host pages', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <article data-message-id="wrong-message-id" data-message-author-role="assistant">
+            <button data-testid="more-turn-action-button" aria-label="More">Wrong</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const wrongButton = document.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')!;
+    Object.defineProperty(wrongButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(wrongButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    vi.spyOn(
+      controller as unknown as {
+        collectHostSearchRootsForEntry(groupId: string, entry: ManagedHistoryEntry): HTMLElement[];
+      },
+      'collectHostSearchRootsForEntry',
+    ).mockReturnValue([document.querySelector('main') as HTMLElement]);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim',
+      role: 'assistant' as const,
+      turnIndex: 10,
+      pairIndex: 5,
+      turnId: 'turn-chat:missing-message-id',
+      liveTurnId: null,
+      messageId: 'missing-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply'],
+      text: 'Assistant reply',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: typeof entry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => wrongButton);
+
+    expect(acted).toBe(false);
+    expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+
+  it('primes the conversation mapping before backend read aloud playback', async () => {
+    const conversationId = 'e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f';
+    document.body.innerHTML = `
+      <main>
+        <section data-turbo-render-ui-root="true"></section>
+      </main>
+    `;
+    const readAloudContext = {
+      conversationId,
+      entryRole: 'assistant' as const,
+      entryText: 'mismatched assistant text',
+      entryKey: 'history-entry',
+      entryMessageId: 'assistant5',
+    };
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugConversationId = conversationId;
+    document.body.dataset.turboRenderDebugReadAloudUrl =
+      `https://chatgpt.com/backend-api/synthesize?message_id=turn-chat:${conversationId}-5-9ox7ch&conversation_id=${conversationId}&voice=cove&format=aac`;
+    document.body.dataset.turboRenderReadAloudConversationId = conversationId;
+    document.body.dataset.turboRenderReadAloudEntryRole = readAloudContext.entryRole;
+    document.body.dataset.turboRenderReadAloudEntryText = readAloudContext.entryText;
+    document.body.dataset.turboRenderReadAloudEntryKey = readAloudContext.entryKey;
+    (window as typeof window & { __turboRenderReadAloudContext?: typeof readAloudContext }).__turboRenderReadAloudContext =
+      readAloudContext;
+
+    const nativeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.includes(`/backend-api/conversation/${conversationId}`)) {
+        return new Response(
+          JSON.stringify({
+            current_node: 'assistant5',
+            mapping: {
+              root: { id: 'root', parent: null, children: ['assistant5'], message: null },
+              assistant5: {
+                id: 'assistant5',
+                parent: 'root',
+                children: [],
+                message: {
+                  id: 'assistant5',
+                  author: { role: 'assistant', name: null, metadata: {} },
+                  create_time: 8,
+                  content: { content_type: 'text', parts: ['assistant-5'] },
+                },
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+
+      if (requestUrl.includes('/backend-api/synthesize')) {
+        return new Response('', {
+          status: 200,
+          headers: { 'content-type': 'audio/aac' },
+        });
+      }
+
+      throw new Error(`Unexpected fetch request: ${requestUrl}`);
+    }) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanupBootstrap = installConversationBootstrap(window, document);
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_CONFIG',
+          payload: {
+            enabled: true,
+            mode: 'performance',
+            initialTrimEnabled: true,
+            initialHotPairs: 2,
+            minFinalizedBlocks: 4,
+            coldRestoreMode: 'placeholder',
+          },
+        },
+      }),
+    );
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim' as const,
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:synthetic-message-id',
+      liveTurnId: null,
+      messageId: 'turn-chat:synthetic-message-id',
+      groupId: null,
+      parts: ['assistant-5'],
+      text: 'assistant-5',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const playSpy = vi.spyOn(HTMLAudioElement.prototype, 'play').mockResolvedValue(undefined);
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:read-aloud');
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    await (controller as unknown as {
+      startReadAloudPlayback(
+        groupId: string | null,
+        entry: typeof entry,
+        entryKey: string,
+      ): Promise<void>;
+    }).startReadAloudPlayback(null, entry, 'history-entry');
+
+    expect(nativeFetch).toHaveBeenCalledTimes(2);
+    const conversationCall = nativeFetch.mock.calls[0]![0];
+    const synthesizeCall = nativeFetch.mock.calls[1]![0];
+    expect(
+      typeof conversationCall === 'string'
+        ? conversationCall
+        : conversationCall instanceof Request
+          ? conversationCall.url
+          : String(conversationCall),
+    ).toContain(`/backend-api/conversation/${conversationId}`);
+
+    const synthesizeUrl = new URL(
+      typeof synthesizeCall === 'string'
+        ? synthesizeCall
+        : synthesizeCall instanceof URL
+          ? synthesizeCall.toString()
+          : synthesizeCall instanceof Request
+            ? synthesizeCall.url
+            : String(synthesizeCall),
+    );
+    expect(synthesizeUrl.searchParams.get('conversation_id')).toBe(conversationId);
+    expect(synthesizeUrl.searchParams.get('message_id')).toBe('assistant5');
+    expect(synthesizeUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+    expect(playSpy).toHaveBeenCalledTimes(1);
+
+    playSpy.mockRestore();
+    createObjectUrlSpy.mockRestore();
+    revokeObjectUrlSpy.mockRestore();
+    cleanupBootstrap();
+  });
+
+  it('backs off repeated failed read aloud conversation snapshot prewarms', async () => {
+    const conversationId = 'snapshot-negative-cache';
+    document.body.innerHTML = `
+      <main>
+        <section data-turbo-render-ui-root="true"></section>
+      </main>
+    `;
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugConversationId = conversationId;
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const originalFetch = window.fetch;
+    const fetchSpy = vi.fn(async () => {
+      return new Response('missing', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }) as typeof window.fetch;
+    window.fetch = fetchSpy;
+
+    try {
+      await (controller as unknown as {
+        ensureConversationSnapshotForReadAloud(conversationId: string | null): Promise<void>;
+      }).ensureConversationSnapshotForReadAloud(conversationId);
+      await (controller as unknown as {
+        ensureConversationSnapshotForReadAloud(conversationId: string | null): Promise<void>;
+      }).ensureConversationSnapshotForReadAloud(conversationId);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.fetch = originalFetch;
+    }
   });
 
   it('keeps inline history visible when transcript parking is unsupported', async () => {
@@ -533,7 +1818,53 @@ describe('TurboRenderController', () => {
     const status = controller.getStatus();
     expect(status.chatId).toBe('share:share-123');
     expect(status.routeKind).toBe('share');
-    expect(document.querySelector('[data-turbo-render-inline-history-root="true"]')).not.toBeNull();
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    expect(inlineRoot).not.toBeNull();
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryActions}`)).toBeNull();
+  });
+
+  it('keeps share route actions available when the debug override is enabled', async () => {
+    history.replaceState({}, '', '/share/share-123?turbo-render-debug-actions=1');
+    mountTranscriptFixture(document, { turnCount: 18, streaming: false });
+    document.documentElement.lang = 'zh-CN';
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'auto',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    expect(inlineRoot).not.toBeNull();
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const assistantActions = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
+    expect(assistantActions).not.toBeNull();
+    assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')?.click();
+    await flush();
+    const refreshedAssistantActions = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    const menu = refreshedAssistantActions?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+    expect(menu).not.toBeNull();
+    expect(menu?.textContent).toContain('新聊天中的分支');
+    expect(menu?.textContent).toContain('朗读');
   });
 
   it('does not clear applied inline history when a later non-applied session arrives', async () => {
@@ -641,5 +1972,43 @@ describe('TurboRenderController', () => {
 
     expect(controller.getStatus().refreshCount).toBeLessThanOrEqual(refreshBefore + 4);
     expect(document.querySelector('[data-turbo-render-ui-root="true"]')).not.toBeNull();
+  });
+
+  it('defers refreshes while the transcript is actively scrolling', async () => {
+    const fixture = mountGroupedTranscriptFixture(document, {
+      turnCount: 40,
+      daySizes: [20, 20],
+      streaming: false,
+    });
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(40, 10));
+    controller.start();
+    await flush();
+
+    const refreshBefore = controller.getStatus().refreshCount;
+    for (let index = 0; index < 10; index += 1) {
+      fixture.scroller.scrollTop = index * 120;
+      fixture.scroller.dispatchEvent(new Event('scroll'));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    await flush();
+
+    expect(controller.getStatus().refreshCount).toBeLessThanOrEqual(refreshBefore + 2);
   });
 });

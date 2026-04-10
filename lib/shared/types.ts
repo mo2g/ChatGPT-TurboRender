@@ -41,6 +41,7 @@ export interface TurnRecord {
   isStreaming: boolean;
   parked: boolean;
   node: HTMLElement | null;
+  messageId?: string | null;
 }
 
 export interface IndexRange {
@@ -54,6 +55,7 @@ export interface ParkedGroup {
   startIndex: number;
   endIndex: number;
   turnIds: string[];
+  messageIds: Array<string | null>;
   nodes: HTMLElement[];
   parent: HTMLElement;
   anchor: Comment;
@@ -94,6 +96,7 @@ export interface ManagedHistoryEntry {
   pairIndex: number;
   turnId: string | null;
   liveTurnId: string | null;
+  messageId: string | null;
   groupId: string | null;
   parts: string[];
   text: string;

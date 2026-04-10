@@ -57,6 +57,7 @@ export function buildExtensionLoadArgs(extensionPath) {
 
 export function buildChromeArgs({ debugPort, userDataDir, extensionPath, targetUrl }) {
   return [
+    '--disable-crashpad-for-testing',
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${userDataDir}`,
     ...buildExtensionLoadArgs(extensionPath),
@@ -183,7 +184,7 @@ async function findFreePort() {
   });
 }
 
-export async function waitForRemoteDebugEndpoint(port, timeoutMs = 30_000) {
+export async function waitForRemoteDebugEndpoint(port, timeoutMs = 60_000) {
   const startedAt = Date.now();
   const statusUrl = `http://127.0.0.1:${port}/json/version`;
 
@@ -218,6 +219,7 @@ export async function spawnLaunchableChromium({
   const port = debugPort ?? (Number.isFinite(envDebugPort) ? envDebugPort : 9222);
   const profileDir =
     userDataDir ?? path.join(repoRoot, '.wxt', 'mcp-chrome-profile', `${browserKind}-${port}`);
+  fs.rmSync(profileDir, { recursive: true, force: true });
   fs.mkdirSync(profileDir, { recursive: true });
 
   const launchEnv = {
@@ -243,7 +245,15 @@ export async function spawnLaunchableChromium({
   }
 
   if (waitForReady) {
-    await waitForRemoteDebugEndpoint(port);
+    try {
+      await waitForRemoteDebugEndpoint(port);
+    } catch (error) {
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill('SIGTERM');
+      }
+      await fs.promises.rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   return {

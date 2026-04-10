@@ -85,8 +85,52 @@ function createHostSnapshotHtml(node: HTMLElement | null): string | null {
   clone.querySelectorAll<HTMLElement>('[id]').forEach((element) => element.removeAttribute('id'));
   clone.querySelectorAll<HTMLElement>('[tabindex]').forEach((element) => element.removeAttribute('tabindex'));
 
+  const messageId = clone.getAttribute('data-message-id')?.trim() ?? '';
   const html = clone.innerHTML.trim();
+  if (messageId.length > 0) {
+    return html.length > 0 ? `<!--data-message-id:${messageId}-->${html}` : `<!--data-message-id:${messageId}-->`;
+  }
   return html.length > 0 ? html : null;
+}
+
+export function extractMessageIdFromHtml(html: string | null | undefined): string | null {
+  if (html == null || html.length === 0) {
+    return null;
+  }
+
+  const attributeMatch = html.match(/\bdata-message-id=(["'])(.*?)\1/i);
+  if (attributeMatch?.[2] != null) {
+    const messageId = attributeMatch[2].trim();
+    if (messageId.length > 0) {
+      return messageId;
+    }
+  }
+
+  const commentMatch = html.match(/<!--\s*data-message-id\s*:\s*([^>]+?)\s*-->/i);
+  const messageId = commentMatch?.[1]?.trim() ?? null;
+  return messageId != null && messageId.length > 0 ? messageId : null;
+}
+
+export function isSyntheticMessageId(messageId: string | null | undefined): boolean {
+  if (messageId == null) {
+    return false;
+  }
+
+  const normalized = messageId.trim();
+  return normalized.startsWith('turn-chat:') || normalized.startsWith('turn-');
+}
+
+export function resolvePreferredMessageId(...candidates: Array<string | null | undefined>): string | null {
+  const normalizedCandidates = candidates
+    .map((candidate) => candidate?.trim() ?? '')
+    .filter((candidate) => candidate.length > 0);
+
+  if (normalizedCandidates.length === 0) {
+    return null;
+  }
+
+  const preferred = normalizedCandidates.find((candidate) => !isSyntheticMessageId(candidate));
+  return preferred ?? normalizedCandidates[0] ?? null;
 }
 
 function countBatchMatches(batch: InteractionBatch<ManagedHistoryEntry>, query: string): number {
@@ -171,6 +215,7 @@ function createEntry(input: {
   hiddenFromConversation?: boolean;
   turnId?: string | null;
   liveTurnId?: string | null;
+  messageId?: string | null;
   source?: ManagedHistoryEntry['source'];
 }): ManagedHistoryEntry {
   const parts = input.parts.map((part) => part.trim()).filter((part) => part.length > 0);
@@ -182,6 +227,12 @@ function createEntry(input: {
     pairIndex: input.pairIndex ?? 0,
     turnId: input.turnId ?? null,
     liveTurnId: input.liveTurnId ?? null,
+    messageId: resolvePreferredMessageId(
+      input.messageId,
+      extractMessageIdFromHtml(input.snapshotHtml),
+      input.turnId,
+      input.liveTurnId,
+    ),
     groupId: null,
     parts,
     text: buildText(parts, input.structuredDetails ?? null, input.contentType ?? null, input.hiddenFromConversation ?? false),
@@ -219,6 +270,7 @@ export class ManagedHistoryStore {
         role: turn.role,
         turnIndex: index,
         turnId: turn.id,
+        messageId: turn.id,
         parts: [...turn.parts],
         renderKind: turn.renderKind,
         contentType: turn.contentType,
@@ -265,6 +317,13 @@ export class ManagedHistoryStore {
         turnIndex: absoluteIndex,
         turnId: existing?.turnId ?? record.id,
         liveTurnId: record.id,
+        messageId: resolvePreferredMessageId(
+          extractMessageIdFromHtml(snapshotHtml),
+          record.messageId,
+          existing?.messageId,
+          existing?.turnId,
+          record.id,
+        ),
         parts: parts.length > 0 ? parts : (existing?.parts ?? []),
         renderKind: snapshotHtml != null ? 'host-snapshot' : (existing?.renderKind ?? 'markdown-text'),
         contentType: existing?.contentType ?? null,
