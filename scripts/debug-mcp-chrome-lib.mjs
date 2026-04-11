@@ -58,6 +58,7 @@ export function buildExtensionLoadArgs(extensionPath) {
 export function buildChromeArgs({ debugPort, userDataDir, extensionPath, targetUrl }) {
   return [
     '--disable-crashpad-for-testing',
+    '--disable-features=DisableLoadExtensionCommandLineSwitch',
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${userDataDir}`,
     ...buildExtensionLoadArgs(extensionPath),

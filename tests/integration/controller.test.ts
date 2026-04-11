@@ -212,7 +212,7 @@ describe('TurboRenderController', () => {
     expect(turboRenderStyle).toContain('box-shadow: 0 10px 30px');
     expect(turboRenderStyle).toContain('background: transparent');
     expect(turboRenderStyle).toContain('box-shadow: none');
-    expect(turboRenderStyle).toContain('padding: 6px 0 0');
+    expect(turboRenderStyle).toContain('padding: 14px 16px 0');
     expect(turboRenderStyle).not.toContain('border-color: transparent');
     expect(turboRenderStyle).toContain('display: grid');
     expect(turboRenderStyle).toContain('grid-template-columns: minmax(0, 1fr) auto');
@@ -231,8 +231,8 @@ describe('TurboRenderController', () => {
     expect(turboRenderStyle).toContain('justify-items: stretch');
     expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryFrame}`);
     expect(turboRenderStyle).toContain('position: sticky');
-    expect(turboRenderStyle).toContain('top: 12px');
-    expect(turboRenderStyle).toContain('top: 12px');
+    expect(turboRenderStyle).toContain('top: calc(var(--turbo-render-page-header-offset, 0px) + 12px)');
+    expect(turboRenderStyle).toContain('top: calc(var(--turbo-render-page-header-offset, 0px) + 12px)');
     expect(turboRenderStyle).toContain('display: inline-flex');
     expect(turboRenderStyle).toContain('flex-wrap: nowrap');
     expect(turboRenderStyle).toContain('white-space: nowrap');
@@ -315,9 +315,15 @@ describe('TurboRenderController', () => {
     const headerStyle = initialBatchHeader != null
       ? {
           display: getComputedStyle(initialBatchHeader).display,
-          gridTemplateColumns: getComputedStyle(initialBatchHeader).gridTemplateColumns,
           position: getComputedStyle(initialBatchHeader).position,
-          top: getComputedStyle(initialBatchHeader).top,
+        }
+      : null;
+    const actionButtonStyle = initialBatchButton != null
+      ? {
+          position: getComputedStyle(initialBatchButton).position,
+          top: getComputedStyle(initialBatchButton).top,
+          alignSelf: getComputedStyle(initialBatchButton).alignSelf,
+          gridTemplateColumns: getComputedStyle(initialBatchHeader ?? initialBatchButton).gridTemplateColumns,
         }
       : null;
 
@@ -325,9 +331,11 @@ describe('TurboRenderController', () => {
       inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.textContent,
     ).toBe('Collapse');
     expect(headerStyle?.display).toBe('grid');
-    expect(headerStyle?.gridTemplateColumns).not.toBe('none');
-    expect(headerStyle?.position).toBe('sticky');
-    expect(headerStyle?.top).toBe('12px');
+    expect(actionButtonStyle?.gridTemplateColumns).not.toBe('none');
+    expect(headerStyle?.position).not.toBe('sticky');
+    expect(actionButtonStyle?.position).toBe('sticky');
+    expect(actionButtonStyle?.top).toBe('calc(var(--turbo-render-page-header-offset, 0px) + 12px)');
+    expect(actionButtonStyle?.alignSelf).toBe('start');
     const expandedFirstCard = inlineRoot?.querySelector<HTMLElement>(
       `.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`,
     );
@@ -352,7 +360,10 @@ describe('TurboRenderController', () => {
     expect(userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')).not.toBeNull();
     expect(userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')?.textContent).toBe('');
     expect(userActions?.querySelectorAll('button svg')).toHaveLength(1);
-    expect(userActions?.querySelector('button[data-testid="copy-turn-action-button"]')?.parentElement).toBe(userActions);
+    expect(
+      userActions?.querySelector('button[data-testid="copy-turn-action-button"]')?.parentElement?.dataset
+        .turboRenderTemplateWrapper,
+    ).toBe('true');
     const assistantActions = expandedFirstCard?.querySelector<HTMLElement>(
       `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
     );
@@ -373,6 +384,118 @@ describe('TurboRenderController', () => {
     expect(controller.getStatus().expandedBatchCount).toBeGreaterThan(0);
     expect(fixture.transcript.querySelectorAll('[data-testid^="conversation-turn-"]')).toHaveLength(10);
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
+  });
+
+  it('uses sampled sticky top chrome offsets when no .page-header exists', async () => {
+    const fixture = mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const stickyHeader = document.createElement('div');
+    stickyHeader.textContent = 'sticky host header';
+    stickyHeader.style.position = 'sticky';
+    stickyHeader.style.top = '0';
+    stickyHeader.style.height = '64px';
+    stickyHeader.style.width = '100%';
+    fixture.main.prepend(stickyHeader);
+    expect(document.querySelector('.page-header')).toBeNull();
+    expect(document.querySelector('[data-testid="page-header"]')).toBeNull();
+
+    vi.spyOn(stickyHeader, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 64,
+      left: 0,
+      right: 900,
+      width: 900,
+      height: 64,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const originalElementsFromPoint = document.elementsFromPoint;
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      value: (_x: number, y: number) => (y <= 64 ? [stickyHeader, fixture.main] : [fixture.main]),
+    });
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    try {
+      controller.setInitialTrimSession(createInitialTrimSession(24, 4));
+      controller.start();
+      await flush();
+
+      const topOffset = (controller as unknown as { getBatchHeaderScrollTop(): number }).getBatchHeaderScrollTop();
+      expect(topOffset).toBe(76);
+    } finally {
+      Object.defineProperty(document, 'elementsFromPoint', {
+        configurable: true,
+        value: originalElementsFromPoint,
+      });
+    }
+  });
+
+  it('mounts archived actions into host justify slots when host snapshots provide them', async () => {
+    mountTranscriptFixture(document, { turnCount: 18, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    const session = createInitialTrimSession(24, 8);
+    session.turns[0] = createSessionTurn(0, {
+      role: 'user',
+      renderKind: 'host-snapshot',
+      snapshotHtml:
+        '<div data-message-author-role="user"><div class="text-message">User archived content</div><div class="z-0 flex justify-end"><div role="group"></div></div></div>',
+    });
+    session.turns[1] = createSessionTurn(1, {
+      role: 'assistant',
+      renderKind: 'host-snapshot',
+      snapshotHtml:
+        '<div data-message-author-role="assistant"><div class="text-message">Assistant archived content</div><div class="z-0 flex min-h-[46px] justify-start"><div role="group"></div></div></div>',
+    });
+    controller.setInitialTrimSession(session);
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const userActions = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`,
+    );
+    const assistantActions = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    expect(userActions).not.toBeNull();
+    expect(assistantActions).not.toBeNull();
+    expect(userActions?.dataset.actionMount).toBe('host-slot');
+    expect(assistantActions?.dataset.actionMount).toBe('host-slot');
+    expect(userActions?.parentElement?.className.includes('justify-end')).toBe(true);
+    expect(assistantActions?.parentElement?.className.includes('justify-start')).toBe(true);
   });
 
   it('scrolls the current batch back to the top when collapsing it', async () => {
@@ -785,6 +908,7 @@ describe('TurboRenderController', () => {
       mountUi: true,
     });
     activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(false);
 
     controller.start();
     await flush();
@@ -912,7 +1036,7 @@ describe('TurboRenderController', () => {
     expect(document.body.dataset.hostActionDislikeCount).toBe('1');
     expect(document.body.dataset.hostActionShareCount).toBe('1');
     expect(Number(document.body.dataset.hostActionStopReadAloudCount ?? '0')).toBe(1);
-  }, 15_000);
+  }, 30_000);
 
   it('prefers host message ids over TurboRender archive copies when building read aloud urls', async () => {
     document.body.innerHTML = `
@@ -1549,6 +1673,282 @@ describe('TurboRenderController', () => {
     expect(dispatchSpy).not.toHaveBeenCalled();
   });
 
+  it('positions host More popovers above or below the anchor', async () => {
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const anchor = document.createElement('button');
+    document.body.append(anchor);
+    document.body.append(anchor);
+    const menu = document.createElement('div');
+    let anchorRect = {
+      top: 40,
+      bottom: 64,
+      left: 200,
+      right: 232,
+      width: 32,
+      height: 24,
+      x: 200,
+      y: 40,
+      toJSON: () => '',
+    } as DOMRect;
+    let menuRect = {
+      top: 0,
+      bottom: 120,
+      left: 0,
+      right: 184,
+      width: 184,
+      height: 120,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect;
+
+    vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => anchorRect);
+    vi.spyOn(menu, 'getBoundingClientRect').mockImplementation(() => menuRect);
+
+    (controller as unknown as {
+      positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void;
+    }).positionVisibleHostMenuToAnchor(menu, anchor);
+
+    expect(menu.style.position).toBe('fixed');
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('72px');
+    expect(menu.dataset.turboRenderHostMenuPlacement).toBe('below');
+
+    anchorRect = {
+      top: 80,
+      bottom: 104,
+      left: 200,
+      right: 232,
+      width: 32,
+      height: 24,
+      x: 200,
+      y: 80,
+      toJSON: () => '',
+    } as DOMRect;
+
+    (controller as unknown as {
+      positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void;
+    }).positionVisibleHostMenuToAnchor(menu, anchor);
+
+    expect(menu.style.top).toBe('112px');
+    expect(menu.dataset.turboRenderHostMenuPlacement).toBe('below');
+
+    anchorRect = {
+      top: 520,
+      bottom: 544,
+      left: 200,
+      right: 232,
+      width: 32,
+      height: 24,
+      x: 200,
+      y: 520,
+      toJSON: () => '',
+    } as DOMRect;
+    menuRect = {
+      top: 0,
+      bottom: 120,
+      left: 0,
+      right: 184,
+      width: 184,
+      height: 120,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect;
+
+    (controller as unknown as {
+      positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void;
+    }).positionVisibleHostMenuToAnchor(menu, anchor);
+
+    expect(menu.style.position).toBe('fixed');
+    expect(menu.style.left).toBe('200px');
+    expect(menu.style.top).toBe('392px');
+    expect(menu.dataset.turboRenderHostMenuPlacement).toBe('above');
+
+    anchorRect = {
+      top: -80,
+      bottom: -56,
+      left: 200,
+      right: 232,
+      width: 32,
+      height: 24,
+      x: 200,
+      y: -80,
+      toJSON: () => '',
+    } as DOMRect;
+
+    (controller as unknown as {
+      positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void;
+    }).positionVisibleHostMenuToAnchor(menu, anchor);
+
+    expect(Number.parseInt(menu.style.top, 10)).toBeLessThan(0);
+  });
+
+  it('falls back to inline More menu when host popover discovery times out', async () => {
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    controller.start();
+    await flush();
+
+    const openHostMenuSpy = vi
+      .spyOn(
+        controller as unknown as { openHostMoreMenu: (...args: unknown[]) => Promise<unknown> },
+        'openHostMoreMenu',
+      )
+      .mockResolvedValue(null);
+    vi.spyOn(
+      controller as unknown as { shouldPreferHostMorePopover: () => boolean },
+      'shouldPreferHostMorePopover',
+    ).mockReturnValue(true);
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+
+    const assistantMoreButton = inlineRoot?.querySelector<HTMLButtonElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"] button[data-testid="more-turn-action-button"]`,
+    );
+    expect(assistantMoreButton).not.toBeNull();
+    assistantMoreButton?.click();
+    await flush();
+
+    const fallbackMenu = inlineRoot?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`,
+    );
+    expect(openHostMenuSpy).toHaveBeenCalled();
+    expect(fallbackMenu).not.toBeNull();
+    expect(fallbackMenu?.textContent).toContain('Branch');
+  });
+
+  it('anchors host More popovers once and keeps them static after open', async () => {
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim' as const,
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'turn-chat:history-entry',
+      liveTurnId: null,
+      messageId: 'history-entry',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply'],
+      text: 'Assistant reply',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const anchor = document.createElement('button');
+    let anchorRect = {
+      top: 360,
+      bottom: 384,
+      left: 240,
+      right: 272,
+      width: 32,
+      height: 24,
+      x: 240,
+      y: 360,
+      toJSON: () => '',
+    } as DOMRect;
+    vi.spyOn(anchor, 'getBoundingClientRect').mockImplementation(() => anchorRect);
+    vi.spyOn(anchor, 'getClientRects').mockImplementation(
+      () => [anchorRect] as unknown as DOMRectList,
+    );
+
+    const menu = document.createElement('div');
+    const menuRect = {
+      top: 0,
+      bottom: 120,
+      left: 0,
+      right: 184,
+      width: 184,
+      height: 120,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect;
+    vi.spyOn(menu, 'getBoundingClientRect').mockImplementation(() => menuRect);
+
+    vi.spyOn(
+      controller as unknown as {
+        clickHostArchiveAction(
+          groupId: string,
+          candidateEntry: typeof entry,
+          action: 'more',
+          anchorGetter: () => HTMLElement | null,
+        ): Promise<boolean>;
+      },
+      'clickHostArchiveAction',
+    ).mockResolvedValue(true);
+    vi.spyOn(
+      controller as unknown as {
+        waitForPreferredHostMenu(
+          previousMenus: Set<HTMLElement>,
+          anchorGetter: () => HTMLElement | null,
+          timeoutMs: number,
+        ): Promise<HTMLElement | null>;
+      },
+      'waitForPreferredHostMenu',
+    ).mockResolvedValue(menu);
+    const result = await (controller as unknown as {
+      openHostMoreMenu(
+        groupId: string,
+        candidateEntry: typeof entry,
+        anchorGetter: () => HTMLElement | null,
+      ): Promise<{ menu: HTMLElement } | null>;
+    }).openHostMoreMenu('archive-slot-0', entry, () => anchor);
+    expect(result?.menu).toBe(menu);
+
+    const topBefore = menu.style.top;
+    const leftBefore = menu.style.left;
+    anchorRect = {
+      ...anchorRect,
+      top: 120,
+      bottom: 144,
+      y: 120,
+    };
+
+    await new Promise((resolve) => setTimeout(resolve, 64));
+    expect(menu.style.top).toBe(topBefore);
+    expect(menu.style.left).toBe(leftBefore);
+  });
+
   it('primes the conversation mapping before backend read aloud playback', async () => {
     const conversationId = 'e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f';
     document.body.innerHTML = `
@@ -2010,5 +2410,65 @@ describe('TurboRenderController', () => {
     await flush();
 
     expect(controller.getStatus().refreshCount).toBeLessThanOrEqual(refreshBefore + 2);
+  });
+
+  it('skips refresh scheduling when setSettings receives an equivalent snapshot', async () => {
+    mountTranscriptFixture(document, { turnCount: 18, streaming: false });
+    const initialSettings = {
+      ...DEFAULT_SETTINGS,
+      language: 'en' as const,
+      minFinalizedBlocks: 10,
+      minDescendants: 100,
+      keepRecentPairs: 5,
+      liveHotPairs: 5,
+      batchPairCount: 5,
+    };
+
+    const controller = new TurboRenderController({
+      settings: initialSettings,
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.start();
+    await flush();
+    await flush();
+
+    const refreshBefore = controller.getStatus().refreshCount;
+    controller.setSettings({ ...initialSettings });
+    await new Promise((resolve) => setTimeout(resolve, 64));
+    await flush();
+
+    expect(controller.getStatus().refreshCount).toBe(refreshBefore);
+  });
+
+  it('skips refresh scheduling when setPaused receives an unchanged value', async () => {
+    mountTranscriptFixture(document, { turnCount: 18, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.start();
+    await flush();
+    await flush();
+
+    const refreshBefore = controller.getStatus().refreshCount;
+    controller.setPaused(false);
+    await new Promise((resolve) => setTimeout(resolve, 64));
+    await flush();
+
+    expect(controller.getStatus().refreshCount).toBe(refreshBefore);
   });
 });

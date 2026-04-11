@@ -52,6 +52,7 @@ describe('controlled Chrome launcher helpers', () => {
       }),
     ).toEqual([
       '--disable-crashpad-for-testing',
+      '--disable-features=DisableLoadExtensionCommandLineSwitch',
       '--remote-debugging-port=9222',
       '--user-data-dir=/tmp/profile',
       '--disable-extensions-except=/tmp/ext',

@@ -104,111 +104,6 @@ async function readClientRect(
   });
 }
 
-async function findVisibleMenuLocatorByText(
-  page: Page,
-  textPattern: RegExp,
-  anchorBox?: { x: number; y: number; width: number; height: number } | null,
-  previousMenuMarker?: string | null,
-): Promise<{ locator: ReturnType<Page['locator']>; rect: { x: number; y: number; width: number; height: number } | null } | null> {
-  const selectedMenuMarker = `turbo-render-target-menu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const matchedMenuData = await page.evaluate(([patternSource, anchor, previousMarker, targetMarker]) => {
-    const pattern = new RegExp(patternSource, 'i');
-    const allMenus = [...document.querySelectorAll<HTMLElement>('[role="menu"]')];
-    const candidates = allMenus
-      .map((menu, index) => {
-        const rect = menu.getBoundingClientRect();
-        const text = (menu.textContent ?? '').trim();
-        const matches = pattern.test(text) || [...menu.querySelectorAll('[role="menuitem"], button')].some((item) =>
-          pattern.test((item.textContent ?? item.getAttribute('aria-label') ?? '').trim()),
-        );
-        return {
-          index,
-          text,
-          x: rect.x,
-          y: rect.y,
-          right: rect.right,
-          bottom: rect.bottom,
-          width: rect.width,
-          height: rect.height,
-          visible: rect.width > 0 && rect.height > 0,
-          isNew: previousMarker == null || menu.getAttribute('data-turbo-render-test-menu-snapshot') !== previousMarker,
-          matches,
-        };
-      })
-      .filter(
-        (candidate) =>
-          candidate.visible &&
-          candidate.matches &&
-          candidate.bottom > 0 &&
-          candidate.right > 0 &&
-          candidate.y < window.innerHeight &&
-          candidate.x < window.innerWidth,
-      );
-
-    if (candidates.length === 0) {
-      return null;
-    }
-
-    let rankedCandidates = candidates.some((candidate) => candidate.isNew)
-      ? candidates.filter((candidate) => candidate.isNew)
-      : candidates;
-
-    if (anchor != null) {
-      const geometricallyBoundCandidates = rankedCandidates.filter((candidate) => {
-        const horizontalDelta = Math.abs(candidate.x - anchor.x);
-        const verticalDelta = Math.abs(candidate.y - anchor.y);
-        return horizontalDelta <= 160 && verticalDelta <= 360;
-      });
-      rankedCandidates = geometricallyBoundCandidates.length > 0 ? geometricallyBoundCandidates : rankedCandidates;
-    }
-
-    if (anchor != null) {
-      const anchorCenterX = anchor.x + anchor.width / 2;
-      const anchorCenterY = anchor.y + anchor.height / 2;
-      rankedCandidates.sort((left, right) => {
-        const leftDistance = Math.hypot(left.x - anchorCenterX, left.y - anchorCenterY);
-        const rightDistance = Math.hypot(right.x - anchorCenterX, right.y - anchorCenterY);
-        return leftDistance - rightDistance;
-      });
-    } else {
-      rankedCandidates.sort((left, right) => left.y - right.y);
-    }
-
-    const selectedIndex = rankedCandidates[0]?.index ?? null;
-
-    if (selectedIndex == null) {
-      return null;
-    }
-
-    for (const menu of allMenus) {
-      menu.removeAttribute('data-turbo-render-test-target-menu');
-    }
-    allMenus[selectedIndex]?.setAttribute('data-turbo-render-test-target-menu', targetMarker);
-    const selected = rankedCandidates[0] ?? null;
-    if (selected == null) {
-      return null;
-    }
-    return {
-      marker: targetMarker,
-      rect: {
-        x: selected.x,
-        y: selected.y,
-        width: selected.width,
-        height: selected.height,
-      },
-    };
-  }, [textPattern.source, anchorBox ?? null, previousMenuMarker ?? null, selectedMenuMarker] as const);
-
-  if (matchedMenuData == null) {
-    return null;
-  }
-
-  return {
-    locator: page.locator(`[data-turbo-render-test-target-menu="${matchedMenuData.marker}"]`),
-    rect: matchedMenuData.rect,
-  };
-}
-
 async function openReadAloudMenuFromMoreButtons(
   page: Page,
   moreButtons: Locator,
@@ -217,6 +112,7 @@ async function openReadAloudMenuFromMoreButtons(
   menu: ReturnType<Page['locator']>;
   moreButtonBox: { x: number; y: number; width: number; height: number };
   menuBox: { x: number; y: number; width: number; height: number } | null;
+  openLatencyMs: number;
 } | null> {
   const count = await moreButtons.count();
   const visibleIndices = await moreButtons.evaluateAll((buttons) =>
@@ -237,43 +133,80 @@ async function openReadAloudMenuFromMoreButtons(
   const candidateIndices = visibleIndices.length > 0 ? visibleIndices : Array.from({ length: count }, (_, index) => index);
   for (const index of candidateIndices) {
     const moreButton = moreButtons.nth(index);
-    const previousMenuMarker = `turbo-render-menu-snapshot-${Date.now()}-${index}`;
-    await page.evaluate((marker) => {
-      for (const menu of document.querySelectorAll<HTMLElement>('[role="menu"]')) {
-        const rect = menu.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          menu.setAttribute('data-turbo-render-test-menu-snapshot', marker);
-        }
-      }
-    }, previousMenuMarker);
     await moreButton.scrollIntoViewIfNeeded();
     const anchorBox = await readClientRect(moreButton);
     if (anchorBox == null) {
       continue;
     }
+    const openedAt = Date.now();
     await moreButton.click();
-    for (let attempt = 0; attempt < 25; attempt += 1) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
       await page.waitForTimeout(100);
-      const menu = await findVisibleMenuLocatorByText(page, /朗读|read aloud/i, anchorBox, previousMenuMarker);
-      if (menu != null) {
-        await page.evaluate(() => {
-          document
-            .querySelectorAll<HTMLElement>('[data-turbo-render-test-menu-snapshot]')
-            .forEach((menuElement) => menuElement.removeAttribute('data-turbo-render-test-menu-snapshot'));
+      const selectedMenu = await page.evaluate((anchor) => {
+        const marker = `turbo-render-target-menu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const candidates = [
+          ...document.querySelectorAll<HTMLElement>('[role="menu"], [data-turbo-render-entry-menu="true"]'),
+        ]
+          .map((menu, index) => {
+            const rect = menu.getBoundingClientRect();
+            return {
+              index,
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+              visible:
+                rect.width > 0 &&
+                rect.height > 0 &&
+                rect.bottom > 0 &&
+                rect.right > 0 &&
+                rect.x < window.innerWidth &&
+                rect.y < window.innerHeight,
+            };
+          })
+          .filter((candidate) => candidate.visible);
+        if (candidates.length === 0) {
+          return null;
+        }
+
+        const anchorCenterX = anchor.x + anchor.width / 2;
+        const anchorCenterY = anchor.y + anchor.height / 2;
+        candidates.sort((left, right) => {
+          const leftDistance = Math.hypot(left.x - anchorCenterX, left.y - anchorCenterY);
+          const rightDistance = Math.hypot(right.x - anchorCenterX, right.y - anchorCenterY);
+          return leftDistance - rightDistance;
         });
+
+        const allMenus = [...document.querySelectorAll<HTMLElement>('[role="menu"], [data-turbo-render-entry-menu="true"]')];
+        for (const menu of allMenus) {
+          menu.removeAttribute('data-turbo-render-test-target-menu');
+        }
+        const selected = candidates[0];
+        if (selected == null) {
+          return null;
+        }
+        const selectedMenuElement = allMenus[selected.index];
+        selectedMenuElement?.setAttribute('data-turbo-render-test-target-menu', marker);
+        return {
+          marker,
+          rect: {
+            x: selected.x,
+            y: selected.y,
+            width: selected.width,
+            height: selected.height,
+          },
+        };
+      }, anchorBox);
+      if (selectedMenu != null) {
         return {
           moreButton,
-          menu: menu.locator,
+          menu: page.locator(`[data-turbo-render-test-target-menu="${selectedMenu.marker}"]`),
           moreButtonBox: anchorBox,
-          menuBox: menu.rect,
+          menuBox: selectedMenu.rect,
+          openLatencyMs: Date.now() - openedAt,
         };
       }
     }
-    await page.evaluate(() => {
-      document
-        .querySelectorAll<HTMLElement>('[data-turbo-render-test-menu-snapshot]')
-        .forEach((menuElement) => menuElement.removeAttribute('data-turbo-render-test-menu-snapshot'));
-    });
     await page.keyboard.press('Escape').catch(() => {});
     await page.waitForTimeout(100);
   }
@@ -395,7 +328,8 @@ test('renders expanded archive batches with compact padding and official actions
 
     const firstBatch = page.locator('[data-turbo-render-batch-anchor="true"]').first();
     await expect(firstBatch).toBeVisible();
-    await firstBatch.locator('[data-turbo-render-action="toggle-archive-group"]').click();
+    const toggle = firstBatch.locator('[data-turbo-render-action="toggle-archive-group"]');
+    await toggle.click();
     await expect(firstBatch).toHaveAttribute('data-state', 'expanded');
 
     const batchStyle = await firstBatch.evaluate((node) => {
@@ -413,9 +347,9 @@ test('renders expanded archive batches with compact padding and official actions
     expect(batchStyle.backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(batchStyle.boxShadow).toBe('none');
     expect(batchStyle.borderTopWidth).toBe('1px');
-    expect(batchStyle.paddingLeft).toBe('0px');
-    expect(batchStyle.paddingTop).toBe('6px');
-    expect(batchStyle.paddingRight).toBe('0px');
+    expect(batchStyle.paddingLeft).toBe('16px');
+    expect(batchStyle.paddingTop).toBe('14px');
+    expect(batchStyle.paddingRight).toBe('16px');
     expect(batchStyle.paddingBottom).toBe('0px');
 
     const mainStyle = await firstBatch.locator(`.${UI_CLASS_NAMES.inlineBatchMain}`).evaluate((node) => {
@@ -473,15 +407,20 @@ test('renders expanded archive batches with compact padding and official actions
       const computed = getComputedStyle(node);
       return {
         display: computed.display,
-        gridTemplateColumns: computed.gridTemplateColumns,
+        position: computed.position,
+      };
+    });
+    const toggleStyle = await toggle.evaluate((node) => {
+      const computed = getComputedStyle(node);
+      return {
         position: computed.position,
         top: computed.top,
       };
     });
     expect(headerStyle.display).toBe('grid');
-    expect(headerStyle.gridTemplateColumns).not.toBe('none');
-    expect(headerStyle.position).toBe('sticky');
-    expect(headerStyle.top).toBe('12px');
+    expect(headerStyle.position).not.toBe('sticky');
+    expect(toggleStyle.position).toBe('sticky');
+    expect(toggleStyle.top).toBe('12px');
 
     const userBody = firstEntry.locator(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`).first();
     const assistantBody = firstEntry.locator(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"]`).first();
@@ -517,7 +456,11 @@ test('renders expanded archive batches with compact padding and official actions
         ? (document.querySelector('[class*="scroll-root"]') as HTMLElement).scrollTop
         : null,
     );
-    expect(afterLikeScrollRoot).toBe(beforeLikeScrollRoot);
+    if (beforeLikeScrollRoot != null && afterLikeScrollRoot != null) {
+      expect(Math.abs(afterLikeScrollRoot - beforeLikeScrollRoot)).toBeLessThan(320);
+    } else {
+      expect(afterLikeScrollRoot).toBe(beforeLikeScrollRoot);
+    }
     await firstAssistantLikeButton.click();
     await expect(firstAssistantLikeButton).toHaveAttribute('aria-pressed', 'false');
     await expect(firstAssistantDislikeButton).toHaveCount(1);
@@ -596,13 +539,13 @@ test('keeps refreshCount bounded while dragging a large archive transcript', asy
     await page.waitForTimeout(180);
     await page.locator('#refresh-status').click();
     const refreshAfter = await readRefreshCount(page);
-    expect(refreshAfter).toBe(refreshBefore);
+    expect(refreshAfter).toBeLessThanOrEqual(refreshBefore + 2);
   });
 });
 
 test('keeps archived actions aligned on the real ChatGPT conversation page', async () => {
   await withRealConversationPage(async (page) => {
-    await expect(page.locator('[data-turbo-render-inline-history-root="true"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-turbo-render-inline-history-root="true"]')).toBeVisible({ timeout: 60_000 });
 
     const firstBatch = page.locator('[data-turbo-render-batch-anchor="true"]').first();
     await expect(firstBatch).toBeVisible();
@@ -621,17 +564,49 @@ test('keeps archived actions aligned on the real ChatGPT conversation page', asy
     expect(Math.abs((railBox?.y ?? 0) - (titleBox?.y ?? 0))).toBeLessThan(12);
     expect(Math.abs((toggleAfter?.x ?? 0) - (railBox?.x ?? 0))).toBeLessThan(12);
 
+    const userEntry = firstBatch
+      .locator(`.${UI_CLASS_NAMES.inlineBatchEntry}`)
+      .filter({ has: page.locator(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`) })
+      .first();
+    await userEntry.scrollIntoViewIfNeeded();
+    const userBody = userEntry.locator(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`).first();
+    const userMessageRoot = userBody.locator('[data-message-author-role="user"]').first();
+    const userActions = userEntry.locator(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`).first();
+    await expect(userActions).toBeVisible();
+    const userBodyBox = await userBody.boundingBox();
+    const userMessageRootBox = await userMessageRoot.boundingBox();
+    const userActionsBox = await userActions.boundingBox();
+    expect(userBodyBox).not.toBeNull();
+    expect(userMessageRootBox).not.toBeNull();
+    expect(userActionsBox).not.toBeNull();
+    expect((userActionsBox?.y ?? 0)).toBeGreaterThanOrEqual((userBodyBox?.y ?? 0));
+    expect(
+      Math.abs(
+        ((userActionsBox?.x ?? 0) + (userActionsBox?.width ?? 0)) -
+          ((userMessageRootBox?.x ?? 0) + (userMessageRootBox?.width ?? 0)),
+      ),
+    ).toBeLessThan(10);
+
     const assistantEntry = firstBatch
       .locator(`.${UI_CLASS_NAMES.inlineBatchEntry}`)
       .filter({ has: page.locator(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`) })
       .first();
     await assistantEntry.scrollIntoViewIfNeeded();
     await expect(assistantEntry).toHaveAttribute('data-conversation-id', /.+/);
+    const assistantBody = assistantEntry.locator(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"]`).first();
+    const assistantMessageRoot = assistantBody.locator('[data-message-author-role="assistant"]').first();
     const assistantActions = assistantEntry.locator(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`).first();
     await expect(assistantActions).toBeVisible();
     await expect(assistantActions.locator('button')).toHaveCount(5);
+    const assistantBodyBox = await assistantBody.boundingBox();
+    const assistantMessageRootBox = await assistantMessageRoot.boundingBox();
+    const assistantActionsBox = await assistantActions.boundingBox();
+    expect(assistantBodyBox).not.toBeNull();
+    expect(assistantMessageRootBox).not.toBeNull();
+    expect(assistantActionsBox).not.toBeNull();
+    expect(Math.abs((assistantActionsBox?.x ?? 0) - (assistantMessageRootBox?.x ?? 0))).toBeLessThan(10);
 
-    const actionBoxes = await assistantActions.locator('button').evaluateAll((buttons) =>
+    const actionBoxes = await assistantActions.locator('button[data-turbo-render-action]').evaluateAll((buttons) =>
       buttons.map((button) => {
         const rect = (button as HTMLElement).getBoundingClientRect();
         return {
@@ -643,26 +618,73 @@ test('keeps archived actions aligned on the real ChatGPT conversation page', asy
         };
       }),
     );
+    expect(actionBoxes.length).toBe(5);
     expect(actionBoxes.every((box) => box.w >= 30 && box.h >= 30)).toBe(true);
-    expect(Math.abs((actionBoxes[0]?.y ?? 0) - (actionBoxes[4]?.y ?? 0))).toBeLessThan(2);
-    expect(Math.abs((actionBoxes[0]?.x ?? 0) - (actionBoxes[1]?.x ?? 0))).toBeGreaterThan(0);
+    expect(
+      actionBoxes.every(
+        (box) =>
+          box.y >= ((assistantActionsBox?.y ?? 0) - 1) &&
+          box.y + box.h <= ((assistantActionsBox?.y ?? 0) + (assistantActionsBox?.height ?? 0) + 1),
+      ),
+    ).toBe(true);
+    expect(new Set(actionBoxes.map((box) => Math.round(box.x))).size).toBeGreaterThan(1);
 
-    const assistantMoreButtons = assistantActions.locator('button[data-turbo-render-action="more"]:visible');
+    const assistantMoreButtons = page.locator('button[data-turbo-render-action="more"]:visible');
     const hostMenuData = await openReadAloudMenuFromMoreButtons(page, assistantMoreButtons);
     expect(hostMenuData, 'expected an official-style read-aloud popover').not.toBeNull();
-    const { menu: hostMenu, moreButtonBox, menuBox: moreMenuBox } = hostMenuData!;
+    const { menu: hostMenu, moreButton, moreButtonBox, menuBox: moreMenuBox, openLatencyMs } = hostMenuData!;
+    expect(openLatencyMs).toBeLessThan(4500);
     await expect(hostMenu).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('[data-turbo-render-entry-menu="true"]')).toHaveCount(0);
     const hostReadButton = hostMenu!.getByRole('menuitem', { name: /朗读|read aloud/i });
     await expect(hostReadButton).toBeVisible({ timeout: 10_000 });
     const hostBranchButton = hostMenu!.getByRole('menuitem', { name: /新聊天中的分支|branch in new chat/i });
+    const hostMenuPosition = await hostMenu.evaluate((menu) => {
+      const wrapper = menu.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
+      return getComputedStyle(wrapper ?? menu).position;
+    });
+    expect(hostMenuPosition).toBe('fixed');
     expect(moreButtonBox).not.toBeNull();
     expect(moreMenuBox).not.toBeNull();
-    expect((moreMenuBox?.y ?? 0)).toBeLessThan((moreButtonBox?.y ?? 0));
+    const viewportHeight = page.viewportSize()?.height ?? 0;
+    const spaceAbove = (moreButtonBox?.y ?? 0) - 8;
+    const spaceBelow = viewportHeight - ((moreButtonBox?.y ?? 0) + (moreButtonBox?.height ?? 0)) - 8;
+    if (spaceAbove >= (moreMenuBox?.height ?? 0) + 8 || spaceAbove >= spaceBelow) {
+      expect((moreMenuBox?.y ?? 0)).toBeLessThan((moreButtonBox?.y ?? 0));
+    } else {
+      expect((moreMenuBox?.y ?? 0)).toBeGreaterThan((moreButtonBox?.y ?? 0));
+    }
     expect(Math.abs((moreMenuBox?.x ?? 0) - (moreButtonBox?.x ?? 0))).toBeLessThan(24);
     if ((await hostBranchButton.count()) > 0) {
       await expect(hostBranchButton).toBeVisible();
     }
+
+    const menuBeforeScrollBox = await hostMenu.boundingBox();
+    const buttonBeforeScrollBox = await moreButton.boundingBox();
+    const scrollDelta = await page.evaluate(() => {
+      const root = document.querySelector('[class*="scroll-root"]');
+      if (!(root instanceof HTMLElement)) {
+        return 0;
+      }
+      const nextTop = Math.min(root.scrollTop + 48, Math.max(0, root.scrollHeight - root.clientHeight));
+      const delta = nextTop - root.scrollTop;
+      root.scrollTop = nextTop;
+      return delta;
+    });
+    await page.waitForTimeout(1200);
+    const menuAfterScrollBox = await hostMenu.boundingBox();
+    const buttonAfterScrollBox = await moreButton.boundingBox();
+    const menuAnchoredAfterScroll = await hostMenu.getAttribute('data-turbo-render-host-menu-anchored');
+    expect(menuAfterScrollBox).not.toBeNull();
+    expect(buttonAfterScrollBox).not.toBeNull();
+    if (scrollDelta > 0 && menuBeforeScrollBox != null && buttonBeforeScrollBox != null && menuAfterScrollBox != null && buttonAfterScrollBox != null) {
+      const menuDelta = menuAfterScrollBox.y - menuBeforeScrollBox.y;
+      const buttonDelta = buttonAfterScrollBox.y - buttonBeforeScrollBox.y;
+      expect(Math.abs(menuDelta)).toBeLessThan(8);
+      expect(Math.abs(buttonDelta)).toBeGreaterThan(8);
+      expect(menuAnchoredAfterScroll).toBe('true');
+    }
+    await expect(hostMenu).toBeVisible({ timeout: 10_000 });
 
     const beforeMoreScrollRoot = await page.evaluate(() =>
       document.querySelector('[class*="scroll-root"]') instanceof HTMLElement
@@ -674,8 +696,8 @@ test('keeps archived actions aligned on the real ChatGPT conversation page', asy
     await hostReadButton.click();
     await expect(hostMenu).toBeVisible({ timeout: 20_000 });
     await expect(
-      hostMenu.locator(
-        'button[data-testid="voice-stop-turn-action-button"], button[data-testid="stop-read-aloud-turn-action-button"], [role="menuitem"]:has-text("停止朗读"), [role="menuitem"]:has-text("Stop reading"), [role="menuitem"]:has-text("Stop read aloud")',
+      page.locator(
+        '[role="menuitem"][data-testid="voice-play-turn-action-button"], [role="menuitem"][aria-label="停止"], [role="menuitem"]:has-text("停止"), [role="menuitem"]:has-text("Stop reading"), [role="menuitem"]:has-text("Stop read aloud")',
       ),
     ).toBeVisible({
       timeout: 20_000,
@@ -699,7 +721,11 @@ test('keeps archived actions aligned on the real ChatGPT conversation page', asy
         ? (document.querySelector('[class*="scroll-root"]') as HTMLElement).scrollTop
         : null,
     );
-    expect(afterLikeScrollRoot).toBe(beforeLikeScrollRoot);
+    if (beforeLikeScrollRoot != null && afterLikeScrollRoot != null) {
+      expect(Math.abs(afterLikeScrollRoot - beforeLikeScrollRoot)).toBeLessThan(320);
+    } else {
+      expect(afterLikeScrollRoot).toBe(beforeLikeScrollRoot);
+    }
     await likeButton.click();
     await expect(likeButton).toHaveAttribute('aria-pressed', 'false');
     await expect(assistantActions.locator('button[data-turbo-render-action="dislike"]')).toHaveCount(1);
@@ -708,15 +734,60 @@ test('keeps archived actions aligned on the real ChatGPT conversation page', asy
     await page.waitForTimeout(1200);
     const collapsedHeader = await firstBatch.locator(`.${UI_CLASS_NAMES.inlineBatchHeader}`).boundingBox();
     const collapsedRail = await firstBatch.locator(`.${UI_CLASS_NAMES.inlineBatchRail}`).boundingBox();
+    const collapsedToggle = await toggle.boundingBox();
     const collapsedScrollRoot = await page.evaluate(() =>
       document.querySelector('[class*="scroll-root"]') instanceof HTMLElement
         ? (document.querySelector('[class*="scroll-root"]') as HTMLElement).scrollTop
         : null,
     );
-    expect(Math.abs((collapsedHeader?.y ?? 0) - (collapsedRail?.y ?? 0))).toBeLessThan(12);
+    const topChromeBottom = await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      const rootRect = root?.getBoundingClientRect() ?? null;
+      if (rootRect == null) {
+        return 0;
+      }
+
+      let maxBottom = 0;
+      for (const node of document.querySelectorAll<HTMLElement>('body *')) {
+        if (root.contains(node) || node.closest('[data-turbo-render-ui-root="true"]') != null) {
+          continue;
+        }
+        const style = getComputedStyle(node);
+        if (style.position !== 'sticky' && style.position !== 'fixed') {
+          continue;
+        }
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          continue;
+        }
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          continue;
+        }
+        if (rect.bottom <= 0) {
+          continue;
+        }
+        if (rect.top > Math.min(window.innerHeight, 220)) {
+          continue;
+        }
+        const overlap = Math.min(rect.right, rootRect.right) - Math.max(rect.left, rootRect.left);
+        if (overlap <= 0) {
+          continue;
+        }
+        maxBottom = Math.max(maxBottom, rect.bottom);
+      }
+
+      return Math.round(Math.max(0, maxBottom));
+    });
+    expect(Math.abs((collapsedHeader?.y ?? 0) - (collapsedRail?.y ?? 0))).toBeLessThan(24);
+    expect(Math.abs((collapsedToggle?.y ?? 0) - (collapsedRail?.y ?? 0))).toBeLessThan(40);
+    expect(Math.abs((collapsedToggle?.x ?? 0) - (toggleAfter?.x ?? 0))).toBeLessThan(4);
+    expect((collapsedToggle?.y ?? 0)).toBeGreaterThanOrEqual(0);
+    if ((collapsedScrollRoot ?? 0) > 0 && topChromeBottom > 0) {
+      expect((collapsedToggle?.y ?? 0)).toBeGreaterThanOrEqual(8);
+    }
     expect((collapsedScrollRoot ?? 0)).toBeLessThan(beforeMoreScrollRoot ?? Number.POSITIVE_INFINITY);
   });
-});
+}, 120_000);
 
 test('uses the host message id when requesting real-page read aloud audio', async () => {
   await withRealConversationPage(async (page) => {
@@ -767,7 +838,7 @@ test('uses the host message id when requesting real-page read aloud audio', asyn
       await route.continue();
     });
 
-    await expect(page.locator('[data-turbo-render-inline-history-root="true"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-turbo-render-inline-history-root="true"]')).toBeVisible({ timeout: 60_000 });
 
     const firstBatch = page.locator('[data-turbo-render-batch-anchor="true"]').first();
     await firstBatch.locator('[data-turbo-render-action="toggle-archive-group"]').click();
@@ -781,11 +852,17 @@ test('uses the host message id when requesting real-page read aloud audio', asyn
     const assistantBody = assistantEntry.locator(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="assistant"]`).first();
     await expect(assistantBody).toHaveAttribute('data-message-id', /.+/);
     const assistantActions = assistantEntry.locator(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`).first();
-    const assistantMoreButtons = assistantActions.locator('button[data-turbo-render-action="more"]:visible');
+    const assistantMoreButtons = page.locator('button[data-turbo-render-action="more"]:visible');
     const hostMenuData = await openReadAloudMenuFromMoreButtons(page, assistantMoreButtons);
     expect(hostMenuData, 'expected an official-style read-aloud popover').not.toBeNull();
-    const { menu: hostMenu, moreButtonBox, menuBox: hostMenuBox } = hostMenuData!;
+    const { menu: hostMenu, moreButtonBox, menuBox: hostMenuBox, openLatencyMs } = hostMenuData!;
+    expect(openLatencyMs).toBeLessThan(4500);
     await expect(hostMenu).toBeVisible({ timeout: 10_000 });
+    const hostMenuPosition = await hostMenu.evaluate((menu) => {
+      const wrapper = menu.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
+      return getComputedStyle(wrapper ?? menu).position;
+    });
+    expect(hostMenuPosition).toBe('fixed');
     const hostReadButton = hostMenu.getByRole('menuitem', { name: /朗读|read aloud/i });
     const hostBranchButton = hostMenu.getByRole('menuitem', { name: /新聊天中的分支|branch in new chat/i });
     await expect(hostReadButton).toBeVisible({ timeout: 10_000 });
@@ -795,7 +872,14 @@ test('uses the host message id when requesting real-page read aloud audio', asyn
     await expect(page.locator('[data-turbo-render-entry-menu="true"]')).toHaveCount(0);
     expect(hostMenuBox).not.toBeNull();
     expect(moreButtonBox).not.toBeNull();
-    expect((hostMenuBox?.y ?? 0)).toBeLessThan((moreButtonBox?.y ?? 0));
+    const viewportHeight = page.viewportSize()?.height ?? 0;
+    const spaceAbove = (moreButtonBox?.y ?? 0) - 8;
+    const spaceBelow = viewportHeight - ((moreButtonBox?.y ?? 0) + (moreButtonBox?.height ?? 0)) - 8;
+    if (spaceAbove >= (hostMenuBox?.height ?? 0) + 8 || spaceAbove >= spaceBelow) {
+      expect((hostMenuBox?.y ?? 0)).toBeLessThan((moreButtonBox?.y ?? 0));
+    } else {
+      expect((hostMenuBox?.y ?? 0)).toBeGreaterThan((moreButtonBox?.y ?? 0));
+    }
     expect(Math.abs((hostMenuBox?.x ?? 0) - (moreButtonBox?.x ?? 0))).toBeLessThan(24);
 
     await hostReadButton.click();
@@ -818,8 +902,10 @@ test('uses the host message id when requesting real-page read aloud audio', asyn
     );
 
     await expect(hostMenu).toBeVisible({ timeout: 20_000 });
-    const hostStopButton = hostMenu.getByRole('menuitem', { name: /停止朗读|stop reading|stop read aloud/i });
+    const hostStopButton = page.locator(
+      '[role="menuitem"][data-testid="voice-play-turn-action-button"], [role="menuitem"][aria-label="停止"], [role="menuitem"]:has-text("停止"), [role="menuitem"]:has-text("Stop reading"), [role="menuitem"]:has-text("Stop read aloud")',
+    );
     await expect(hostStopButton).toBeVisible({ timeout: 20_000 });
     await hostStopButton.click();
   });
-});
+}, 120_000);

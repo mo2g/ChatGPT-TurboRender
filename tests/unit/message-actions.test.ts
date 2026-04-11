@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   captureHostActionTemplate,
@@ -98,6 +98,80 @@ describe('message actions', () => {
     const template = captureHostActionTemplate(document.body, 'assistant');
     expect(template).not.toBeNull();
     expect(template?.html).not.toContain('Edit');
+  });
+
+  it('captures edge inset metadata from the host action group', () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="turn-host-actions" role="group">
+          <button data-testid="copy-turn-action-button" aria-label="Copy"><svg></svg></button>
+          <button data-testid="good-response-turn-action-button" aria-label="Like"><svg></svg></button>
+          <button data-testid="bad-response-turn-action-button" aria-label="Dislike"><svg></svg></button>
+          <button data-testid="share-turn-action-button" aria-label="Share"><svg></svg></button>
+          <button data-testid="more-turn-action-button" aria-label="More"><svg></svg></button>
+        </div>
+      </main>
+    `;
+
+    const group = document.querySelector<HTMLElement>('.turn-host-actions');
+    const copy = group?.querySelector<HTMLElement>('button[data-testid="copy-turn-action-button"]');
+    if (group == null || copy == null) {
+      throw new Error('Expected host action fixtures to exist.');
+    }
+
+    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
+      top: 80,
+      bottom: 120,
+      left: 100,
+      right: 300,
+      width: 200,
+      height: 40,
+      x: 100,
+      y: 80,
+      toJSON: () => '',
+    } as DOMRect);
+    vi.spyOn(copy, 'getBoundingClientRect').mockReturnValue({
+      top: 84,
+      bottom: 116,
+      left: 108,
+      right: 140,
+      width: 32,
+      height: 32,
+      x: 108,
+      y: 84,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const template = captureHostActionTemplate(document.body, 'assistant');
+    expect(template).not.toBeNull();
+    expect(template?.edgeInsetPx).toBe(8);
+  });
+
+  it('captures wrapper metadata and slot hints from host action rows', () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="z-0 flex justify-start">
+          <div
+            class="touch:-me-2 -ms-2.5 flex flex-wrap items-center gap-y-4 p-1 pointer-events-none opacity-0 group-hover/turn-messages:pointer-events-auto"
+            role="group"
+          >
+            <button data-testid="copy-turn-action-button" aria-label="Copy"><svg></svg></button>
+            <button data-testid="good-response-turn-action-button" aria-label="Like"><svg></svg></button>
+            <button data-testid="bad-response-turn-action-button" aria-label="Dislike"><svg></svg></button>
+            <button data-testid="share-turn-action-button" aria-label="Share"><svg></svg></button>
+            <button data-testid="more-turn-action-button" aria-label="More"><svg></svg></button>
+          </div>
+        </div>
+      </main>
+    `;
+
+    const template = captureHostActionTemplate(document.body, 'assistant');
+    expect(template).not.toBeNull();
+    expect(template?.wrapperRole).toBe('group');
+    expect(template?.slotHint).toBe('start');
+    expect(template?.wrapperClassName).toContain('flex');
+    expect(template?.wrapperClassName).not.toContain('pointer-events-none');
+    expect(template?.wrapperClassName).not.toContain('opacity-0');
   });
 
   it('falls back to combined parts text when the flattened entry text is empty', () => {

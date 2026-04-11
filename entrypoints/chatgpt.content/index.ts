@@ -120,6 +120,32 @@ function createContentScriptInstanceId(): string {
   return `turborender-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function areSettingsEquivalent(left: Settings, right: Settings): boolean {
+  return (
+    left.enabled === right.enabled &&
+    left.autoEnable === right.autoEnable &&
+    left.language === right.language &&
+    left.mode === right.mode &&
+    left.minFinalizedBlocks === right.minFinalizedBlocks &&
+    left.minDescendants === right.minDescendants &&
+    left.keepRecentPairs === right.keepRecentPairs &&
+    left.batchPairCount === right.batchPairCount &&
+    left.initialHotPairs === right.initialHotPairs &&
+    left.liveHotPairs === right.liveHotPairs &&
+    left.keepRecentTurns === right.keepRecentTurns &&
+    left.viewportBufferTurns === right.viewportBufferTurns &&
+    left.groupSize === right.groupSize &&
+    left.initialTrimEnabled === right.initialTrimEnabled &&
+    left.initialHotTurns === right.initialHotTurns &&
+    left.liveHotTurns === right.liveHotTurns &&
+    left.coldRestoreMode === right.coldRestoreMode &&
+    left.softFallback === right.softFallback &&
+    left.frameSpikeThresholdMs === right.frameSpikeThresholdMs &&
+    left.frameSpikeCount === right.frameSpikeCount &&
+    left.frameSpikeWindowMs === right.frameSpikeWindowMs
+  );
+}
+
 function isHydrationPlaceholderChatId(chatId: string): boolean {
   return chatId === 'chat:unknown';
 }
@@ -227,16 +253,21 @@ export default defineContentScript({
             return;
           }
 
+          const settingsChanged = !areSettingsEquivalent(settings, nextSettings);
           settings = nextSettings;
-          controller?.setSettings(nextSettings);
-          syncPageConfig(nextSettings);
+          if (settingsChanged) {
+            controller?.setSettings(nextSettings);
+            syncPageConfig(nextSettings);
+          }
 
           if (chatIdAtSyncStart !== lastChatId) {
             return;
           }
 
-          paused = nextPaused;
-          controller?.setPaused(nextPaused);
+          if (paused !== nextPaused) {
+            paused = nextPaused;
+            controller?.setPaused(nextPaused);
+          }
         })
         .finally(() => {
           storageSyncInFlight = false;
@@ -364,12 +395,15 @@ export default defineContentScript({
         return;
       }
 
+      const settingsChanged = !areSettingsEquivalent(settings, nextSettings);
       settings = nextSettings;
       if (chatIdAtLoad === lastChatId) {
         paused = nextPaused;
       }
-      syncPageConfig(settings);
-      controller?.setSettings(settings);
+      if (settingsChanged) {
+        syncPageConfig(settings);
+        controller?.setSettings(settings);
+      }
       if (chatIdAtLoad === lastChatId) {
         controller?.setPaused(paused);
       }

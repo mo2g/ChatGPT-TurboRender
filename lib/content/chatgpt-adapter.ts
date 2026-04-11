@@ -110,11 +110,27 @@ function resolveHistoryMountTarget(main: HTMLElement, candidates: HTMLElement[])
 }
 
 function countDescendants(root: ParentNode | null): number {
-  if (root == null || !('querySelectorAll' in root)) {
+  if (root == null || !('ownerDocument' in root)) {
     return 0;
   }
 
-  return root.querySelectorAll('*').length;
+  const doc = root instanceof Document ? root : root.ownerDocument;
+  if (doc == null) {
+    return 0;
+  }
+
+  const cap = 4_000;
+  const showElement = doc.defaultView?.NodeFilter?.SHOW_ELEMENT ?? 1;
+  const walker = doc.createTreeWalker(root, showElement);
+  let count = 0;
+  while (walker.nextNode()) {
+    count += 1;
+    if (count >= cap) {
+      return cap;
+    }
+  }
+
+  return count;
 }
 
 export function isTurnNode(node: Element): node is HTMLElement {

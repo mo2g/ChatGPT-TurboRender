@@ -15,6 +15,10 @@ export interface EntryActionMenuSelection {
 
 export interface HostActionTemplateSnapshot {
   html: string;
+  edgeInsetPx?: number;
+  wrapperClassName?: string;
+  wrapperRole?: string;
+  slotHint?: 'start' | 'end';
 }
 
 export type EntryActionTemplateMap = Partial<Record<EntryActionLane, HostActionTemplateSnapshot>>;
@@ -101,6 +105,80 @@ function sanitizeTemplateButton(root: HTMLElement): void {
   root.removeAttribute('id');
 }
 
+function sanitizeHostActionWrapperClassName(className: string): string | null {
+  const tokens = className
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  const blockedFragments = [
+    'pointer-events',
+    'opacity',
+    'group-hover',
+    'group-focus',
+    'focus-within',
+    'hover:',
+    'transition',
+    'duration-',
+    'delay-',
+    'motion-safe',
+    'has-data-',
+  ];
+
+  const safeTokens = tokens.filter((token) => !blockedFragments.some((fragment) => token.includes(fragment)));
+  if (safeTokens.length === 0) {
+    return null;
+  }
+
+  return safeTokens.join(' ');
+}
+
+function resolveHostActionTemplateSlotHint(copyButton: HTMLElement): 'start' | 'end' | undefined {
+  const slotContainer = copyButton.closest<HTMLElement>(
+    'div.justify-start, div.justify-end, div[class*="justify-start"], div[class*="justify-end"]',
+  );
+  if (slotContainer == null) {
+    return undefined;
+  }
+
+  const className = slotContainer.className;
+  if (typeof className !== 'string') {
+    return undefined;
+  }
+  if (className.includes('justify-start')) {
+    return 'start';
+  }
+  if (className.includes('justify-end')) {
+    return 'end';
+  }
+  return undefined;
+}
+
+function resolveHostActionTemplateWrapperMetadata(copyButton: HTMLElement): {
+  wrapperClassName?: string;
+  wrapperRole?: string;
+  slotHint?: 'start' | 'end';
+} {
+  const wrapper =
+    copyButton.closest<HTMLElement>('[role="group"]') ??
+    copyButton.parentElement ??
+    copyButton.closest<HTMLElement>('div');
+
+  const wrapperRole = wrapper?.getAttribute('role')?.trim() ?? '';
+  const className = wrapper?.className;
+  const normalizedClassName =
+    typeof className === 'string' ? sanitizeHostActionWrapperClassName(className) : null;
+
+  return {
+    wrapperClassName: normalizedClassName ?? undefined,
+    wrapperRole: wrapperRole.length > 0 ? wrapperRole : undefined,
+    slotHint: resolveHostActionTemplateSlotHint(copyButton),
+  };
+}
+
 export function findHostActionButton(root: ParentNode, action: ArchiveEntryAction): HTMLElement | null {
   const candidates = root.querySelectorAll<HTMLElement>('button, [role="button"], a[role="button"], a');
   for (const candidate of candidates) {
@@ -122,6 +200,7 @@ export function captureHostActionTemplate(
   lane: EntryActionLane,
 ): HostActionTemplateSnapshot | null {
   const htmlParts: string[] = [];
+  let copyButton: HTMLElement | null = null;
   for (const action of ENTRY_ACTION_LANE[lane]) {
     const button = findHostActionButton(root, action);
     if (!(button instanceof HTMLElement)) {
@@ -135,13 +214,35 @@ export function captureHostActionTemplate(
 
     sanitizeTemplateButton(clone);
     htmlParts.push(clone.outerHTML);
+    if (action === 'copy') {
+      copyButton = button;
+    }
   }
 
   if (htmlParts.length !== ENTRY_ACTION_LANE[lane].length) {
     return null;
   }
 
-  return { html: htmlParts.join('') };
+  const edgeInsetPx = resolveHostActionEdgeInset(root, lane, copyButton);
+  const template: HostActionTemplateSnapshot = {
+    html: htmlParts.join(''),
+  };
+  if (edgeInsetPx != null) {
+    template.edgeInsetPx = edgeInsetPx;
+  }
+  if (copyButton != null) {
+    const wrapperMetadata = resolveHostActionTemplateWrapperMetadata(copyButton);
+    if (wrapperMetadata.wrapperClassName != null) {
+      template.wrapperClassName = wrapperMetadata.wrapperClassName;
+    }
+    if (wrapperMetadata.wrapperRole != null) {
+      template.wrapperRole = wrapperMetadata.wrapperRole;
+    }
+    if (wrapperMetadata.slotHint != null) {
+      template.slotHint = wrapperMetadata.slotHint;
+    }
+  }
+  return template;
 }
 
 export function instantiateHostActionTemplate(
@@ -206,4 +307,39 @@ export function resolveArchiveCopyText(entry: ManagedHistoryEntry): string {
 
 export function getArchiveEntrySelectionKey(entry: ManagedHistoryEntry): string {
   return entry.id;
+}
+
+function resolveHostActionEdgeInset(
+  root: ParentNode,
+  lane: EntryActionLane,
+  copyButton: HTMLElement | null,
+): number | null {
+  if (copyButton == null) {
+    return null;
+  }
+
+  const container =
+    copyButton.closest<HTMLElement>('[role="group"], [data-message-author-role], [data-testid^="conversation-turn-"], article, section') ??
+    (root instanceof HTMLElement ? root : null);
+  if (container == null) {
+    return null;
+  }
+
+  const containerRect = container.getBoundingClientRect();
+  const copyRect = copyButton.getBoundingClientRect();
+  if (containerRect.width <= 0 || containerRect.height <= 0 || copyRect.width <= 0 || copyRect.height <= 0) {
+    return null;
+  }
+
+  const rawInset = lane === 'assistant' ? copyRect.left - containerRect.left : containerRect.right - copyRect.right;
+  if (!Number.isFinite(rawInset)) {
+    return null;
+  }
+
+  const roundedInset = Math.round(rawInset);
+  if (roundedInset < 0 || roundedInset > 72) {
+    return null;
+  }
+
+  return roundedInset;
 }

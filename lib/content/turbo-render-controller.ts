@@ -106,17 +106,63 @@ function cancelIdleCallbackCompat(win: Window, handle: number): void {
 
 const SCROLL_RESTORE_IGNORE_MS = 240;
 const READ_ALOUD_SNAPSHOT_FAILURE_MS = 120_000;
+const HOST_MENU_WAIT_TIMEOUT_MS = 1_000;
+const HOST_MENU_ACTION_WAIT_TIMEOUT_MS = 2_000;
+const LARGE_CONVERSATION_TURN_THRESHOLD = 600;
+const LARGE_CONVERSATION_REFRESH_DELAY_MS = 180;
+const DESCENDANT_COUNT_CAP = 4_000;
+const DESCENDANT_COUNT_SAMPLE_INTERVAL_MS = 1_500;
 
 function countLiveDescendants(root: ParentNode | null): number {
-  if (root == null || !('querySelectorAll' in root)) {
+  if (root == null || !('ownerDocument' in root)) {
     return 0;
   }
 
-  return root.querySelectorAll('*').length;
+  const doc = root instanceof Document ? root : root.ownerDocument;
+  if (doc == null) {
+    return 0;
+  }
+
+  const showElement = doc.defaultView?.NodeFilter?.SHOW_ELEMENT ?? 1;
+  const walker = doc.createTreeWalker(root, showElement);
+  let count = 0;
+  while (walker.nextNode()) {
+    count += 1;
+    if (count >= DESCENDANT_COUNT_CAP) {
+      return DESCENDANT_COUNT_CAP;
+    }
+  }
+  return count;
 }
 
 function toSet(values: string[]): Set<string> {
   return new Set(values);
+}
+
+function areSettingsEquivalent(left: Settings, right: Settings): boolean {
+  return (
+    left.enabled === right.enabled &&
+    left.autoEnable === right.autoEnable &&
+    left.language === right.language &&
+    left.mode === right.mode &&
+    left.minFinalizedBlocks === right.minFinalizedBlocks &&
+    left.minDescendants === right.minDescendants &&
+    left.keepRecentPairs === right.keepRecentPairs &&
+    left.batchPairCount === right.batchPairCount &&
+    left.initialHotPairs === right.initialHotPairs &&
+    left.liveHotPairs === right.liveHotPairs &&
+    left.keepRecentTurns === right.keepRecentTurns &&
+    left.viewportBufferTurns === right.viewportBufferTurns &&
+    left.groupSize === right.groupSize &&
+    left.initialTrimEnabled === right.initialTrimEnabled &&
+    left.initialHotTurns === right.initialHotTurns &&
+    left.liveHotTurns === right.liveHotTurns &&
+    left.coldRestoreMode === right.coldRestoreMode &&
+    left.softFallback === right.softFallback &&
+    left.frameSpikeThresholdMs === right.frameSpikeThresholdMs &&
+    left.frameSpikeCount === right.frameSpikeCount &&
+    left.frameSpikeWindowMs === right.frameSpikeWindowMs
+  );
 }
 
 const HOST_ACTION_LABEL_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
@@ -269,6 +315,21 @@ function getCandidateLabel(node: HTMLElement): string {
     .trim();
 }
 
+function computeTurnContentRevision(
+  node: HTMLElement,
+  role: TurnRole,
+  messageId: string | null,
+  isStreaming: boolean,
+): string {
+  const hostMessageId = node.getAttribute('data-host-message-id')?.trim() ?? '';
+  const busy = node.getAttribute('aria-busy') === 'true' ? '1' : '0';
+  const childCount = node.childElementCount;
+  const firstTag = node.firstElementChild?.tagName ?? '';
+  const lastTag = node.lastElementChild?.tagName ?? '';
+  return [role, messageId ?? '', hostMessageId, busy, isStreaming ? '1' : '0', String(childCount), firstTag, lastTag]
+    .join('|');
+}
+
 function matchesHostActionCandidate(candidate: HTMLElement, action: ArchiveEntryAction): boolean {
   const testId = candidate.getAttribute('data-testid');
   if (testId != null && HOST_ACTION_TESTID_PATTERNS[action].some((pattern) => pattern.test(testId))) {
@@ -338,6 +399,7 @@ export class TurboRenderController {
   private readonly expandedArchiveBatchIds = new Set<string>();
   private readonly entryActionSelectionByEntryId = new Map<string, EntryActionSelection>();
   private readonly entryActionTemplateByLane = new Map<EntryActionLane, HostActionTemplateSnapshot>();
+  private readonly entryHostMessageIdCache = new Map<string, string>();
   private entryActionMenu: EntryActionMenuSelection | null = null;
   private suppressEntryActionMenuToggle = false;
   private suppressEntryActionMenuDismissal = false;
@@ -348,14 +410,11 @@ export class TurboRenderController {
   private entryActionReadAloudAudio: HTMLAudioElement | null = null;
   private entryActionReadAloudObjectUrl: string | null = null;
   private entryActionReadAloudAbortController: AbortController | null = null;
-  private hostMenuAnchorState: {
-    groupId: string;
-    entryId: string;
-    anchorGetter: () => HTMLElement | null;
-    previousMenus: Set<HTMLElement>;
-    expiresAt: number;
+  private anchoredHostMenu: {
+    target: HTMLElement;
+    menu: HTMLElement;
+    previousInlineStyle: string | null;
   } | null = null;
-  private hostMenuAnchorHandle: number | null = null;
   private pendingHostMoreActionRestore: (() => void) | null = null;
   private readonly readAloudConversationPayloadCache = new Map<string, ConversationPayload>();
   private readonly readAloudConversationSnapshotPrimed = new Set<string>();
@@ -365,6 +424,7 @@ export class TurboRenderController {
   private ignoreMutationsUntil = 0;
   private ignoreScrollUntil = 0;
   private archiveUiSyncHandle: number | null = null;
+  private mutationRefreshHandle: number | null = null;
   private scrollRefreshHandle: number | null = null;
   private pendingArchiveToggle: {
     groupId: string;
@@ -377,6 +437,9 @@ export class TurboRenderController {
   } | null = null;
   private refreshCount = 0;
   private lastLiveSignature = '';
+  private cachedLiveDescendantCount = 0;
+  private lastLiveDescendantSampleAt = 0;
+  private liveDescendantSampleDirty = true;
   private readonly contentScriptInstanceId: string;
   private readonly contentScriptStartedAt: number;
 
@@ -440,13 +503,18 @@ export class TurboRenderController {
     this.expandedArchiveBatchIds.clear();
     this.entryActionSelectionByEntryId.clear();
     this.entryActionTemplateByLane.clear();
-    this.clearHostMenuAnchorTracking();
+    this.entryHostMessageIdCache.clear();
+    this.restoreAnchoredHostMenuStyle();
+    this.clearPendingHostMoreActionRestore();
     this.entryActionMenu = null;
     this.clearReadAloudPlayback({ updateStatusBar: false });
     this.readAloudConversationPayloadCache.clear();
     this.readAloudConversationSnapshotPrimed.clear();
     this.readAloudConversationSnapshotRequests.clear();
     this.readAloudConversationSnapshotFailures.clear();
+    this.cachedLiveDescendantCount = 0;
+    this.lastLiveDescendantSampleAt = 0;
+    this.liveDescendantSampleDirty = true;
     this.clearHighlights();
     this.frameSpikeMonitor.stop();
     this.mutationObserver?.disconnect();
@@ -463,6 +531,10 @@ export class TurboRenderController {
     if (this.scrollRefreshHandle != null) {
       this.win.clearTimeout(this.scrollRefreshHandle);
       this.scrollRefreshHandle = null;
+    }
+    if (this.mutationRefreshHandle != null) {
+      this.win.clearTimeout(this.mutationRefreshHandle);
+      this.mutationRefreshHandle = null;
     }
     this.ignoreScrollUntil = 0;
     if (this.idleHandle != null) {
@@ -483,6 +555,9 @@ export class TurboRenderController {
   }
 
   setSettings(settings: Settings): void {
+    if (areSettingsEquivalent(this.settings, settings)) {
+      return;
+    }
     this.settings = settings;
     this.refreshLanguage();
     this.scheduleRefresh();
@@ -499,7 +574,8 @@ export class TurboRenderController {
     this.entryActionSelectionByEntryId.clear();
     this.entryActionTemplateByLane.clear();
     this.entryActionMenu = null;
-    this.clearHostMenuAnchorTracking();
+    this.restoreAnchoredHostMenuStyle();
+    this.clearPendingHostMoreActionRestore();
     this.clearReadAloudPlayback({ updateStatusBar: false });
     this.readAloudConversationPayloadCache.clear();
     this.readAloudConversationSnapshotPrimed.clear();
@@ -522,6 +598,10 @@ export class TurboRenderController {
     if (this.scrollRefreshHandle != null) {
       this.win.clearTimeout(this.scrollRefreshHandle);
       this.scrollRefreshHandle = null;
+    }
+    if (this.mutationRefreshHandle != null) {
+      this.win.clearTimeout(this.mutationRefreshHandle);
+      this.mutationRefreshHandle = null;
     }
     this.pendingArchiveToggle = null;
     this.ignoreScrollUntil = 0;
@@ -560,6 +640,9 @@ export class TurboRenderController {
   }
 
   setPaused(paused: boolean): void {
+    if (this.paused === paused) {
+      return;
+    }
     this.paused = paused;
     if (paused) {
       this.active = false;
@@ -571,6 +654,10 @@ export class TurboRenderController {
       if (this.scrollRefreshHandle != null) {
         this.win.clearTimeout(this.scrollRefreshHandle);
         this.scrollRefreshHandle = null;
+      }
+      if (this.mutationRefreshHandle != null) {
+        this.win.clearTimeout(this.mutationRefreshHandle);
+        this.mutationRefreshHandle = null;
       }
       this.ignoreScrollUntil = 0;
       this.pendingArchiveToggle = null;
@@ -838,11 +925,38 @@ export class TurboRenderController {
     this.win.addEventListener('pagehide', () => this.stop(), { once: true });
 
     this.mutationObserver = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => mutation.type === 'childList')) {
+        this.liveDescendantSampleDirty = true;
+      }
       if (this.shouldRefreshForMutations(mutations)) {
-        this.scheduleRefresh();
+        this.scheduleMutationRefresh();
       }
     });
     this.setObservedMutationRoot(this.doc.body, 'archive-only-root');
+  }
+
+  private hasLargeConversation(): boolean {
+    const totalTurns = this.managedHistory.getTotalTurns();
+    if (totalTurns >= LARGE_CONVERSATION_TURN_THRESHOLD) {
+      return true;
+    }
+    return this.records.size >= LARGE_CONVERSATION_TURN_THRESHOLD;
+  }
+
+  private scheduleMutationRefresh(): void {
+    if (!this.hasLargeConversation()) {
+      this.scheduleRefresh();
+      return;
+    }
+
+    if (this.mutationRefreshHandle != null || this.refreshHandle != null || this.scrollRefreshHandle != null) {
+      return;
+    }
+
+    this.mutationRefreshHandle = this.win.setTimeout(() => {
+      this.mutationRefreshHandle = null;
+      this.scheduleRefresh();
+    }, LARGE_CONVERSATION_REFRESH_DELAY_MS);
   }
 
   private shouldRefreshForMutations(mutations: MutationRecord[]): boolean {
@@ -851,28 +965,95 @@ export class TurboRenderController {
       return false;
     }
 
+    const largeConversation = this.hasLargeConversation();
+    const hasStructuralTurnChange = (nodes: Node[]): boolean =>
+      nodes.some((node) => {
+        if (!(node instanceof Element) || isTurboRenderUiNode(node)) {
+          return false;
+        }
+        return (
+          findClosestTurnNode(node) != null ||
+          node.querySelector('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') != null
+        );
+      });
+
     return mutations.some((mutation) => {
       if (mutation.target instanceof Element && isTurboRenderUiNode(mutation.target)) {
         return false;
       }
 
       if (mutation.type === 'attributes') {
-        return findClosestTurnNode(mutation.target) != null;
-      }
-
-      if (findClosestTurnNode(mutation.target) != null) {
-        return true;
-      }
-
-      return [...mutation.addedNodes, ...mutation.removedNodes].some((node) => {
-        if (!(node instanceof Element)) {
+        if (!(mutation.target instanceof Element)) {
           return false;
         }
-        if (isTurboRenderUiNode(node)) {
+        const turnRoot = findClosestTurnNode(mutation.target);
+        if (turnRoot == null) {
           return false;
         }
-        return findClosestTurnNode(node) != null || node.querySelector('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') != null;
-      });
+
+        const attributeName = mutation.attributeName ?? '';
+        if (attributeName === 'aria-busy') {
+          return mutation.target === turnRoot || mutation.target.closest('[aria-busy]') === turnRoot;
+        }
+        if (attributeName === 'data-message-id' || attributeName === 'data-message-author-role') {
+          return mutation.target === turnRoot;
+        }
+        if (attributeName === 'data-testid') {
+          return (
+            mutation.target === turnRoot ||
+            mutation.target.matches('[data-testid^="conversation-turn-"], [data-testid="stop-button"]')
+          );
+        }
+        return false;
+      }
+
+      if (mutation.type !== 'childList') {
+        return false;
+      }
+
+      const targetTurn = findClosestTurnNode(mutation.target);
+      if (targetTurn != null) {
+        const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+        const targetElement = mutation.target instanceof Element ? mutation.target : null;
+        if (
+          largeConversation &&
+          targetElement != null &&
+          targetElement !== targetTurn &&
+          !targetElement.matches('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') &&
+          !hasStructuralTurnChange(changedNodes)
+        ) {
+          return false;
+        }
+        if (
+          changedNodes.some((node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+              return (node.textContent?.trim().length ?? 0) > 0;
+            }
+            if (!(node instanceof Element)) {
+              return false;
+            }
+            if (isTurboRenderUiNode(node)) {
+              return false;
+            }
+            return true;
+          })
+        ) {
+          return true;
+        }
+
+        return (
+          targetElement != null &&
+          (targetElement === targetTurn ||
+            targetElement.matches('[data-testid^="conversation-turn-"], [data-message-author-role]'))
+        );
+      }
+
+      const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      if (largeConversation) {
+        return hasStructuralTurnChange(changedNodes);
+      }
+
+      return hasStructuralTurnChange(changedNodes);
     });
   }
 
@@ -885,7 +1066,7 @@ export class TurboRenderController {
       null;
     const previousScrollTop = scrollTarget?.scrollTop ?? 0;
     const wasExpanded = this.expandedArchiveBatchIds.has(groupId);
-    const targetAnchorTop = wasExpanded ? 12 : previousAnchorTop;
+    const targetAnchorTop = this.getBatchHeaderScrollTop();
 
     if (wasExpanded) {
       this.expandedArchiveBatchIds.delete(groupId);
@@ -1353,7 +1534,11 @@ export class TurboRenderController {
     return messageId;
   }
 
-  private findHostMessageIdForEntry(entry: ManagedHistoryEntry, groupId: string | null = null): string | null {
+  private findHostMessageIdForEntry(
+    entry: ManagedHistoryEntry,
+    groupId: string | null = null,
+    archiveGroupOverride: ManagedHistoryGroup | null = null,
+  ): string | null {
     const scope = this.doc.body ?? this.turnContainer ?? this.historyMountTarget;
     if (scope == null) {
       return null;
@@ -1374,9 +1559,10 @@ export class TurboRenderController {
       record?.id,
     );
     const archiveGroup =
-      groupId != null
+      archiveGroupOverride ??
+      (groupId != null
         ? this.collectArchiveState().archiveGroups.find((candidate) => candidate.id === groupId) ?? null
-        : null;
+        : null);
     const archiveTurnOffset = this.initialTrimSession?.archivedTurnCount ?? 0;
     const setHostReadAloudDebug = (debug: {
       precisePairId?: string | null;
@@ -1967,7 +2153,11 @@ export class TurboRenderController {
 
     if (request.action === 'more') {
       if (this.shouldPreferHostMorePopover()) {
-        await this.openHostMoreMenu(group.id, entry, actionAnchorGetter);
+        const openedHostMenu = await this.openHostMoreMenu(group.id, entry, actionAnchorGetter);
+        if (openedHostMenu != null) {
+          return;
+        }
+        this.toggleEntryActionMenu(group.id, entryKey, entry.role === 'user' ? 'user' : 'assistant');
         return;
       }
 
@@ -2149,9 +2339,7 @@ export class TurboRenderController {
         return;
       }
 
-      const hostStopped =
-        (await this.clickHostReadAloudStopButton()) ||
-        (await this.clickHostMoreMenuAction(group.id, entry, request.action, actionAnchorGetter));
+      const hostStopped = await this.clickHostMoreMenuAction(group.id, entry, request.action, actionAnchorGetter);
       if (hostStopped) {
         if (this.entryActionMenu == null && preservedEntryActionMenu != null) {
           this.entryActionMenu = preservedEntryActionMenu;
@@ -2233,20 +2421,12 @@ export class TurboRenderController {
       }
       const { previousMenus } = hostMenuResult;
 
-      const waitUntil = this.win.performance.now() + 4_000;
-      let hostMenuAction: HTMLElement | undefined;
-      while (this.win.performance.now() < waitUntil) {
-        const hostMenu = this.findPreferredHostMenu(previousMenus, anchorGetter());
-        hostMenuAction = hostMenu != null ? this.findHostMoreMenuAction(hostMenu, action) ?? undefined : undefined;
-
-        if (hostMenuAction != null) {
-          break;
-        }
-
-        await new Promise<void>((resolve) => {
-          requestAnimationFrameCompat(this.win, () => resolve());
-        });
-      }
+      const hostMenuAction = await this.waitForHostMoreMenuAction(
+        previousMenus,
+        anchorGetter,
+        action,
+        HOST_MENU_ACTION_WAIT_TIMEOUT_MS,
+      );
       if (this.doc.body != null) {
         this.doc.body.dataset.turboRenderDebugReadAloudRoute = 'host-menu';
         this.doc.body.dataset.turboRenderDebugReadAloudMenuAction = action;
@@ -2266,7 +2446,6 @@ export class TurboRenderController {
       this.ignoreMutationsUntil = this.win.performance.now() + 500;
       this.dispatchHumanClick(hostMenuAction);
       this.restoreExactScrollTop(scrollTarget, previousScrollTop);
-      this.scheduleVisibleHostMenuReposition(previousMenus, anchorGetter, 8);
       return true;
     });
   }
@@ -2276,7 +2455,7 @@ export class TurboRenderController {
     entry: ManagedHistoryEntry,
     anchorGetter: () => HTMLElement | null,
   ): Promise<OpenHostMenuResult | null> {
-    this.clearHostMenuAnchorTracking();
+    this.restoreAnchoredHostMenuStyle();
     this.clearPendingHostMoreActionRestore();
     const previousMenus = new Set(this.getVisibleHostMenus());
     const scrollTarget = this.scrollTarget ?? ((this.doc.scrollingElement as HTMLElement | null) ?? this.doc.body);
@@ -2293,28 +2472,177 @@ export class TurboRenderController {
     }
 
     this.restoreExactScrollTop(scrollTarget, previousScrollTop);
-    const waitUntil = this.win.performance.now() + 4_000;
-    while (this.win.performance.now() < waitUntil) {
-      const hostMenu = this.findPreferredHostMenu(previousMenus, anchorGetter());
-      if (hostMenu != null) {
-        const anchor = anchorGetter();
-        if (anchor != null) {
-          this.positionVisibleHostMenuToAnchor(hostMenu, anchor);
-        }
-        this.clearPendingHostMoreActionRestore();
-        return {
-          menu: hostMenu,
-          previousMenus,
-        };
-      }
-
-      await new Promise<void>((resolve) => {
-        requestAnimationFrameCompat(this.win, () => resolve());
-      });
+    const hostMenu = await this.waitForPreferredHostMenu(previousMenus, anchorGetter, HOST_MENU_WAIT_TIMEOUT_MS);
+    if (hostMenu == null) {
+      this.clearPendingHostMoreActionRestore();
+      return null;
     }
 
+    const anchor = anchorGetter();
+    if (anchor != null && anchor.isConnected && anchor.getClientRects().length > 0) {
+      this.positionVisibleHostMenuToAnchor(hostMenu, anchor);
+    }
     this.clearPendingHostMoreActionRestore();
-    return null;
+    return {
+      menu: hostMenu,
+      previousMenus,
+    };
+  }
+
+  private waitForPreferredHostMenu(
+    previousMenus: Set<HTMLElement>,
+    anchorGetter: () => HTMLElement | null,
+    timeoutMs: number,
+  ): Promise<HTMLElement | null> {
+    return new Promise((resolve) => {
+      const observeRoot = this.doc.body ?? this.doc.documentElement;
+      let settled = false;
+      let timeoutHandle: number | null = null;
+      let frameHandle: number | null = null;
+      let observer: MutationObserver | null = null;
+
+      const cleanup = (): void => {
+        if (timeoutHandle != null) {
+          this.win.clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        if (frameHandle != null) {
+          cancelAnimationFrameCompat(this.win, frameHandle);
+          frameHandle = null;
+        }
+        observer?.disconnect();
+        observer = null;
+      };
+
+      const settle = (menu: HTMLElement | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(menu);
+      };
+
+      const probe = (): boolean => {
+        const menu = this.findPreferredHostMenu(previousMenus, anchorGetter());
+        if (menu == null) {
+          return false;
+        }
+        settle(menu);
+        return true;
+      };
+
+      const scheduleFrameProbe = (): void => {
+        if (settled) {
+          return;
+        }
+        frameHandle = requestAnimationFrameCompat(this.win, () => {
+          frameHandle = null;
+          if (!probe()) {
+            scheduleFrameProbe();
+          }
+        });
+      };
+
+      if (observeRoot != null && typeof this.win.MutationObserver === 'function') {
+        observer = new this.win.MutationObserver(() => {
+          probe();
+        });
+        observer.observe(observeRoot, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
+        });
+      }
+
+      timeoutHandle = this.win.setTimeout(() => {
+        settle(null);
+      }, timeoutMs);
+
+      if (!probe()) {
+        scheduleFrameProbe();
+      }
+    });
+  }
+
+  private waitForHostMoreMenuAction(
+    previousMenus: Set<HTMLElement>,
+    anchorGetter: () => HTMLElement | null,
+    action: EntryMoreMenuAction,
+    timeoutMs: number,
+  ): Promise<HTMLElement | null> {
+    return new Promise((resolve) => {
+      const observeRoot = this.doc.body ?? this.doc.documentElement;
+      let settled = false;
+      let timeoutHandle: number | null = null;
+      let frameHandle: number | null = null;
+      let observer: MutationObserver | null = null;
+
+      const cleanup = (): void => {
+        if (timeoutHandle != null) {
+          this.win.clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+        if (frameHandle != null) {
+          cancelAnimationFrameCompat(this.win, frameHandle);
+          frameHandle = null;
+        }
+        observer?.disconnect();
+        observer = null;
+      };
+
+      const settle = (target: HTMLElement | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(target);
+      };
+
+      const probe = (): boolean => {
+        const menu = this.findPreferredHostMenu(previousMenus, anchorGetter());
+        const menuAction = menu != null ? this.findHostMoreMenuAction(menu, action) : null;
+        if (menuAction == null) {
+          return false;
+        }
+        settle(menuAction);
+        return true;
+      };
+
+      const scheduleFrameProbe = (): void => {
+        if (settled) {
+          return;
+        }
+        frameHandle = requestAnimationFrameCompat(this.win, () => {
+          frameHandle = null;
+          if (!probe()) {
+            scheduleFrameProbe();
+          }
+        });
+      };
+
+      if (observeRoot != null && typeof this.win.MutationObserver === 'function') {
+        observer = new this.win.MutationObserver(() => {
+          probe();
+        });
+        observer.observe(observeRoot, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
+        });
+      }
+
+      timeoutHandle = this.win.setTimeout(() => {
+        settle(null);
+      }, timeoutMs);
+
+      if (!probe()) {
+        scheduleFrameProbe();
+      }
+    });
   }
 
   private async clickHostReadAloudStopButton(): Promise<boolean> {
@@ -2329,6 +2657,8 @@ export class TurboRenderController {
         const exactSelectors = [
           'button[data-testid="voice-stop-turn-action-button"]',
           'button[data-testid="stop-read-aloud-turn-action-button"]',
+          '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
+          '[role="menuitem"][aria-label="停止"]',
         ];
         stopButton = exactSelectors
           .flatMap((selector) => [...this.doc.querySelectorAll<HTMLElement>(selector)])
@@ -2550,7 +2880,7 @@ export class TurboRenderController {
       return true;
     }
 
-    const shouldSkipGlobalFallback = preferPreciseHostBinding;
+    const shouldSkipGlobalFallback = this.shouldPreferHostMorePopover() || preferPreciseHostBinding;
     if (!shouldSkipGlobalFallback) {
       const globalButton = findGlobalHostActionButton();
       if (globalButton != null) {
@@ -2582,24 +2912,35 @@ export class TurboRenderController {
       current = current.parentElement;
     }
 
-    const matchingConnectedButton = nodeSearchRoots
-      .map((root) => findHostActionButton(root, action))
-      .find(
-        (candidate): candidate is HTMLElement =>
-          candidate != null &&
-          candidate.isConnected &&
-          !isTurboRenderUiNode(candidate) &&
-          this.doesHostActionButtonMatchEntry(candidate, entry),
-      );
-    const disconnectedButton = nodeSearchRoots
-      .map((root) => findHostActionButton(root, action))
-      .find(
-        (candidate): candidate is HTMLElement =>
-          candidate != null &&
-          !candidate.isConnected &&
-          !isTurboRenderUiNode(candidate),
-      );
-    const button = matchingConnectedButton ?? disconnectedButton ?? null;
+    let matchingConnectedButton: HTMLElement | null = null;
+    let disconnectedButton: HTMLElement | null = null;
+    const fallbackScanLimit = preferPreciseHostBinding ? 10 : Number.POSITIVE_INFINITY;
+    let scannedFallbackRoots = 0;
+    for (const root of nodeSearchRoots) {
+      if (
+        preferPreciseHostBinding &&
+        (root === this.doc.body || root === this.doc.documentElement)
+      ) {
+        continue;
+      }
+      if (scannedFallbackRoots >= fallbackScanLimit) {
+        break;
+      }
+      scannedFallbackRoots += 1;
+
+      const candidate = findHostActionButton(root, action);
+      if (candidate == null || isTurboRenderUiNode(candidate)) {
+        continue;
+      }
+      if (candidate.isConnected && this.doesHostActionButtonMatchEntry(candidate, entry)) {
+        matchingConnectedButton = candidate;
+        break;
+      }
+      if (!candidate.isConnected && disconnectedButton == null) {
+        disconnectedButton = candidate;
+      }
+    }
+    const button = matchingConnectedButton ?? disconnectedButton;
     if (button == null) {
       return false;
     }
@@ -2725,7 +3066,7 @@ export class TurboRenderController {
       const anchorRect = anchor.getBoundingClientRect();
       const scored = pool
         .map((menu) => {
-          const rect = menu.getBoundingClientRect();
+          const rect = this.resolveHostMenuPositionTarget(menu).getBoundingClientRect();
           const leftDelta = Math.abs(rect.left - anchorRect.left);
           const verticalDelta = Math.abs(rect.bottom - anchorRect.top);
           const score = leftDelta + verticalDelta * 2;
@@ -2796,130 +3137,78 @@ export class TurboRenderController {
     restore?.();
   }
 
-  private scheduleVisibleHostMenuReposition(
-    previousMenus: Set<HTMLElement>,
-    anchorGetter: () => HTMLElement | null,
-    frames: number,
-  ): void {
-    const step = (remaining: number): void => {
-      if (remaining <= 0) {
-        return;
-      }
-
-      const anchor = anchorGetter();
-      if (anchor != null && anchor.isConnected && anchor.getClientRects().length > 0) {
-        const menu = this.findPreferredHostMenu(previousMenus, anchor);
-        if (menu != null) {
-          this.positionVisibleHostMenuToAnchor(menu, anchor);
-        }
-      }
-
-      requestAnimationFrameCompat(this.win, () => {
-        step(remaining - 1);
-      });
-    };
-
-    if (frames > 0) {
-      requestAnimationFrameCompat(this.win, () => {
-        step(frames);
-      });
+  private resolveHostMenuPositionTarget(menu: HTMLElement): HTMLElement {
+    const wrapper = menu.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
+    if (wrapper != null && !isTurboRenderUiNode(wrapper)) {
+      return wrapper;
     }
-  }
-
-  private startHostMenuAnchorTracking(
-    groupId: string,
-    entryId: string,
-    anchorGetter: () => HTMLElement | null,
-    previousMenus: Set<HTMLElement>,
-  ): void {
-    this.hostMenuAnchorState = {
-      groupId,
-      entryId,
-      anchorGetter,
-      previousMenus,
-      expiresAt: this.win.performance.now() + 20_000,
-    };
-    this.scheduleHostMenuAnchorTracking();
-  }
-
-  private clearHostMenuAnchorTracking(): void {
-    this.hostMenuAnchorState = null;
-    if (this.hostMenuAnchorHandle != null) {
-      cancelAnimationFrameCompat(this.win, this.hostMenuAnchorHandle);
-      this.hostMenuAnchorHandle = null;
-    }
-  }
-
-  private scheduleHostMenuAnchorTracking(): void {
-    if (this.hostMenuAnchorHandle != null) {
-      return;
-    }
-
-    this.hostMenuAnchorHandle = requestAnimationFrameCompat(this.win, () => {
-      this.hostMenuAnchorHandle = null;
-      this.flushHostMenuAnchorTracking();
-    });
-  }
-
-  private flushHostMenuAnchorTracking(): void {
-    const tracking = this.hostMenuAnchorState;
-    if (tracking == null) {
-      return;
-    }
-
-    if (this.win.performance.now() >= tracking.expiresAt) {
-      this.clearHostMenuAnchorTracking();
-      return;
-    }
-
-    const anchor = tracking.anchorGetter();
-    if (anchor == null || !anchor.isConnected || anchor.getClientRects().length <= 0) {
-      this.clearHostMenuAnchorTracking();
-      return;
-    }
-
-    const menu = this.findPreferredHostMenu(tracking.previousMenus, anchor);
-    if (menu == null) {
-      this.scheduleHostMenuAnchorTracking();
-      return;
-    }
-
-    this.positionVisibleHostMenuToAnchor(menu, anchor);
-    this.scheduleHostMenuAnchorTracking();
+    return menu;
   }
 
   private positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void {
     const anchorRect = anchor.getBoundingClientRect();
-    const menuRect = menu.getBoundingClientRect();
+    const positionTarget = this.resolveHostMenuPositionTarget(menu);
+    const menuRect = positionTarget.getBoundingClientRect();
     if (anchorRect.width <= 0 || anchorRect.height <= 0 || menuRect.width <= 0 || menuRect.height <= 0) {
       return;
     }
 
     const gap = 8;
     const viewportPadding = 8;
-    const maxLeft = Math.max(viewportPadding, this.win.innerWidth - menuRect.width - viewportPadding);
-    const maxTop = Math.max(viewportPadding, this.win.innerHeight - menuRect.height - viewportPadding);
-    const viewportLeft = Math.min(Math.max(anchorRect.left, viewportPadding), maxLeft);
-    const viewportTop = Math.min(Math.max(anchorRect.top - menuRect.height - gap, viewportPadding), maxTop);
-    const positioningRoot =
-      menu.parentElement instanceof HTMLElement &&
-      menu.parentElement !== this.doc.body &&
-      menu.parentElement !== this.doc.documentElement
-        ? menu.parentElement.getBoundingClientRect()
-        : { left: 0, top: 0 };
-    const left = viewportLeft - positioningRoot.left;
-    const top = viewportTop - positioningRoot.top;
+    const topChromeOffset = this.statusBar?.getTopPageChromeOffset?.() ?? 0;
+    const topLimit = Math.max(viewportPadding, topChromeOffset + viewportPadding);
+    const viewportLeft = anchorRect.left;
+    const aboveTop = anchorRect.top - menuRect.height - gap;
+    const belowTop = anchorRect.bottom + gap;
+    const spaceAbove = anchorRect.top - topLimit;
+    const placeAbove = spaceAbove >= menuRect.height + gap;
+    const viewportTop = placeAbove ? Math.max(topLimit, aboveTop) : belowTop;
 
-    menu.style.setProperty('position', 'fixed', 'important');
-    menu.style.setProperty('inset', 'auto', 'important');
-    menu.style.setProperty('left', `${Math.round(left)}px`, 'important');
-    menu.style.setProperty('top', `${Math.round(top)}px`, 'important');
-    menu.style.setProperty('right', 'auto', 'important');
-    menu.style.setProperty('bottom', 'auto', 'important');
-    menu.style.setProperty('transform', 'none', 'important');
-    menu.style.setProperty('margin', '0', 'important');
-    menu.style.setProperty('z-index', '60', 'important');
+    this.captureAnchoredHostMenuStyle(positionTarget, menu);
+    positionTarget.style.setProperty('position', 'fixed', 'important');
+    positionTarget.style.setProperty('inset', 'auto', 'important');
+    positionTarget.style.setProperty('left', `${Math.round(viewportLeft)}px`, 'important');
+    positionTarget.style.setProperty('top', `${Math.round(viewportTop)}px`, 'important');
+    positionTarget.style.setProperty('right', 'auto', 'important');
+    positionTarget.style.setProperty('bottom', 'auto', 'important');
+    positionTarget.style.setProperty('transform', 'none', 'important');
+    positionTarget.style.setProperty('margin', '0', 'important');
+    positionTarget.style.setProperty('z-index', '60', 'important');
+    positionTarget.dataset.turboRenderHostMenuAnchored = 'true';
+    positionTarget.dataset.turboRenderHostMenuPlacement = placeAbove ? 'above' : 'below';
     menu.dataset.turboRenderHostMenuAnchored = 'true';
+    menu.dataset.turboRenderHostMenuPlacement = placeAbove ? 'above' : 'below';
+  }
+
+  private captureAnchoredHostMenuStyle(target: HTMLElement, menu: HTMLElement): void {
+    if (this.anchoredHostMenu?.target === target) {
+      return;
+    }
+    this.restoreAnchoredHostMenuStyle();
+    this.anchoredHostMenu = {
+      target,
+      menu,
+      previousInlineStyle: target.getAttribute('style'),
+    };
+  }
+
+  private restoreAnchoredHostMenuStyle(): void {
+    const anchored = this.anchoredHostMenu;
+    this.anchoredHostMenu = null;
+    if (anchored == null) {
+      return;
+    }
+
+    const { target, menu, previousInlineStyle } = anchored;
+    delete target.dataset.turboRenderHostMenuAnchored;
+    delete target.dataset.turboRenderHostMenuPlacement;
+    delete menu.dataset.turboRenderHostMenuAnchored;
+    delete menu.dataset.turboRenderHostMenuPlacement;
+    if (previousInlineStyle == null || previousInlineStyle.length === 0) {
+      target.removeAttribute('style');
+    } else {
+      target.setAttribute('style', previousInlineStyle);
+    }
   }
 
   private findHostMoreMenuAction(menu: ParentNode, action: EntryMoreMenuAction): HTMLElement | null {
@@ -2928,6 +3217,8 @@ export class TurboRenderController {
         ? ['button[data-testid="branch-in-new-chat-turn-action-button"]']
         : action === 'stop-read-aloud'
           ? [
+              '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
+              '[role="menuitem"][aria-label="停止"]',
               'button[data-testid="voice-stop-turn-action-button"]',
               'button[data-testid="stop-read-aloud-turn-action-button"]',
             ]
@@ -3136,7 +3427,7 @@ export class TurboRenderController {
       anchorGetter,
       pending.previousScrollTop,
       pending.previousAnchorTop,
-      { doublePass: false, targetAnchorTop: pending.targetAnchorTop },
+      { doublePass: true, targetAnchorTop: pending.targetAnchorTop },
     );
 
     if (pending.wasExpanded) {
@@ -3147,6 +3438,16 @@ export class TurboRenderController {
     }
   }
 
+  private getBatchHeaderScrollTop(): number {
+    const topChromeOffset = Math.max(0, this.statusBar?.getTopPageChromeOffset() ?? 0);
+    const target = topChromeOffset + 12;
+    const viewportHeight = Math.max(0, this.win.innerHeight ?? 0);
+    if (viewportHeight <= 0) {
+      return target;
+    }
+    return Math.min(target, Math.max(12, viewportHeight - 24));
+  }
+
   private flushScrollSync(): void {
     if (this.turnContainer == null || this.scrollTarget == null) {
       return;
@@ -3155,6 +3456,14 @@ export class TurboRenderController {
     const visibleRange = this.computeVisibleRange(this.scrollTarget);
     const currentRange = this.runtimeStatus.visibleRange;
     if (currentRange?.start === visibleRange?.start && currentRange?.end === visibleRange?.end) {
+      return;
+    }
+
+    if (this.hasLargeConversation()) {
+      this.runtimeStatus = {
+        ...this.runtimeStatus,
+        visibleRange,
+      };
       return;
     }
 
@@ -3186,6 +3495,11 @@ export class TurboRenderController {
   }
 
   private scheduleRefresh(): void {
+    if (this.mutationRefreshHandle != null) {
+      this.win.clearTimeout(this.mutationRefreshHandle);
+      this.mutationRefreshHandle = null;
+    }
+
     if (this.refreshHandle != null || this.scrollRefreshHandle != null) {
       return;
     }
@@ -3194,6 +3508,32 @@ export class TurboRenderController {
       this.refreshHandle = null;
       this.refreshNow();
     });
+  }
+
+  private resolveLiveDescendantCount(root: ParentNode | null, observedCount: number): number {
+    const now = this.win.performance.now();
+    if (!this.hasLargeConversation()) {
+      this.cachedLiveDescendantCount = observedCount;
+      this.lastLiveDescendantSampleAt = now;
+      this.liveDescendantSampleDirty = false;
+      return observedCount;
+    }
+
+    const shouldSample =
+      this.liveDescendantSampleDirty ||
+      this.cachedLiveDescendantCount <= 0 ||
+      now - this.lastLiveDescendantSampleAt >= DESCENDANT_COUNT_SAMPLE_INTERVAL_MS;
+    if (shouldSample) {
+      this.cachedLiveDescendantCount = countLiveDescendants(root);
+      this.lastLiveDescendantSampleAt = now;
+      this.liveDescendantSampleDirty = false;
+      return this.cachedLiveDescendantCount;
+    }
+
+    if (observedCount > this.cachedLiveDescendantCount) {
+      this.cachedLiveDescendantCount = observedCount;
+    }
+    return this.cachedLiveDescendantCount;
   }
 
   private refreshNow(): void {
@@ -3210,6 +3550,10 @@ export class TurboRenderController {
     const snapshot = scanChatPage(this.doc);
     const totalTurnsBeforeScan = this.managedHistory.getTotalTurns();
     const totalPairsBeforeScan = this.managedHistory.getTotalPairs();
+    const sampledLiveDescendantCount = this.resolveLiveDescendantCount(
+      snapshot.turnContainer ?? snapshot.historyMountTarget ?? snapshot.main,
+      snapshot.descendantCount,
+    );
 
     if (!snapshot.supported || snapshot.turnContainer == null) {
       this.turnContainer = null;
@@ -3231,7 +3575,7 @@ export class TurboRenderController {
         totalTurns: totalTurnsBeforeScan,
         totalPairs: totalPairsBeforeScan,
         finalizedTurns: totalTurnsBeforeScan,
-        liveDescendantCount: snapshot.descendantCount,
+        liveDescendantCount: sampledLiveDescendantCount,
         visibleRange: null,
       }, archiveState);
       this.updateStatusBar(archiveState);
@@ -3251,6 +3595,9 @@ export class TurboRenderController {
       .join('|');
     const liveChanged = liveSignature !== this.lastLiveSignature;
     this.lastLiveSignature = liveSignature;
+    if (liveChanged) {
+      this.liveDescendantSampleDirty = true;
+    }
 
     const totalTurns = this.managedHistory.getTotalTurns();
     const totalPairs = this.managedHistory.getTotalPairs();
@@ -3263,7 +3610,7 @@ export class TurboRenderController {
     if (!this.paused && this.settings.enabled && this.settings.autoEnable) {
       const activate = shouldAutoActivate({
         finalizedTurns: liveFinalizedTurns,
-        descendantCount: snapshot.descendantCount,
+        descendantCount: sampledLiveDescendantCount,
         spikeCount,
         settings: this.settings,
       });
@@ -3287,7 +3634,7 @@ export class TurboRenderController {
       totalTurns,
       totalPairs,
       finalizedTurns,
-      liveDescendantCount: snapshot.descendantCount,
+      liveDescendantCount: sampledLiveDescendantCount,
       visibleRange,
     }, archiveState);
     this.updateStatusBar(archiveState);
@@ -3315,13 +3662,17 @@ export class TurboRenderController {
       this.syncParkedGroups(archiveGroups);
       this.updateBatchSearchState();
       const idleArchiveState = this.collectArchiveState(this.managedHistory.getTotalPairs());
+      const idleLiveDescendantCount = this.resolveLiveDescendantCount(
+        this.turnContainer,
+        this.cachedLiveDescendantCount,
+      );
       this.runtimeStatus = this.buildStatus({
         supported: true,
         reason: null,
         totalTurns: this.managedHistory.getTotalTurns(),
         totalPairs: this.managedHistory.getTotalPairs(),
         finalizedTurns,
-        liveDescendantCount: countLiveDescendants(this.turnContainer),
+        liveDescendantCount: idleLiveDescendantCount,
         visibleRange,
       }, idleArchiveState);
       this.updateStatusBar(idleArchiveState);
@@ -3418,6 +3769,7 @@ export class TurboRenderController {
 
   private reconcileTurns(liveTurnNodes: HTMLElement[], stopButtonVisible: boolean): TurnRecord[] {
     const orderedIds: string[] = [];
+    const orderedIdSet = new Set<string>();
     liveTurnNodes.forEach((node, index) => {
       if (!node.dataset[TURN_ID_DATASET]) {
         node.dataset[TURN_ID_DATASET] = `turn-${this.chatId}-${index}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3429,33 +3781,39 @@ export class TurboRenderController {
 
       const id = node.dataset[TURN_ID_DATASET]!;
       const messageId = resolveMessageId(node);
-      const record = this.records.get(id) ?? {
-        id,
-        index,
-        role: detectTurnRole(node),
-        isStreaming: false,
-        parked: false,
-        node,
-        messageId,
-      };
-
-      record.index = index;
-      record.role = detectTurnRole(node);
-      record.isStreaming = isStreamingTurn(node, {
+      const role = detectTurnRole(node);
+      const isStreaming = isStreamingTurn(node, {
         isLastTurn: index === liveTurnNodes.length - 1,
         stopButtonVisible,
       });
+      const contentRevision = computeTurnContentRevision(node, role, messageId, isStreaming);
+      const record = this.records.get(id) ?? {
+        id,
+        index,
+        role,
+        isStreaming,
+        parked: false,
+        node,
+        messageId,
+        contentRevision,
+      };
+
+      record.index = index;
+      record.role = role;
+      record.isStreaming = isStreaming;
       record.node = node;
       record.messageId = messageId;
+      record.contentRevision = contentRevision;
       record.parked = this.parkingLot.isTurnParked(id);
       this.records.set(id, record);
       orderedIds.push(id);
+      orderedIdSet.add(id);
 
       this.captureHostActionTemplate(record);
     });
 
     for (const [id, record] of this.records.entries()) {
-      if (!orderedIds.includes(id) && !this.parkingLot.isTurnParked(id)) {
+      if (!orderedIdSet.has(id) && !this.parkingLot.isTurnParked(id)) {
         this.records.delete(id);
       }
     }
@@ -3488,30 +3846,37 @@ export class TurboRenderController {
     }
 
     const containerRect = scrollContainer.getBoundingClientRect();
-    const childRects = Array.from(this.turnContainer.children)
-      .filter((child): child is HTMLElement => child instanceof HTMLElement)
-      .map((child) => child.getBoundingClientRect());
+    let hasRealLayout = false;
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    let encounteredVisible = false;
 
-    const hasRealLayout = childRects.some(
-      (rect) => rect.height > 0 || rect.width > 0 || rect.top !== 0 || rect.bottom !== 0,
-    );
-
-    if (!hasRealLayout && containerRect.height === 0 && containerRect.width === 0) {
-      return null;
-    }
-
-    const ranges: IndexRange[] = [];
-
-    for (const child of Array.from(this.turnContainer.children)) {
+    for (const child of this.turnContainer.children) {
       if (!(child instanceof HTMLElement)) {
         continue;
       }
 
       const rect = child.getBoundingClientRect();
+      if (rect.height > 0 || rect.width > 0 || rect.top !== 0 || rect.bottom !== 0) {
+        hasRealLayout = true;
+      }
+
+      if (rect.bottom < containerRect.top) {
+        continue;
+      }
+
+      if (rect.top > containerRect.bottom) {
+        if (encounteredVisible) {
+          break;
+        }
+        continue;
+      }
+
       const intersects = rect.bottom >= containerRect.top && rect.top <= containerRect.bottom;
       if (!intersects) {
         continue;
       }
+      encounteredVisible = true;
 
       const turnId = child.dataset[TURN_ID_DATASET];
       if (turnId == null) {
@@ -3519,17 +3884,26 @@ export class TurboRenderController {
       }
       const record = this.records.get(turnId);
       if (record != null) {
-        ranges.push({ start: record.index, end: record.index });
+        if (record.index < start) {
+          start = record.index;
+        }
+        if (record.index > end) {
+          end = record.index;
+        }
       }
     }
 
-    if (ranges.length === 0) {
+    if (!hasRealLayout && containerRect.height === 0 && containerRect.width === 0) {
+      return null;
+    }
+
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
       return null;
     }
 
     return {
-      start: Math.min(...ranges.map((range) => range.start)),
-      end: Math.max(...ranges.map((range) => range.end)),
+      start,
+      end,
     };
   }
 
@@ -3713,6 +4087,9 @@ export class TurboRenderController {
     }
 
     for (const group of archiveGroups) {
+      if (!this.shouldResolveEntryMetadataForGroup(group)) {
+        continue;
+      }
       for (const entry of group.entries) {
         if (entry.role !== 'assistant') {
           continue;
@@ -3735,6 +4112,10 @@ export class TurboRenderController {
     return selections;
   }
 
+  private shouldResolveEntryMetadataForGroup(group: ManagedHistoryGroup): boolean {
+    return group.expanded;
+  }
+
   private buildEntryActionTemplateMap(): EntryActionTemplateMap {
     return Object.fromEntries(this.entryActionTemplateByLane);
   }
@@ -3754,20 +4135,34 @@ export class TurboRenderController {
   private buildEntryHostMessageIdMap(archiveGroups: ManagedHistoryGroup[]): Record<string, string> {
     const hostMessageIds: Record<string, string> = {};
     const conversationPayload = this.getConversationPayloadForReadAloud(this.getConversationIdForReadAloud());
+    const activeEntryKeys = new Set<string>();
     for (const group of archiveGroups) {
+      if (!this.shouldResolveEntryMetadataForGroup(group)) {
+        continue;
+      }
       for (const entry of group.entries) {
         if (entry.role !== 'assistant' && entry.role !== 'user') {
           continue;
         }
         const entryKey = getArchiveEntrySelectionKey(entry);
+        activeEntryKeys.add(entryKey);
+        const cachedHostMessageId = this.entryHostMessageIdCache.get(entryKey) ?? null;
         const hostMessageId =
           this.resolveEntryHostMessageIdFromConversationPayload(entry, conversationPayload) ??
           this.findRenderedArchiveMessageIdForEntry(group.id, entry) ??
-          this.findHostMessageIdForEntry(entry, group.id) ??
+          cachedHostMessageId ??
+          this.findHostMessageIdForEntry(entry, group.id, group) ??
           null;
         if (hostMessageId != null && hostMessageId.length > 0) {
+          this.entryHostMessageIdCache.set(entryKey, hostMessageId);
           hostMessageIds[entryKey] = hostMessageId;
         }
+      }
+    }
+
+    for (const entryKey of [...this.entryHostMessageIdCache.keys()]) {
+      if (!activeEntryKeys.has(entryKey)) {
+        this.entryHostMessageIdCache.delete(entryKey);
       }
     }
 

@@ -14,6 +14,7 @@ import type {
   EntryActionTemplateMap,
   EntryActionSelectionMap,
   EntryMoreMenuAction,
+  HostActionTemplateSnapshot,
 } from './message-actions';
 import {
   ENTRY_ACTION_LANE,
@@ -123,6 +124,9 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.inlineBatchCard} {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 12px;
   gap: 14px;
   padding: 14px 16px 12px;
   border: 1px solid rgba(15, 23, 42, 0.12);
@@ -137,7 +141,8 @@ const STYLES = `
   background: transparent;
   box-shadow: none;
   position: relative;
-  padding: 6px 0 0;
+  padding: 14px 16px 0;
+  column-gap: 12px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMain} {
@@ -145,27 +150,19 @@ const STYLES = `
   gap: 8px;
   min-width: 0;
   width: 100%;
+  grid-column: 1;
   overflow-anchor: none;
 }
 
 .${UI_CLASS_NAMES.inlineBatchHeader} {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 12px;
+  gap: 6px;
   min-width: 0;
-  position: sticky;
-  top: 12px;
-  z-index: 2;
-  padding: 2px 0 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88));
-  backdrop-filter: blur(4px);
+  position: relative;
+  z-index: 1;
+  padding: 2px 0 0;
   overflow-anchor: none;
-}
-
-.${UI_CLASS_NAMES.inlineBatchCard}[data-state="expanded"] .${UI_CLASS_NAMES.inlineBatchHeader} {
-  top: 12px;
-  padding-inline: 16px;
 }
 
 .${UI_CLASS_NAMES.inlineBatchMeta} {
@@ -198,12 +195,13 @@ const STYLES = `
 }
 
 .${UI_CLASS_NAMES.inlineBatchRail} {
-  display: flex;
-  justify-content: flex-end;
-  align-items: flex-start;
-  align-self: start;
-  height: max-content;
+  display: block;
+  align-self: stretch;
+  min-width: max-content;
+  grid-column: 2;
+  grid-row: 1 / -1;
   padding-top: 2px;
+  text-align: right;
   overflow-anchor: none;
 }
 
@@ -218,6 +216,10 @@ const STYLES = `
   font: inherit;
   white-space: nowrap;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  position: sticky;
+  top: calc(var(--turbo-render-page-header-offset, 0px) + 12px);
+  align-self: start;
+  margin-inline-start: auto;
 }
 
 .${UI_CLASS_NAMES.inlineBatchEntries} {
@@ -226,7 +228,7 @@ const STYLES = `
   min-width: 0;
   width: 100%;
   padding-top: 0;
-  padding-inline: 16px;
+  padding-inline: 0;
   overflow-anchor: none;
 }
 
@@ -255,10 +257,14 @@ const STYLES = `
 
 .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"] {
   justify-items: start;
+  width: 100%;
 }
 
 .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="user"] {
   justify-items: end;
+  width: fit-content;
+  max-width: 100%;
+  justify-self: end;
 }
 
 .${UI_CLASS_NAMES.historyEntryBody} {
@@ -289,6 +295,7 @@ const STYLES = `
 }
 
 .${UI_CLASS_NAMES.historyEntryActions} {
+  --turbo-render-action-edge-inset: 0px;
   position: relative;
   display: inline-flex;
   flex-wrap: nowrap;
@@ -304,11 +311,20 @@ const STYLES = `
 .${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"] {
   justify-self: end;
   align-self: start;
+  margin-inline-start: 0;
+  margin-inline-end: var(--turbo-render-action-edge-inset, 0px);
 }
 
 .${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"] {
   justify-self: start;
   align-self: start;
+  margin-inline-start: var(--turbo-render-action-edge-inset, 0px);
+  margin-inline-end: 0;
+}
+
+.${UI_CLASS_NAMES.historyEntryActions}[data-action-mount="host-slot"] {
+  margin-inline-start: 0 !important;
+  margin-inline-end: 0 !important;
 }
 
 .${UI_CLASS_NAMES.historyEntryActions}[data-menu-open="true"] {
@@ -526,7 +542,7 @@ button[data-turbo-render-action][aria-pressed="true"] {
   padding-left: 18px;
 }
 
-.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] :is(button, input, textarea, select, a) {
+.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"] :is(button, input, textarea, select, a):not([data-turbo-render-action]):not([data-turbo-render-menu-action]) {
   pointer-events: none !important;
 }
 
@@ -667,6 +683,10 @@ export class StatusBar {
   private readonly groupViews = new Map<string, BatchCardView>();
   private forceRender = true;
   private t: Translator = createTranslator('en');
+  private cachedTopPageChromeOffset = 0;
+  private pageChromeOffsetDirty = true;
+  private pageChromeLayoutSignature = '';
+  private resizeListenerBound = false;
 
   constructor(
     private readonly doc: Document,
@@ -701,6 +721,12 @@ export class StatusBar {
     this.searchInput = null;
     this.groupsRoot = null;
     this.groupViews.clear();
+    if (this.resizeListenerBound) {
+      this.doc.defaultView?.removeEventListener('resize', this.handleWindowResize);
+      this.resizeListenerBound = false;
+    }
+    this.pageChromeOffsetDirty = true;
+    this.pageChromeLayoutSignature = '';
   }
 
   focusArchive(): void {}
@@ -716,9 +742,15 @@ export class StatusBar {
   }
 
   getBatchCardHeaderAnchor(groupId: string): HTMLElement | null {
-    return this.root?.querySelector<HTMLElement>(
-      `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"] .${UI_CLASS_NAMES.inlineBatchHeader}`,
-    ) ?? null;
+    return (
+      this.root?.querySelector<HTMLElement>(
+        `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"] .${UI_CLASS_NAMES.inlineBatchAction}`,
+      ) ??
+      this.root?.querySelector<HTMLElement>(
+        `[data-turbo-render-batch-anchor="true"][data-group-id="${groupId}"] .${UI_CLASS_NAMES.inlineBatchHeader}`,
+      ) ??
+      null
+    );
   }
 
   getBatchCardActionButton(groupId: string): HTMLButtonElement | null {
@@ -728,15 +760,26 @@ export class StatusBar {
   }
 
   getEntryActionAnchor(groupId: string, entryId: string): HTMLElement | null {
-    return this.root?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"]`,
-    ) ?? null;
+    if (this.root == null) {
+      return null;
+    }
+    const selector = `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"]`;
+    const anchors = [...this.root.querySelectorAll<HTMLElement>(selector)];
+    return anchors.find((candidate) => candidate.getClientRects().length > 0) ?? anchors[0] ?? null;
   }
 
   getEntryActionButton(groupId: string, entryId: string, action: ArchiveEntryAction): HTMLElement | null {
-    return this.root?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"] button[data-turbo-render-action="${action}"]`,
-    ) ?? null;
+    if (this.root == null) {
+      return null;
+    }
+    const selector = `.${UI_CLASS_NAMES.historyEntryActions}[data-group-id="${groupId}"][data-entry-id="${entryId}"] button[data-turbo-render-action="${action}"]`;
+    const buttons = [...this.root.querySelectorAll<HTMLElement>(selector)];
+    return buttons.find((candidate) => candidate.getClientRects().length > 0) ?? buttons[0] ?? null;
+  }
+
+  getTopPageChromeOffset(): number {
+    this.syncPageChromeOffset();
+    return this.cachedTopPageChromeOffset;
   }
 
   private mount(target: HTMLElement | null): void {
@@ -766,8 +809,14 @@ export class StatusBar {
       });
     }
 
+    if (!this.resizeListenerBound) {
+      this.doc.defaultView?.addEventListener('resize', this.handleWindowResize, { passive: true });
+      this.resizeListenerBound = true;
+    }
+
     if (this.root.parentElement !== target.parentElement || this.root.nextElementSibling !== target) {
       target.parentElement?.insertBefore(this.root, target);
+      this.markPageChromeOffsetDirty();
     }
   }
 
@@ -776,6 +825,7 @@ export class StatusBar {
       return;
     }
 
+    this.syncPageChromeOffset();
     const visible =
       this.currentState.collapsedBatchCount > 0 ||
       this.currentState.expandedBatchCount > 0 ||
@@ -811,8 +861,161 @@ export class StatusBar {
     this.forceRender = false;
   }
 
+  private readonly handleWindowResize = (): void => {
+    this.markPageChromeOffsetDirty();
+    this.syncPageChromeOffset();
+  };
+
+  private markPageChromeOffsetDirty(): void {
+    this.pageChromeOffsetDirty = true;
+  }
+
+  private computePageChromeLayoutSignature(): string {
+    const rect = this.root?.getBoundingClientRect();
+    if (rect == null) {
+      return '';
+    }
+    return [
+      Math.round(rect.left),
+      Math.round(rect.right),
+      Math.round(rect.width),
+    ].join(':');
+  }
+
+  private syncPageChromeOffset(): void {
+    if (this.root == null) {
+      return;
+    }
+
+    const layoutSignature = this.computePageChromeLayoutSignature();
+    if (layoutSignature !== this.pageChromeLayoutSignature) {
+      this.pageChromeLayoutSignature = layoutSignature;
+      this.pageChromeOffsetDirty = true;
+    }
+
+    if (this.pageChromeOffsetDirty) {
+      this.cachedTopPageChromeOffset = this.getPageHeaderOffset();
+      this.pageChromeOffsetDirty = false;
+    }
+
+    this.root.style.setProperty('--turbo-render-page-header-offset', `${this.cachedTopPageChromeOffset}px`);
+  }
+
+  private getPageHeaderOffset(): number {
+    const legacyOffset = this.getLegacyPageHeaderOffset();
+    const sampledOffset = this.getSampledTopChromeOffset();
+    const rawOffset = Math.max(legacyOffset, sampledOffset);
+    const viewportHeight = this.doc.defaultView?.innerHeight ?? 0;
+    if (viewportHeight <= 0) {
+      return Math.max(0, Math.round(rawOffset));
+    }
+
+    const maxOffset = Math.max(0, Math.round(viewportHeight - 24));
+    return Math.min(maxOffset, Math.max(0, Math.round(rawOffset)));
+  }
+
+  private getLegacyPageHeaderOffset(): number {
+    const selectors = ['header.page-header', '[data-testid="page-header"]', '.page-header'];
+    for (const selector of selectors) {
+      const element = this.doc.querySelector<HTMLElement>(selector);
+      if (element == null) {
+        continue;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (rect.height > 0 || rect.bottom > 0) {
+        return Math.max(0, Math.round(rect.bottom));
+      }
+    }
+
+    return 0;
+  }
+
+  private getSampledTopChromeOffset(): number {
+    const win = this.doc.defaultView;
+    if (win == null || typeof this.doc.elementsFromPoint !== 'function') {
+      return 0;
+    }
+
+    const viewportWidth = win.innerWidth;
+    const viewportHeight = win.innerHeight;
+    if (viewportWidth <= 0 || viewportHeight <= 0) {
+      return 0;
+    }
+
+    const contentRect = this.getPrimaryContentRect(viewportWidth);
+    const minX = Math.max(1, Math.round(contentRect.left + 8));
+    const maxX = Math.min(viewportWidth - 1, Math.round(contentRect.right - 8));
+    if (maxX < minX) {
+      return 0;
+    }
+
+    const centerX = Math.round((minX + maxX) / 2);
+    const sampleXs = [...new Set([minX, centerX, maxX])];
+    const maxSampleY = Math.max(1, Math.min(viewportHeight - 1, 220));
+    let offset = 0;
+
+    for (let y = 1; y <= maxSampleY; y += 8) {
+      for (const x of sampleXs) {
+        const stack = this.doc.elementsFromPoint(x, y);
+        for (const candidate of stack) {
+          if (!(candidate instanceof HTMLElement)) {
+            continue;
+          }
+          if (candidate.closest(`[${TURBO_RENDER_UI_ROOT_ATTRIBUTE}]`) != null) {
+            continue;
+          }
+
+          const style = win.getComputedStyle(candidate);
+          const isSemanticTopChrome =
+            candidate.matches('header, [role="banner"], [data-testid*="header"], [data-testid*="Header"]') ||
+            candidate.closest('header, [role="banner"]') != null;
+          if (style.position !== 'fixed' && style.position !== 'sticky' && !isSemanticTopChrome) {
+            continue;
+          }
+          if (style.display === 'none' || style.visibility === 'hidden') {
+            continue;
+          }
+
+          const rect = candidate.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) {
+            continue;
+          }
+          const horizontalOverlap = Math.min(rect.right, contentRect.right) - Math.max(rect.left, contentRect.left);
+          if (horizontalOverlap <= 0) {
+            continue;
+          }
+          if (rect.top > y + 1 || rect.bottom < y - 1) {
+            continue;
+          }
+
+          offset = Math.max(offset, Math.round(rect.bottom));
+          break;
+        }
+      }
+    }
+
+    return Math.max(0, offset);
+  }
+
+  private getPrimaryContentRect(viewportWidth: number): { left: number; right: number } {
+    const rootRect = this.root?.getBoundingClientRect() ?? null;
+    if (rootRect == null || rootRect.width <= 0) {
+      return {
+        left: 0,
+        right: viewportWidth,
+      };
+    }
+
+    return {
+      left: Math.max(0, rootRect.left),
+      right: Math.min(viewportWidth, rootRect.right),
+    };
+  }
+
   private syncGroupCards(groups: ManagedHistoryGroup[]): void {
     const nextIds = new Set(groups.map((group) => group.id));
+    let layoutChanged = false;
     for (const [groupId, view] of [...this.groupViews.entries()]) {
       if (nextIds.has(groupId)) {
         continue;
@@ -820,6 +1023,7 @@ export class StatusBar {
 
       view.root.remove();
       this.groupViews.delete(groupId);
+      layoutChanged = true;
     }
 
     const query = this.currentState?.searchQuery.trim().toLowerCase() ?? '';
@@ -833,6 +1037,7 @@ export class StatusBar {
       if (view == null) {
         view = this.createBatchCardView(group, query, previewKey, entriesKey);
         this.groupViews.set(group.id, view);
+        layoutChanged = true;
       } else if (
         this.forceRender ||
         view.expanded !== group.expanded ||
@@ -846,6 +1051,10 @@ export class StatusBar {
         this.groupsRoot.insertBefore(view.root, anchor);
       }
       anchor = view.root.nextSibling;
+    }
+
+    if (layoutChanged) {
+      this.markPageChromeOffsetDirty();
     }
   }
 
@@ -939,6 +1148,7 @@ export class StatusBar {
           menuOpen,
           this.currentState?.entryActionSpeakingEntryKey === entryKey ? '1' : '0',
           lane != null ? this.currentState?.entryActionTemplates[lane]?.html ?? '' : '',
+          lane != null ? String(this.currentState?.entryActionTemplates[lane]?.edgeInsetPx ?? '') : '',
         ].join(':');
       })
       .join('|');
@@ -1014,13 +1224,11 @@ export class StatusBar {
     button.addEventListener('click', () => this.actions.onToggleArchiveGroup(group.id, button));
     rail.append(button);
 
-    header.append(meta, rail);
-    root.append(header);
-
     const main = this.doc.createElement('div');
     main.className = UI_CLASS_NAMES.inlineBatchMain;
-    main.append(preview, entries);
-    root.append(main);
+    header.append(meta);
+    main.append(header, preview, entries);
+    root.append(main, rail);
 
     const view: BatchCardView = {
       root,
@@ -1050,9 +1258,10 @@ export class StatusBar {
     force = false,
   ): void {
     const nextExpanded = group.expanded;
+    const expandedChanged = view.expanded !== nextExpanded;
     const previewChanged = view.previewKey !== previewKey;
     const entriesChanged = view.entriesRendered && view.entriesKey !== entriesKey;
-    if (!force && !previewChanged && !entriesChanged && view.expanded === nextExpanded) {
+    if (!force && !previewChanged && !entriesChanged && !expandedChanged) {
       return;
     }
 
@@ -1080,6 +1289,10 @@ export class StatusBar {
     }
     view.entries.hidden = !nextExpanded;
     view.expanded = nextExpanded;
+
+    if (force || expandedChanged || shouldRenderEntries) {
+      this.markPageChromeOffsetDirty();
+    }
   }
 
   private renderCollapsedPreview(preview: HTMLElement, group: ManagedHistoryGroup): void {
@@ -1147,12 +1360,17 @@ export class StatusBar {
               this.applyResolvedMessageId(candidate, renderedHostMessageId);
             }
           }
-          frame.append(actionRow);
+          const mountedIntoHostSlot = this.mountEntryActionsIntoHostSlot(body, actionRow, lane);
+          if (!mountedIntoHostSlot) {
+            frame.append(actionRow);
+          }
         }
         article.append(frame);
       }
       entries.append(article);
     }
+
+    this.convergeEntryActionAlignment(entries);
   }
 
   private createEntryBody(group: ManagedHistoryGroup, entry: ManagedHistoryEntry): HTMLElement {
@@ -1171,6 +1389,58 @@ export class StatusBar {
       body.dataset.supplementalRole = entry.role;
     }
     return body;
+  }
+
+  private mountEntryActionsIntoHostSlot(
+    body: HTMLElement,
+    actions: HTMLElement,
+    lane: 'user' | 'assistant',
+  ): boolean {
+    if (body.dataset.renderKind !== 'host-snapshot') {
+      return false;
+    }
+
+    const preferredSlotHint = actions.dataset.templateSlotHint ?? null;
+    const candidateSlots = [
+      ...body.querySelectorAll<HTMLElement>(
+        'div.justify-start, div.justify-end, div[class*="justify-start"], div[class*="justify-end"]',
+      ),
+    ];
+    if (candidateSlots.length === 0) {
+      return false;
+    }
+
+    const matchesLane = (candidate: HTMLElement): boolean => {
+      const className = candidate.className;
+      if (typeof className !== 'string') {
+        return false;
+      }
+      const laneToken = lane === 'assistant' ? 'justify-start' : 'justify-end';
+      return className.includes(laneToken);
+    };
+
+    const slotByLane = candidateSlots.find(matchesLane) ?? null;
+    const slotByHint =
+      preferredSlotHint == null
+        ? null
+        : candidateSlots.find((candidate) => {
+            const className = candidate.className;
+            if (typeof className !== 'string') {
+              return false;
+            }
+            return preferredSlotHint === 'start'
+              ? className.includes('justify-start')
+              : className.includes('justify-end');
+          }) ?? null;
+    const slot = slotByLane ?? slotByHint ?? null;
+    if (slot == null) {
+      return false;
+    }
+
+    actions.dataset.actionMount = 'host-slot';
+    actions.style.removeProperty('--turbo-render-action-edge-inset');
+    slot.replaceChildren(actions);
+    return true;
   }
 
   private getEntryActionAvailability(entry: ManagedHistoryEntry): EntryActionAvailability {
@@ -1216,17 +1486,24 @@ export class StatusBar {
     actions.dataset.lane = lane;
     actions.dataset.menuOpen = String(menuOpen);
     actions.dataset.speaking = String(speaking);
+    actions.dataset.actionMount = 'fallback';
 
     const template = this.currentState?.entryActionTemplates[lane] ?? null;
     if (template != null) {
       const templateRoot = instantiateHostActionTemplate(this.doc, template);
       if (templateRoot != null) {
         this.prepareActionTemplateButtons(templateRoot, group, entry, lane, selectedAction, menuOpen, entryKey);
-        if (!this.shouldPreferHostMorePopover()) {
+        if (!this.shouldPreferHostMorePopover() || menuOpen) {
           this.wrapTemplateMoreButtonWithMenu(templateRoot, group, entry, lane, menuOpen, entryKey, speaking);
         }
+        if (template.slotHint != null) {
+          actions.dataset.templateSlotHint = template.slotHint;
+        } else {
+          delete actions.dataset.templateSlotHint;
+        }
         actions.dataset.template = 'host';
-        actions.append(templateRoot);
+        actions.append(this.createTemplateActionGroup(templateRoot, template));
+        this.applyActionAlignment(actions, lane, template.edgeInsetPx);
         return actions;
       }
     }
@@ -1246,7 +1523,112 @@ export class StatusBar {
       actions.append(this.createFallbackActionButton(group, entry, action, selectedAction, menuOpen, entryKey));
     }
 
+    this.applyActionAlignment(actions, lane, null);
     return actions;
+  }
+
+  private createTemplateActionGroup(
+    root: DocumentFragment,
+    template: HostActionTemplateSnapshot,
+  ): Node {
+    const wrapperClassName = template.wrapperClassName?.trim() ?? '';
+    const wrapperRole = template.wrapperRole?.trim() ?? '';
+    if (wrapperClassName.length === 0 && wrapperRole.length === 0) {
+      return root;
+    }
+
+    const wrapper = this.doc.createElement('div');
+    if (wrapperClassName.length > 0) {
+      wrapper.className = wrapperClassName;
+    }
+    if (wrapperRole.length > 0) {
+      wrapper.setAttribute('role', wrapperRole);
+    }
+    wrapper.dataset.turboRenderTemplateWrapper = 'true';
+    wrapper.append(root);
+    return wrapper;
+  }
+
+  private applyActionAlignment(
+    actions: HTMLElement,
+    lane: 'user' | 'assistant',
+    edgeInsetPx: number | null,
+  ): void {
+    actions.dataset.alignLane = lane;
+    const normalizedInset = this.normalizeActionEdgeInset(edgeInsetPx);
+    if (normalizedInset == null) {
+      delete actions.dataset.templateEdgeInset;
+      actions.style.removeProperty('--turbo-render-action-edge-inset');
+      return;
+    }
+
+    actions.dataset.templateEdgeInset = String(normalizedInset);
+    actions.style.setProperty('--turbo-render-action-edge-inset', `${normalizedInset}px`);
+  }
+
+  private normalizeActionEdgeInset(inset: number | null): number | null {
+    if (inset == null) {
+      return null;
+    }
+    const roundedInset = Math.round(inset);
+    if (!Number.isFinite(roundedInset) || roundedInset < 0 || roundedInset > 72) {
+      return null;
+    }
+    return roundedInset;
+  }
+
+  private convergeEntryActionAlignment(entriesRoot: HTMLElement): void {
+    const frames = entriesRoot.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane]`);
+    for (const frame of frames) {
+      const lane = frame.dataset.lane === 'user' ? 'user' : 'assistant';
+      const body = frame.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryBody}[data-lane="${lane}"]`,
+      );
+      const actions = frame.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="${lane}"]`,
+      );
+      if (body == null || actions == null) {
+        continue;
+      }
+      if (actions.dataset.actionMount === 'host-slot') {
+        actions.style.removeProperty('--turbo-render-action-edge-inset');
+        continue;
+      }
+
+      const measuredInset = this.measureActionInsetFromBody(body, actions, lane);
+      const fallbackInset = this.normalizeActionEdgeInset(
+        Number.parseFloat(actions.dataset.templateEdgeInset ?? ''),
+      );
+      const resolvedInset = measuredInset ?? fallbackInset;
+      if (resolvedInset == null) {
+        actions.style.removeProperty('--turbo-render-action-edge-inset');
+        continue;
+      }
+      actions.style.setProperty('--turbo-render-action-edge-inset', `${resolvedInset}px`);
+    }
+  }
+
+  private measureActionInsetFromBody(
+    body: HTMLElement,
+    actions: HTMLElement,
+    lane: 'user' | 'assistant',
+  ): number | null {
+    const bodyRect = body.getBoundingClientRect();
+    const actionsRect = actions.getBoundingClientRect();
+    if (
+      bodyRect.width <= 0 ||
+      bodyRect.height <= 0 ||
+      actionsRect.width <= 0 ||
+      actionsRect.height <= 0
+    ) {
+      return null;
+    }
+
+    const rawInset =
+      lane === 'assistant'
+        ? bodyRect.left - actionsRect.left
+        : actionsRect.right - bodyRect.right;
+    return this.normalizeActionEdgeInset(rawInset);
   }
 
   private createMoreActionAnchor(
@@ -1258,7 +1640,7 @@ export class StatusBar {
     entryKey: string,
     speaking: boolean,
   ): HTMLElement {
-    if (this.shouldPreferHostMorePopover()) {
+    if (this.shouldPreferHostMorePopover() && !menuOpen) {
       return this.createFallbackActionButton(group, entry, 'more', selectedAction, menuOpen, entryKey);
     }
 
@@ -1492,7 +1874,7 @@ export class StatusBar {
     entryKey: string,
     speaking: boolean,
   ): HTMLElement | null {
-    if (this.shouldPreferHostMorePopover() || !menuOpen || lane !== 'assistant') {
+    if (!menuOpen || lane !== 'assistant') {
       return null;
     }
 

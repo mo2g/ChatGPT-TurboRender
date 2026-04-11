@@ -42,6 +42,7 @@ export interface TurnRecord {
   parked: boolean;
   node: HTMLElement | null;
   messageId?: string | null;
+  contentRevision?: string | null;
 }
 
 export interface IndexRange {

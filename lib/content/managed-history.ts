@@ -248,11 +248,26 @@ export class ManagedHistoryStore {
   private turns: ManagedHistoryEntry[] = [];
   private domStartIndex = 0;
   private liveStartIndex = 0;
+  private readonly liveTurnRevisionCache = new Map<string, string>();
+  private revision = 0;
+  private pairsCache: {
+    revision: number;
+    pairs: InteractionPair<ManagedHistoryEntry>[];
+  } | null = null;
+  private readonly archiveBatchCache = new Map<
+    string,
+    {
+      revision: number;
+      batches: InteractionBatch<ManagedHistoryEntry>[];
+    }
+  >();
 
   clear(): void {
     this.turns = [];
     this.domStartIndex = 0;
     this.liveStartIndex = 0;
+    this.liveTurnRevisionCache.clear();
+    this.invalidateDerivedCaches();
   }
 
   setInitialTrimSession(session: InitialTrimSession | null): void {
@@ -279,6 +294,8 @@ export class ManagedHistoryStore {
         hiddenFromConversation: turn.hiddenFromConversation,
       }),
     );
+    this.liveTurnRevisionCache.clear();
+    this.invalidateDerivedCaches();
     this.reindexPairs();
   }
 
@@ -289,6 +306,8 @@ export class ManagedHistoryStore {
           turn.liveTurnId = null;
         }
       }
+      this.liveTurnRevisionCache.clear();
+      this.invalidateDerivedCaches();
       return;
     }
 
@@ -305,11 +324,21 @@ export class ManagedHistoryStore {
       }
     }
 
+    const nextLiveTurnIds = new Set<string>();
     records.forEach((record, offset) => {
       const absoluteIndex = this.liveStartIndex + offset;
-      const parts = extractNodeParts(record.node);
-      const snapshotHtml = createHostSnapshotHtml(record.node);
       const existing = this.turns[absoluteIndex];
+      const recordRevision = record.contentRevision?.trim() ?? '';
+      const previousRevision = this.liveTurnRevisionCache.get(record.id) ?? '';
+      const canReuseSnapshot =
+        !record.isStreaming &&
+        recordRevision.length > 0 &&
+        previousRevision === recordRevision &&
+        existing?.liveTurnId === record.id &&
+        existing.renderKind === 'host-snapshot' &&
+        existing.snapshotHtml != null;
+      const parts = canReuseSnapshot ? existing.parts : extractNodeParts(record.node);
+      const snapshotHtml = canReuseSnapshot ? existing.snapshotHtml : createHostSnapshotHtml(record.node);
       const next = createEntry({
         id: existing?.id ?? `history:${record.id}:${absoluteIndex}`,
         source: absoluteIndex < this.domStartIndex ? 'initial-trim' : 'parked-group',
@@ -337,7 +366,19 @@ export class ManagedHistoryStore {
       } else {
         this.turns.push(next);
       }
+      nextLiveTurnIds.add(record.id);
+      if (recordRevision.length > 0) {
+        this.liveTurnRevisionCache.set(record.id, recordRevision);
+      } else {
+        this.liveTurnRevisionCache.delete(record.id);
+      }
     });
+
+    for (const turnId of [...this.liveTurnRevisionCache.keys()]) {
+      if (!nextLiveTurnIds.has(turnId)) {
+        this.liveTurnRevisionCache.delete(turnId);
+      }
+    }
 
     for (let index = this.liveStartIndex + records.length; index < this.turns.length; index += 1) {
       this.turns[index] = {
@@ -346,10 +387,13 @@ export class ManagedHistoryStore {
       };
     }
 
-    this.turns = this.turns.map((turn, index) => ({
-      ...turn,
-      turnIndex: index,
-    }));
+    for (let index = 0; index < this.turns.length; index += 1) {
+      const turn = this.turns[index];
+      if (turn != null) {
+        turn.turnIndex = index;
+      }
+    }
+    this.invalidateDerivedCaches();
     this.reindexPairs();
   }
 
@@ -498,23 +542,36 @@ export class ManagedHistoryStore {
   }
 
   private buildPairs(): InteractionPair<ManagedHistoryEntry>[] {
-    const ordered = [...this.turns].sort((left, right) => left.turnIndex - right.turnIndex);
-    return buildInteractionPairs(
-      ordered.map((turn) => ({
+    if (this.pairsCache?.revision === this.revision) {
+      return this.pairsCache.pairs;
+    }
+
+    const pairs = buildInteractionPairs(
+      this.turns.map((turn) => ({
         ...turn,
         text: turn.text,
       })),
     );
+    this.pairsCache = {
+      revision: this.revision,
+      pairs,
+    };
+    return pairs;
   }
 
   private reindexPairs(): void {
     const pairs = this.buildPairs();
+    const pairIndexByTurnId = new Map<string, number>();
     for (const pair of pairs) {
       for (const entry of pair.entries) {
-        const target = this.turns.find((turn) => turn.id === entry.id);
-        if (target != null) {
-          target.pairIndex = pair.pairIndex;
-        }
+        pairIndexByTurnId.set(entry.id, pair.pairIndex);
+      }
+    }
+
+    for (const turn of this.turns) {
+      const pairIndex = pairIndexByTurnId.get(turn.id);
+      if (pairIndex != null) {
+        turn.pairIndex = pairIndex;
       }
     }
   }
@@ -528,6 +585,23 @@ export class ManagedHistoryStore {
     hotPairCount: number,
     batchPairCount: number,
   ): InteractionBatch<ManagedHistoryEntry>[] {
-    return buildInteractionBatches(this.getArchivedPairs(hotPairCount), batchPairCount, 'archive');
+    const cacheKey = `${hotPairCount}:${batchPairCount}`;
+    const cached = this.archiveBatchCache.get(cacheKey);
+    if (cached != null && cached.revision === this.revision) {
+      return cached.batches;
+    }
+
+    const batches = buildInteractionBatches(this.getArchivedPairs(hotPairCount), batchPairCount, 'archive');
+    this.archiveBatchCache.set(cacheKey, {
+      revision: this.revision,
+      batches,
+    });
+    return batches;
+  }
+
+  private invalidateDerivedCaches(): void {
+    this.revision += 1;
+    this.pairsCache = null;
+    this.archiveBatchCache.clear();
   }
 }

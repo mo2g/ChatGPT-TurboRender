@@ -97,6 +97,25 @@ export async function launchControlledBrowser(targetUrl = 'about:blank'): Promis
     };
   }
 
+  // Prefer attaching to an already-running local debug Chrome (default 9222)
+  // so local signed-in state is preserved during e2e runs.
+  const defaultDebugPort = 9222;
+  try {
+    await waitForRemoteDebugEndpoint(defaultDebugPort, 1_000);
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${defaultDebugPort}`);
+    const userDataDir = await resolveChromeProfileDir(defaultDebugPort);
+    return {
+      browser,
+      debugPort: defaultDebugPort,
+      userDataDir,
+      async cleanup() {
+        // Keep existing local debug Chrome alive.
+      },
+    };
+  } catch {
+    // Fall through to managed launch path.
+  }
+
   const launch = await spawnLaunchableChromium({
     repoRoot,
     targetUrl,
