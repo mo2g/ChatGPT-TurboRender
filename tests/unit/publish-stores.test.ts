@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,7 +6,6 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error - The helper lives in an executable .mjs script.
 import {
   extractOperationId,
   isBenignEdgePublishFailure,

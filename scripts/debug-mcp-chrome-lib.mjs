@@ -59,6 +59,8 @@ export function buildChromeArgs({ debugPort, userDataDir, extensionPath, targetU
   return [
     '--disable-crashpad-for-testing',
     '--disable-features=DisableLoadExtensionCommandLineSwitch',
+    '--use-mock-keychain',
+    '--password-store=basic',
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${userDataDir}`,
     ...buildExtensionLoadArgs(extensionPath),
@@ -67,14 +69,8 @@ export function buildChromeArgs({ debugPort, userDataDir, extensionPath, targetU
 }
 
 export function buildLaunchCommand({ platform, binaryPath, chromeArgs }) {
-  const appBundlePath = platform === 'darwin' ? getAppBundlePath(binaryPath) : null;
-  if (platform === 'darwin' && appBundlePath != null) {
-    return {
-      command: 'open',
-      args: ['-na', appBundlePath, '--args', ...chromeArgs],
-    };
-  }
-
+  // Launch the browser executable directly so environment overrides
+  // (HOME/XDG paths) take effect. `open -na` discards these overrides.
   return {
     command: binaryPath,
     args: chromeArgs,

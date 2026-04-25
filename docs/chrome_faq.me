@@ -1,0 +1,66 @@
+这个 403 基本就是三类问题之一：服务账号没有被加到对应 publisher、PUBLISHER_ID 不对、EXTENSION_ID 不属于这个 publisher。Chrome 官方的 service account 文档明确要求：要先在 Chrome Web Store Developer Dashboard 的 Account 页面把 service account 的邮箱加进去，才能让它管理该 publisher 名下的条目。 ￼
+
+你可以按这个顺序排查：
+
+先确认 service account 邮箱。打开你本地的 CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON，看里面的 client_email。然后去 Chrome Web Store Developer Dashboard → Account，把这个完整邮箱加入该 publisher 的 service account 配置里。官方文档说明 service account 访问权限就是在 Developer Dashboard 的 Account 区域配置的，而且目前一个 publisher 只能添加一个 service account。 ￼
+
+再确认你选中的 publisher 是不是正确那个。如果你同时有个人 publisher 和 group publisher，很容易加到了 A publisher，但 workflow 用的是 B publisher。Chrome 官方的 group publisher 文档说明，右上角有 publisher 切换器，你需要切到目标 publisher 才能管理它名下的扩展。 ￼
+
+然后核对 CHROME_WEB_STORE_PUBLISHER_ID。这个值来自 Developer Dashboard 的 Account 页面，不是 Google Cloud Console。你的 workflow 里这个 ID 必须和你刚才添加 service account 的那个 publisher 完全一致，否则请求路径 publishers/{publisherId}/items/{itemId} 会被拒。官方文档也说明 publisher 相关信息在 Developer Dashboard 的 Account 页面里。 ￼
+
+接着核对 CHROME_WEB_STORE_EXTENSION_ID。它必须是这个 publisher 拥有的那个扩展的实际 ID，而不是别的扩展、别的环境、或者 Edge/Firefox 的 ID。Chrome 官方说明扩展是和当前选中的 publisher 关联的；选择不同 publisher，看到的 item 列表会不同。 ￼
+
+再确认 Google Cloud 项目里确实启用了 Chrome Web Store API，并且你下载的 JSON 就是你加到 Dashboard 的那个 service account 对应的 key。官方 setup 步骤是：在 Google Cloud 启用 Chrome Web Store API，创建 service account，再把它的邮箱加到 Developer Dashboard。 ￼
+
+一个最实用的检查方法是，把三项信息并排核对一次：
+
+1. CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON → client_email
+2. CHROME_WEB_STORE_PUBLISHER_ID      → Developer Dashboard > Account 的 publisher
+3. CHROME_WEB_STORE_EXTENSION_ID      → 该 publisher 名下这个扩展的 ID
+
+只要这三者不是同一个 publisher 体系里的，就会出现你现在这种 403。这个报错本身也已经提示了这两点：service account 是否已加到该 publisher，以及 extension ID 是否属于该 publisher。这个判断和官方 service account 授权模型是一致的。 ￼
+
+你可以这样修：
+
+# 1) 看 service account 邮箱
+jq -r '.client_email' /path/to/service-account.json
+
+# 2) 去 Chrome Web Store Developer Dashboard
+#    右上角切到正确 publisher
+#    Account 页面添加上面这个邮箱
+
+# 3) 从同一个 publisher 的 Account 页面重新抄一次 Publisher ID
+# 4) 从同一个 publisher 名下的扩展页面重新抄一次 Extension ID
+
+如果你刚加完 service account 还是报错，先保存并刷新 Dashboard，再重新跑一次。有 group publisher 变更时，官方说明有些 dashboard 权限变更传播可能不是即时的。 ￼
+
+你也可以直接用这个自查清单逐项对：
+
+[ ] Google Cloud 项目已启用 Chrome Web Store API
+[ ] JSON 里的 client_email 已添加到 Chrome Web Store Developer Dashboard > Account
+[ ] 添加邮箱时所在的 publisher 与 workflow 使用的 publisher 相同
+[ ] CHROME_WEB_STORE_PUBLISHER_ID 来自该 publisher 的 Account 页面
+[ ] CHROME_WEB_STORE_EXTENSION_ID 是该 publisher 名下该扩展的真实 ID
+[ ] 没有把个人 publisher 和 group publisher 混用
+
+把你现在的这三项值的来源发我：
+client_email、CHROME_WEB_STORE_PUBLISHER_ID、CHROME_WEB_STORE_EXTENSION_ID。我可以帮你快速判断是加错 publisher还是扩展 ID 配错。
+
+
+
+```
+(
+  export CHROME_WEB_STORE_SERVICE_ACCOUNT_JSON="$(cat /Users/xx/chrome/gen-lang-client-1-2.json)"
+  export CHROME_WEB_STORE_PUBLISHER_ID='aaaaaa'
+  export CHROME_WEB_STORE_EXTENSION_ID='bbbbbbb'
+  pnpm chrome:preflight
+)
+
+
+结果怎么看
+
+200 OK：这几个关键参数基本正确，且 service account 有读权限
+401 Unauthorized：通常是 service account JSON、私钥或 OAuth 配置有问题
+403 Forbidden：通常是 service account 没绑到对应 publisher，或者 extension ID 和 item 不匹配
+404 Not Found：通常是 publisher ID 或 extension ID 填错了
+```

@@ -1,20 +1,49 @@
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chromium } from '@playwright/test';
 
+// @ts-expect-error The shared ESM helper is runtime-tested but does not ship TypeScript declarations.
 import { spawnLaunchableChromium, waitForRemoteDebugEndpoint } from '../../scripts/debug-mcp-chrome-lib.mjs';
+// @ts-expect-error The shared ESM helper is runtime-tested but does not ship TypeScript declarations.
+import { resolveChromeProfileDir } from '../../scripts/reload-mcp-chrome-lib.mjs';
 
-const repoRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+function resolveRepoRoot(): string {
+  const metaUrl = import.meta.url;
+  if (metaUrl.startsWith('file://')) {
+    return path.resolve(fileURLToPath(new URL('../..', metaUrl)));
+  }
+
+  return path.resolve(process.cwd());
+}
+
+const repoRoot = resolveRepoRoot();
 const extensionPath = path.join(repoRoot, '.output', 'chrome-mv3');
-const chromeProfileRoot = path.join(repoRoot, '.wxt', 'mcp-chrome-profile');
 
 export interface ControlledBrowserHandle {
   browser: Awaited<ReturnType<typeof chromium.connectOverCDP>>;
   debugPort: number;
   userDataDir: string | null;
   cleanup(): Promise<void>;
+}
+
+export type ControlledBrowserLaunchMode = 'managed' | 'prefer-existing' | 'require-existing';
+
+export interface ControlledBrowserLaunchOptions {
+  debugPort?: number;
+  mode?: ControlledBrowserLaunchMode;
+}
+
+interface LaunchableChromiumInstance {
+  child: {
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+    kill(signal?: NodeJS.Signals | number): boolean;
+  };
+  debugPort: number;
+  userDataDir: string;
 }
 
 function parseDebugPort(value: string | undefined): number | null {
@@ -26,31 +55,42 @@ function parseDebugPort(value: string | undefined): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-async function resolveChromeProfileDir(debugPort: number): Promise<string | null> {
-  let entries: Array<Awaited<ReturnType<typeof fs.readdir>>[number]> = [];
-  try {
-    entries = await fs.readdir(chromeProfileRoot, { withFileTypes: true });
-  } catch {
-    return null;
-  }
+async function findFreeDebugPort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address == null || typeof address === 'string') {
+        reject(new Error('Unable to reserve a local debugging port.'));
+        return;
+      }
 
-  const candidates = entries
-    .filter((entry) => entry.isDirectory() && entry.name.includes(`-${debugPort}`))
-    .map((entry) => path.join(chromeProfileRoot, entry.name));
+      server.close((error) => {
+        if (error != null) {
+          reject(error);
+          return;
+        }
 
-  if (candidates.length === 0) {
-    return null;
-  }
+        resolve(address.port);
+      });
+    });
+  });
+}
 
-  const stats = await Promise.all(
-    candidates.map(async (candidate) => ({
-      candidate,
-      stat: await fs.stat(candidate),
-    })),
-  );
-
-  stats.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs);
-  return stats[0]?.candidate ?? null;
+async function attachToExistingDebugBrowser(debugPort: number): Promise<ControlledBrowserHandle> {
+  await waitForRemoteDebugEndpoint(debugPort);
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  const userDataDir = await resolveChromeProfileDir(repoRoot, debugPort);
+  return {
+    browser,
+    debugPort,
+    userDataDir,
+    async cleanup() {
+      // Keep the externally managed debug browser alive.
+    },
+  };
 }
 
 export async function resolveExtensionIdFromProfile(userDataDir: string, timeoutMs = 15_000): Promise<string> {
@@ -65,8 +105,9 @@ export async function resolveExtensionIdFromProfile(userDataDir: string, timeout
         .map((entry) => entry.name)
         .sort();
 
-      if (extensionIds.length > 0) {
-        return extensionIds[0];
+      const [firstExtensionId] = extensionIds;
+      if (firstExtensionId != null) {
+        return firstExtensionId;
       }
     } catch {
       // Keep waiting until Chrome finishes creating the profile entries.
@@ -80,47 +121,32 @@ export async function resolveExtensionIdFromProfile(userDataDir: string, timeout
   throw new Error(`Timed out waiting for the extension ID under ${extensionSettingsDir}.`);
 }
 
-export async function launchControlledBrowser(targetUrl = 'about:blank'): Promise<ControlledBrowserHandle> {
-  const explicitDebugPort = parseDebugPort(process.env.CHROME_DEBUG_PORT);
-  if (explicitDebugPort != null) {
-    await waitForRemoteDebugEndpoint(explicitDebugPort);
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${explicitDebugPort}`);
-    const userDataDir = await resolveChromeProfileDir(explicitDebugPort);
-    return {
-      browser,
-      debugPort: explicitDebugPort,
-      userDataDir,
-      async cleanup() {
-        // Intentionally keep the connected browser alive so an already logged-in
-        // Chrome for Testing profile survives test teardown.
-      },
-    };
+export async function launchControlledBrowser(
+  targetUrl = 'about:blank',
+  options: ControlledBrowserLaunchOptions = {},
+): Promise<ControlledBrowserHandle> {
+  const mode = options.mode ?? 'managed';
+  const requestedDebugPort = options.debugPort ?? parseDebugPort(process.env.CHROME_DEBUG_PORT) ?? 9222;
+
+  if (mode === 'require-existing') {
+    return await attachToExistingDebugBrowser(requestedDebugPort);
   }
 
-  // Prefer attaching to an already-running local debug Chrome (default 9222)
-  // so local signed-in state is preserved during e2e runs.
-  const defaultDebugPort = 9222;
-  try {
-    await waitForRemoteDebugEndpoint(defaultDebugPort, 1_000);
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${defaultDebugPort}`);
-    const userDataDir = await resolveChromeProfileDir(defaultDebugPort);
-    return {
-      browser,
-      debugPort: defaultDebugPort,
-      userDataDir,
-      async cleanup() {
-        // Keep existing local debug Chrome alive.
-      },
-    };
-  } catch {
-    // Fall through to managed launch path.
+  if (mode === 'prefer-existing') {
+    try {
+      return await attachToExistingDebugBrowser(requestedDebugPort);
+    } catch {
+      // Fall through to a repo-managed launch.
+    }
   }
 
-  const launch = await spawnLaunchableChromium({
+  const managedDebugPort = options.debugPort ?? (await findFreeDebugPort());
+  const launch = (await spawnLaunchableChromium({
     repoRoot,
     targetUrl,
     extensionPath,
-  });
+    debugPort: managedDebugPort,
+  })) as LaunchableChromiumInstance;
 
   try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${launch.debugPort}`);

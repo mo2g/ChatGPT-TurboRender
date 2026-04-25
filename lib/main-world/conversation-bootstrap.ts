@@ -539,14 +539,14 @@ export function installConversationBootstrap(
   win.addEventListener('load', () => scheduleShareSync(), { once: true });
   win.addEventListener('popstate', () => scheduleShareSync());
 
-  const nativePushState = win.History.prototype.pushState;
-  const nativeReplaceState = win.History.prototype.replaceState;
-  win.History.prototype.pushState = function pushState(this: History, ...args: Parameters<History['pushState']>) {
+  const nativePushState = History.prototype.pushState;
+  const nativeReplaceState = History.prototype.replaceState;
+  History.prototype.pushState = function pushState(this: History, ...args: Parameters<History['pushState']>) {
     const result = nativePushState.apply(this, args);
     scheduleShareSync();
     return result;
   };
-  win.History.prototype.replaceState = function replaceState(
+  History.prototype.replaceState = function replaceState(
     this: History,
     ...args: Parameters<History['replaceState']>
   ) {
@@ -592,11 +592,11 @@ export function installConversationBootstrap(
     return rewrittenText == null ? response : createRewrittenResponse(response, rewrittenText);
   }) as typeof win.fetch;
 
-  const xhrOpen = win.XMLHttpRequest.prototype.open;
-  const xhrSend = win.XMLHttpRequest.prototype.send;
+  const xhrOpen = XMLHttpRequest.prototype.open;
+  const xhrSend = XMLHttpRequest.prototype.send;
   const trackedUrls = new WeakMap<XMLHttpRequest, string>();
 
-  win.XMLHttpRequest.prototype.open = function open(
+  XMLHttpRequest.prototype.open = function open(
     this: XMLHttpRequest,
     method: string,
     url: string | URL,
@@ -608,7 +608,7 @@ export function installConversationBootstrap(
     xhrOpen.call(this, method, url, async ?? true, username ?? null, password ?? null);
   };
 
-  win.XMLHttpRequest.prototype.send = function send(
+  XMLHttpRequest.prototype.send = function send(
     this: XMLHttpRequest,
     body?: Document | XMLHttpRequestBodyInit | null,
   ): void {
@@ -619,7 +619,7 @@ export function installConversationBootstrap(
     }
 
     const handleReadyStateChange = () => {
-      if (this.readyState !== win.XMLHttpRequest.DONE || !canRewriteXhrResponse(this)) {
+      if (this.readyState !== XMLHttpRequest.DONE || !canRewriteXhrResponse(this)) {
         return;
       }
 
@@ -650,9 +650,9 @@ export function installConversationBootstrap(
     xhrSend.call(this, body);
   };
 
-  const nativeAudioSrcDescriptor = Object.getOwnPropertyDescriptor(win.HTMLMediaElement.prototype, 'src');
+  const nativeAudioSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
   if (nativeAudioSrcDescriptor?.configurable === true && nativeAudioSrcDescriptor.get != null && nativeAudioSrcDescriptor.set != null) {
-    Object.defineProperty(win.HTMLMediaElement.prototype, 'src', {
+    Object.defineProperty(HTMLMediaElement.prototype, 'src', {
       configurable: true,
       enumerable: nativeAudioSrcDescriptor.enumerable ?? false,
       get(this: HTMLMediaElement): string {
@@ -675,10 +675,10 @@ export function installConversationBootstrap(
     clearShareSync();
     win.removeEventListener('message', handleBridgeMessage);
     win.fetch = nativeFetch;
-    win.XMLHttpRequest.prototype.open = xhrOpen;
-    win.XMLHttpRequest.prototype.send = xhrSend;
-    win.History.prototype.pushState = nativePushState;
-    win.History.prototype.replaceState = nativeReplaceState;
+    XMLHttpRequest.prototype.open = xhrOpen;
+    XMLHttpRequest.prototype.send = xhrSend;
+    History.prototype.pushState = nativePushState;
+    History.prototype.replaceState = nativeReplaceState;
     bootstrapWindow.__turboRenderConversationBootstrapInstalled__ = false;
   };
 }

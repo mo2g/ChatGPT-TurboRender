@@ -11,6 +11,7 @@ import {
   classifyBrowserBinary,
   resolveLaunchableChromiumBinary,
 } from './debug-mcp-chrome-lib.mjs';
+import { resolveChromeProfileDir, writeActiveChromeProfileHint } from './reload-mcp-chrome-lib.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,9 +109,16 @@ ensureBuildExists();
 const forceRestart = process.env.CHROME_DEBUG_FORCE_RESTART === '1';
 const portAlive = !forceRestart && (await waitForRemoteDebugEndpoint(debugPort));
 if (portAlive) {
+  const activeProfileDir = await resolveChromeProfileDir(repoRoot, debugPort).catch(() => null);
+  if (activeProfileDir != null) {
+    await writeActiveChromeProfileHint(repoRoot, debugPort, activeProfileDir).catch(() => undefined);
+  }
   await openUrlInExistingBrowser(debugPort, targetUrl);
   console.log(`[TurboRender] reusing existing Chrome on http://127.0.0.1:${debugPort}`);
   console.log(`[TurboRender] extension path: ${extensionPath}`);
+  if (activeProfileDir != null) {
+    console.log(`[TurboRender] profile path: ${activeProfileDir}`);
+  }
   console.log('[TurboRender] keep the existing browser/profile open to preserve sign-in state.');
   process.exit(0);
 }
@@ -154,3 +162,4 @@ console.log(`[TurboRender] browser: ${browserKind} (${chromeBinary})`);
 console.log(`[TurboRender] extension path: ${extensionPath}`);
 console.log(`[TurboRender] profile path: ${userDataDir}`);
 console.log('[TurboRender] restart Codex after launching so chrome-devtools MCP reconnects to this browser.');
+await writeActiveChromeProfileHint(repoRoot, debugPort, userDataDir).catch(() => undefined);

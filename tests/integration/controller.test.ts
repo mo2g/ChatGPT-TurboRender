@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
@@ -5,13 +6,77 @@ import { getChatIdFromPathname } from '../../lib/shared/chat-id';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import { StatusBar } from '../../lib/content/status-bar';
 import { installConversationBootstrap } from '../../lib/main-world/conversation-bootstrap';
-import type { InitialTrimSession } from '../../lib/shared/types';
+import type { ArchiveEntryAction } from '../../lib/content/message-actions';
+import type { InitialTrimSession, ManagedHistoryEntry } from '../../lib/shared/types';
 import { mountGroupedTranscriptFixture, mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
 async function flush(): Promise<void> {
   for (let index = 0; index < 4; index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
+}
+
+type ArchiveBoundaryAction =
+  | 'open-archive-newest'
+  | 'go-archive-older'
+  | 'go-archive-newer'
+  | 'go-archive-recent';
+
+async function clickArchiveBoundaryAction(action: ArchiveBoundaryAction): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>(`[data-turbo-render-action="${action}"]`);
+  expect(button).not.toBeNull();
+  button?.click();
+  await flush();
+}
+
+async function openNewestArchivePage(): Promise<void> {
+  await clickArchiveBoundaryAction('open-archive-newest');
+}
+
+async function goOlderArchivePage(): Promise<void> {
+  await clickArchiveBoundaryAction('go-archive-older');
+}
+
+async function goNewerArchivePage(): Promise<void> {
+  await clickArchiveBoundaryAction('go-archive-newer');
+}
+
+async function goToRecentArchiveView(): Promise<void> {
+  await clickArchiveBoundaryAction('go-archive-recent');
+}
+
+async function toggleArchiveSearch(): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>('[data-turbo-render-action="toggle-archive-search"]');
+  expect(button).not.toBeNull();
+  button?.click();
+  await flush();
+}
+
+function getArchiveSearchInput(): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>('[data-turbo-render-action="archive-search-input"]');
+}
+
+async function setArchiveSearchQuery(query: string): Promise<void> {
+  const input = getArchiveSearchInput();
+  expect(input).not.toBeNull();
+  input!.value = query;
+  input!.dispatchEvent(new Event('input', { bubbles: true }));
+  await flush();
+}
+
+async function clearArchiveSearch(): Promise<void> {
+  const button = document.querySelector<HTMLButtonElement>('[data-turbo-render-action="clear-archive-search"]');
+  expect(button).not.toBeNull();
+  button?.click();
+  await flush();
+}
+
+async function clickArchiveSearchResult(index = 0): Promise<void> {
+  const buttons = document.querySelectorAll<HTMLButtonElement>('[data-turbo-render-action="open-archive-search-result"]');
+  const button = buttons[index] ?? null;
+  expect(button).not.toBeNull();
+  button?.click();
+  await flush();
 }
 
 function createSessionTurn(
@@ -130,6 +195,7 @@ describe('TurboRenderController', () => {
     delete document.body.dataset.turboRenderDebugReadAloudMenuAction;
     delete document.body.dataset.turboRenderDebugReadAloudResolvedConversationId;
     delete document.body.dataset.turboRenderDebugReadAloudResolvedMessageId;
+    delete document.body.dataset.turboRenderDebugReadAloudResponseStatus;
     delete document.body.dataset.turboRenderReadAloudConversationId;
     delete document.body.dataset.turboRenderReadAloudEntryRole;
     delete document.body.dataset.turboRenderReadAloudEntryText;
@@ -151,6 +217,7 @@ describe('TurboRenderController', () => {
     delete document.documentElement.dataset.turboRenderDebugReadAloudMenuAction;
     delete document.documentElement.dataset.turboRenderDebugReadAloudResolvedConversationId;
     delete document.documentElement.dataset.turboRenderDebugReadAloudResolvedMessageId;
+    delete document.documentElement.dataset.turboRenderDebugReadAloudResponseStatus;
     delete document.documentElement.dataset.turboRenderReadAloudConversationId;
     delete document.documentElement.dataset.turboRenderReadAloudEntryRole;
     delete document.documentElement.dataset.turboRenderReadAloudEntryText;
@@ -189,15 +256,21 @@ describe('TurboRenderController', () => {
     controller.start();
     await flush();
 
-    const status = controller.getStatus();
-    expect(status.archivedTurnsTotal).toBe(14);
-    expect(status.collapsedBatchCount).toBeGreaterThan(0);
-
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
     expect(inlineRoot).not.toBeNull();
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineHistoryBoundary}`)).not.toBeNull();
+    expect(inlineRoot?.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
     expect(inlineRoot?.nextElementSibling).toBe(fixture.transcript);
     expect(document.querySelector(`.${UI_CLASS_NAMES.historyTrigger}`)).toBeNull();
     expect(document.querySelector(`.${UI_CLASS_NAMES.archiveRoot}`)).toBeNull();
+
+    const status = controller.getStatus();
+    expect(status.archivedTurnsTotal).toBe(14);
+
+    await openNewestArchivePage();
+    await flush();
+
+    expect(controller.getStatus().collapsedBatchCount).toBeGreaterThan(0);
 
     const initialBatchHeader = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchHeader}`);
     expect(initialBatchHeader).not.toBeNull();
@@ -240,7 +313,9 @@ describe('TurboRenderController', () => {
     expect(turboRenderStyle).toContain('max-width: 100%');
     expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
     expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryActionMenuAnchor}`);
-    expect(turboRenderStyle).toContain('bottom: calc(100% + 8px)');
+    expect(turboRenderStyle).toContain('width: min(100%, 48rem)');
+    expect(turboRenderStyle).toContain('position: fixed');
+    expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryActionMenuHeader}`);
     expect(turboRenderStyle).toContain(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="host-snapshot"]`);
     expect(turboRenderStyle).toContain('display: block');
     expect(turboRenderStyle).toContain('padding: 0');
@@ -257,7 +332,7 @@ describe('TurboRenderController', () => {
     expect(batchMetaLabels[1]).toBe('Pair #6-10 · 2/5');
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineBatchPreview}`)).not.toBeNull();
     fixture.scroller.scrollTop = 480;
-    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       const batchCard = this.closest?.(`.${UI_CLASS_NAMES.inlineBatchCard}[data-group-id="archive-slot-0"]`);
       if (batchCard instanceof HTMLElement) {
         const expanded = batchCard.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntries}`)?.hidden === false;
@@ -386,6 +461,127 @@ describe('TurboRenderController', () => {
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
   });
 
+  it('switches between archive pages and returns to the recent view', async () => {
+    mountTranscriptFixture(document, { turnCount: 60, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    controller.setInitialTrimSession(createInitialTrimSession(60, 42));
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    expect(inlineRoot).not.toBeNull();
+    expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineHistoryBoundary}`)).not.toBeNull();
+    expect(inlineRoot?.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
+
+    const pager = controller as unknown as {
+      archivePager: { currentPageIndex: number | null };
+    };
+
+    await openNewestArchivePage();
+    expect(pager.archivePager.currentPageIndex).toBe(1);
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
+
+    await goOlderArchivePage();
+    await flush();
+    expect(pager.archivePager.currentPageIndex).toBe(0);
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
+
+    await goNewerArchivePage();
+    expect(pager.archivePager.currentPageIndex).toBe(1);
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
+
+    await goToRecentArchiveView();
+    expect(pager.archivePager.currentPageIndex).toBeNull();
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
+  });
+
+  it('opens archive search results by page and keeps the match highlighted after the jump', async () => {
+    mountTranscriptFixture(document, { turnCount: 60, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    const session = createInitialTrimSession(60, 42);
+    session.turns[10] = createSessionTurn(10, { parts: ['older search needle localhost:5000'] });
+    session.turns[40] = createSessionTurn(40, { parts: ['newer search needle localhost:5000'] });
+    controller.setInitialTrimSession(session);
+    controller.start();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    expect(inlineRoot?.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
+
+    await toggleArchiveSearch();
+    expect(getArchiveSearchInput()).not.toBeNull();
+
+    await setArchiveSearchQuery('localhost:5000');
+
+    const resultButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-turbo-render-action="open-archive-search-result"]')];
+    expect(resultButtons).toHaveLength(2);
+    expect(resultButtons[0]?.dataset.pageIndex).toBe('1');
+    expect(resultButtons[0]?.dataset.pairIndex).toBe('20');
+    expect(resultButtons[1]?.dataset.pageIndex).toBe('0');
+    expect(resultButtons[1]?.dataset.pairIndex).toBe('5');
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
+
+    await clickArchiveSearchResult(1);
+
+    const pager = controller as unknown as {
+      archivePager: { currentPageIndex: number | null };
+    };
+    expect(pager.archivePager.currentPageIndex).toBe(0);
+
+    const olderPageBatch = document.querySelector<HTMLElement>(
+      '[data-turbo-render-batch-anchor="true"][data-group-id="archive-slot-1"]',
+    );
+    expect(olderPageBatch).not.toBeNull();
+    expect(olderPageBatch?.getAttribute('data-state')).toBe('expanded');
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"][data-group-id="archive-slot-4"]')).toBeNull();
+
+    const activeResult = document.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.inlineHistorySearchResult}.${UI_CLASS_NAMES.inlineHistorySearchResultActive}`,
+    );
+    expect(activeResult?.dataset.pageIndex).toBe('0');
+    expect(activeResult?.dataset.pairIndex).toBe('5');
+
+    const highlightedPair = document.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.inlineBatchSearchHighlight}[data-pair-index="5"]`,
+    );
+    expect(highlightedPair).not.toBeNull();
+
+    await clearArchiveSearch();
+
+    expect(document.querySelector('[data-turbo-render-action="open-archive-search-result"]')).toBeNull();
+    expect(document.querySelector(`.${UI_CLASS_NAMES.inlineBatchSearchHighlight}`)).toBeNull();
+    expect(document.querySelector('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
+    expect(pager.archivePager.currentPageIndex).toBe(0);
+  });
+
   it('uses sampled sticky top chrome offsets when no .page-header exists', async () => {
     const fixture = mountTranscriptFixture(document, { turnCount: 20, streaming: false });
     const stickyHeader = document.createElement('div');
@@ -481,6 +677,7 @@ describe('TurboRenderController', () => {
     await flush();
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
 
@@ -519,6 +716,8 @@ describe('TurboRenderController', () => {
     controller.start();
     await flush();
 
+    await openNewestArchivePage();
+
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
     const scroller = fixture.scroller;
     const firstBatch = inlineRoot?.querySelector<HTMLElement>('[data-turbo-render-batch-anchor="true"]');
@@ -530,7 +729,7 @@ describe('TurboRenderController', () => {
     }
 
     scroller.scrollTop = 480;
-    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       if (this === scroller) {
         return {
           top: 0,
@@ -636,6 +835,7 @@ describe('TurboRenderController', () => {
     await flush();
     await flush();
 
+    await openNewestArchivePage();
     const toggle = document.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
     expect(toggle).not.toBeNull();
     toggle?.click();
@@ -706,7 +906,7 @@ describe('TurboRenderController', () => {
     });
     session.turns[1] = createSessionTurn(1, {
       role: 'assistant',
-      parts: ['Paragraph with **打开终端** and ``bash`` and `pnpm test`.\n\n- item one\n- item two\n\n> quoted\n\n```ts\nconst answer = 42;\n```'],
+      parts: ['## Archived heading\nParagraph with **打开终端** and ``bash`` and `pnpm test`.\n\n---\n\n- item one\n- item two\n\n> quoted\n\n```ts\nconst answer = 42;\n```'],
       renderKind: 'markdown-text',
     });
     session.turns[2] = createSessionTurn(2, {
@@ -731,6 +931,7 @@ describe('TurboRenderController', () => {
     await flush();
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
     expect(inlineRoot).not.toBeNull();
 
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
@@ -747,9 +948,14 @@ describe('TurboRenderController', () => {
       ...(inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"]`) ?? []),
     ];
     const formattedMarkdownBody = markdownBodies.find((body) => body.textContent?.includes('打开终端'));
+    expect(formattedMarkdownBody?.classList.contains('text-message')).toBe(true);
+    expect(formattedMarkdownBody?.querySelector('.markdown.prose')).not.toBeNull();
+    expect(formattedMarkdownBody?.querySelector('h2')?.textContent).toBe('Archived heading');
     expect(formattedMarkdownBody?.querySelector('strong')?.textContent).toBe('打开终端');
     expect(formattedMarkdownBody?.textContent).not.toContain('**打开终端**');
+    expect(formattedMarkdownBody?.textContent).not.toContain('## Archived heading');
     expect(formattedMarkdownBody?.textContent).not.toContain('``bash``');
+    expect(formattedMarkdownBody?.querySelector('hr')).not.toBeNull();
     expect(formattedMarkdownBody?.querySelector('code[data-language="ts"]')?.textContent).toContain('const answer = 42;');
 
     const structuredBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="structured-message"]`);
@@ -757,6 +963,89 @@ describe('TurboRenderController', () => {
     expect(inlineRoot?.textContent).not.toContain('is_visually_hidden_from_conversation');
     expect(inlineRoot?.textContent).not.toContain('Locate message');
     expect(inlineRoot?.textContent).not.toContain('Show details');
+  });
+
+  it('renders structured assistant turns as supplemental traces without actions', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/c/chat-123');
+    mountTranscriptFixture(document, { turnCount: 14, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    try {
+      const session = createInitialTrimSession(14, 4);
+      session.turns[0] = createSessionTurn(0, {
+        role: 'user',
+        parts: ['First user question.'],
+      });
+      session.turns[1] = createSessionTurn(1, {
+        role: 'assistant',
+        renderKind: 'structured-message',
+        contentType: 'thoughts',
+        structuredDetails: '{"reasoning":"Working it out"}',
+      });
+      session.turns[2] = createSessionTurn(2, {
+        role: 'assistant',
+        parts: ['Final assistant reply after thinking.'],
+      });
+      session.turns[3] = createSessionTurn(3, {
+        role: 'user',
+        parts: ['Second user question.'],
+      });
+
+      controller.setInitialTrimSession(session);
+      controller.start();
+      await flush();
+      await flush();
+
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      await openNewestArchivePage();
+      expect(inlineRoot).not.toBeNull();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+      await flush();
+
+      const structuredBodies = [
+        ...(inlineRoot?.querySelectorAll<HTMLElement>(
+          `.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="structured-message"]`,
+        ) ?? []),
+      ];
+      const structuredBody = structuredBodies.find(
+        (body) => body.dataset.supplementalRole === 'thoughts' || body.textContent?.includes('Working it out'),
+      );
+      expect(structuredBody).not.toBeNull();
+      expect(structuredBody?.querySelector('summary')?.textContent).toBe('Thinking');
+      expect(structuredBody?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.querySelector(`.${UI_CLASS_NAMES.historyEntryActions}`)).toBeNull();
+
+      const assistantReply = [
+        ...(inlineRoot?.querySelectorAll<HTMLElement>(
+          `.${UI_CLASS_NAMES.historyEntryBody}[data-render-kind="markdown-text"][data-lane="assistant"]`,
+        ) ?? []),
+      ].find((body) => body.textContent?.includes('Final assistant reply after thinking.'));
+      expect(assistantReply).not.toBeNull();
+
+      const assistantActions = assistantReply?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}`,
+      );
+      expect(assistantActions).not.toBeNull();
+      expect(inlineRoot?.textContent).not.toContain('structured message');
+    } finally {
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      history.replaceState({}, '', originalPath);
+    }
   });
 
   it('renders host snapshot user content without an extra visible wrapper', async () => {
@@ -794,6 +1083,7 @@ describe('TurboRenderController', () => {
     await flush();
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
 
@@ -808,7 +1098,7 @@ describe('TurboRenderController', () => {
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
   });
 
-  it('keeps long user messages in a right-aligned transparent lane', async () => {
+  it('renders fallback user messages with the official bubble structure', async () => {
     mountTranscriptFixture(document, { turnCount: 10, streaming: false });
     const controller = new TurboRenderController({
       settings: {
@@ -843,19 +1133,52 @@ describe('TurboRenderController', () => {
     await flush();
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
 
     const userBody = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryBody}[data-lane="user"]`);
     expect(userBody).not.toBeNull();
     expect(userBody?.closest(`.${UI_CLASS_NAMES.historyEntryFrame}`)?.classList.contains(UI_CLASS_NAMES.historyEntryFrame)).toBe(true);
+    expect(userBody?.classList.contains('text-message')).toBe(true);
+    expect(userBody?.classList.contains('items-end')).toBe(true);
+    expect(userBody?.classList.contains('whitespace-normal')).toBe(true);
+    const bubble = userBody?.querySelector<HTMLElement>('.user-message-bubble-color');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.querySelector<HTMLElement>('div')?.classList.contains('whitespace-pre-wrap')).toBe(true);
     expect(userBody?.textContent).toContain('deliberately long archived user message');
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`)).not.toBeNull();
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryCard}`)).toBeNull();
   });
 
   it('renders official action buttons for archived live turns and forwards clicks to host controls', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/c/chat-123');
     mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    for (const [index, turn] of [...document.querySelectorAll<HTMLElement>('[data-testid^="conversation-turn-"]')].entries()) {
+      turn.dataset.messageId = `session-turn-${index}`;
+      turn.dataset.hostMessageId = `session-turn-${index}`;
+    }
+    for (const button of document.querySelectorAll<HTMLButtonElement>(
+      'button[data-testid="copy-turn-action-button"], button[data-testid="good-response-turn-action-button"], button[data-testid="bad-response-turn-action-button"], button[data-testid="share-turn-action-button"], button[data-testid="more-turn-action-button"]',
+    )) {
+      Object.defineProperty(button, 'getClientRects', {
+        configurable: true,
+        value: () => [
+          {
+            x: 0,
+            y: 0,
+            width: 24,
+            height: 24,
+            top: 0,
+            left: 0,
+            right: 24,
+            bottom: 24,
+            toJSON: () => '',
+          },
+        ],
+      });
+    }
     const speechState = { speaking: false, pending: false, paused: false };
     class MockSpeechSynthesisUtterance extends EventTarget {
       text: string;
@@ -909,133 +1232,273 @@ describe('TurboRenderController', () => {
     });
     activeControllers.push(controller);
     vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(false);
+    const session = createInitialTrimSession(20, 10);
+    for (const [index, turn] of session.turns.entries()) {
+      turn.parts = [`Turn ${index + 1} primary content.`];
+    }
+    session.coldTurns = session.turns.slice(0, session.archivedTurnCount);
+    controller.setInitialTrimSession(session);
 
-    controller.start();
-    await flush();
-    await flush();
+    try {
+      controller.start();
+      await flush();
+      await flush();
 
-    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
-    expect(inlineRoot).not.toBeNull();
-    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
-    await flush();
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      expect(inlineRoot).not.toBeNull();
+      await openNewestArchivePage();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+      await flush();
 
-    const firstEntry = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
-    expect(firstEntry).not.toBeNull();
+      const firstEntry = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+      expect(firstEntry).not.toBeNull();
 
-    const userActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`);
-    const assistantActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
-    expect(userActions?.querySelectorAll('button')).toHaveLength(1);
-    expect(assistantActions?.querySelectorAll('button')).toHaveLength(5);
-    const userCopyButton = userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]');
-    const assistantMoreButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
-    expect(userCopyButton?.dataset.messageId?.length ?? 0).toBeGreaterThan(0);
-    expect(assistantMoreButton?.dataset.messageId).toBe(assistantActions?.dataset.messageId);
-    expect(assistantMoreButton?.dataset.hostMessageId).toBe(assistantActions?.dataset.hostMessageId);
+      const userActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="user"]`);
+      const assistantActions = firstEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
+      expect(userActions?.querySelectorAll('button')).toHaveLength(1);
+      expect(assistantActions?.querySelectorAll('button')).toHaveLength(5);
+      const userCopyButton = userActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]');
+      const assistantMoreButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
+      expect(userCopyButton?.dataset.messageId?.length ?? 0).toBeGreaterThan(0);
+      expect(assistantMoreButton?.dataset.messageId).toBe(assistantActions?.dataset.messageId);
+      expect(assistantMoreButton?.dataset.hostMessageId).toBe(assistantActions?.dataset.hostMessageId);
 
-    userCopyButton?.click();
-    assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')?.click();
-    assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
-    await flush();
-    await flush();
-    const refreshedEntries = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
-    const refreshedFirstEntry = refreshedEntries?.[0];
-    const assistantActionsAfterLike = refreshedFirstEntry?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
-    );
-    expect(assistantActionsAfterLike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).toBeNull();
-    expect(
-      assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
-    ).toBe('brightness(0)');
+      userCopyButton?.click();
+      assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')?.click();
+      assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
+      await flush();
+      await flush();
+      const refreshedEntries = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+      const refreshedFirstEntry = refreshedEntries?.[0];
+      const assistantActionsAfterLike = refreshedFirstEntry?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      );
+      expect(assistantActionsAfterLike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).toBeNull();
+      expect(
+        assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
+      ).toBe('brightness(0)');
 
-    assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
-    await flush();
-    await flush();
-    const assistantActionsAfterUnlike = inlineRoot?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
-    );
-    expect(assistantActionsAfterUnlike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).not.toBeNull();
-    expect(
-      assistantActionsAfterUnlike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
-    ).toBe('');
+      assistantActionsAfterLike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.click();
+      await flush();
+      await flush();
+      const assistantActionsAfterUnlike = inlineRoot?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      );
+      expect(assistantActionsAfterUnlike?.querySelector('button[data-testid="bad-response-turn-action-button"]')).not.toBeNull();
+      expect(
+        assistantActionsAfterUnlike?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"] svg')?.style.filter,
+      ).toBe('');
 
-    const secondEntry = refreshedEntries?.[1];
-    const secondAssistantActions = secondEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
-    secondAssistantActions?.querySelector<HTMLButtonElement>('button[data-testid="bad-response-turn-action-button"]')?.click();
-    await flush();
-    await flush();
-    const refreshedEntriesAfterDislike = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
-    const refreshedFirstEntryAfterDislike = refreshedEntriesAfterDislike?.[0];
-    const assistantActionsAfterDislike = refreshedFirstEntryAfterDislike?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
-    );
-    assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="share-turn-action-button"]')?.click();
-    const refreshedSecondEntryAfterDislike = refreshedEntriesAfterDislike?.[1];
-    const secondAssistantDislikeButton = refreshedSecondEntryAfterDislike?.querySelector<HTMLButtonElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
-    )?.querySelector<HTMLButtonElement>(
-      'button[data-testid="bad-response-turn-action-button"]',
-    );
-    expect(secondAssistantDislikeButton?.querySelector('svg')?.style.filter).toBe('brightness(0)');
-    const moreButton = assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
-    moreButton?.click();
-    await flush();
-    const moreMenu = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
-    expect(moreMenu).not.toBeNull();
-    expect(moreMenu?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
-    expect(moreMenu?.textContent).toContain('Branch in new chat');
-    expect(moreMenu?.textContent).toContain('Read aloud');
-    moreMenu?.querySelector<HTMLButtonElement>('button[data-testid="branch-in-new-chat-turn-action-button"]')?.click();
-    await flush();
-    const assistantActionsAfterBranch = inlineRoot?.querySelector<HTMLElement>(
-      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
-    );
-    const moreButtonAfterBranch = assistantActionsAfterBranch?.querySelector<HTMLButtonElement>(
-      'button[data-testid="more-turn-action-button"]',
-    );
-    moreButtonAfterBranch?.click();
-    await flush();
-    const moreMenuAfterReopen = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
-    expect(moreMenuAfterReopen).not.toBeNull();
-    expect(moreMenuAfterReopen?.querySelector('button[data-testid="read-aloud-turn-action-button"]')).not.toBeNull();
-    moreMenuAfterReopen?.querySelector<HTMLButtonElement>('button[data-testid="read-aloud-turn-action-button"]')?.click();
-    await flush();
-    await flush();
-    const moreMenuDuringReadAloud = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
-    expect(moreMenuDuringReadAloud).not.toBeNull();
-    expect(moreMenuDuringReadAloud?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
-    const hostStopPopupButton = document.createElement('button');
-    hostStopPopupButton.type = 'button';
-    hostStopPopupButton.textContent = 'Stop reading';
-    hostStopPopupButton.setAttribute('data-testid', 'stop-read-aloud-turn-action-button');
-    hostStopPopupButton.setAttribute('aria-label', 'Stop reading');
-    Object.defineProperty(hostStopPopupButton, 'getClientRects', {
-      value: () => [
-        {
-          x: 0,
-          y: 0,
-          width: 40,
-          height: 24,
-          top: 0,
-          left: 0,
-          right: 40,
-          bottom: 24,
-          toJSON: () => '',
-        },
-      ],
+      const secondEntry = refreshedEntries?.[1];
+      const secondAssistantActions = secondEntry?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
+      secondAssistantActions?.querySelector<HTMLButtonElement>('button[data-testid="bad-response-turn-action-button"]')?.click();
+      await flush();
+      await flush();
+      const refreshedEntriesAfterDislike = inlineRoot?.querySelectorAll<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+      const refreshedFirstEntryAfterDislike = refreshedEntriesAfterDislike?.[0];
+      const assistantActionsAfterDislike = refreshedFirstEntryAfterDislike?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      );
+      assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="share-turn-action-button"]')?.click();
+      const refreshedSecondEntryAfterDislike = refreshedEntriesAfterDislike?.[1];
+      const secondAssistantDislikeButton = refreshedSecondEntryAfterDislike?.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      )?.querySelector<HTMLButtonElement>(
+        'button[data-testid="bad-response-turn-action-button"]',
+      );
+      expect(secondAssistantDislikeButton?.querySelector('svg')?.style.filter).toBe('brightness(0)');
+      const moreButton = assistantActionsAfterDislike?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
+      moreButton?.click();
+      await flush();
+      const moreMenu = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+      expect(moreMenu).not.toBeNull();
+      expect(moreMenu?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
+      expect(moreMenu?.textContent).toContain('Branch in new chat');
+      expect(moreMenu?.textContent).toContain('Read aloud');
+      moreMenu?.querySelector<HTMLButtonElement>('button[data-testid="branch-in-new-chat-turn-action-button"]')?.click();
+      await flush();
+      const assistantActionsAfterBranch = inlineRoot?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      );
+      const moreButtonAfterBranch = assistantActionsAfterBranch?.querySelector<HTMLButtonElement>(
+        'button[data-testid="more-turn-action-button"]',
+      );
+      moreButtonAfterBranch?.click();
+      await flush();
+      const moreMenuAfterReopen = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+      expect(moreMenuAfterReopen).not.toBeNull();
+      expect(moreMenuAfterReopen?.querySelector('button[data-testid="read-aloud-turn-action-button"]')).not.toBeNull();
+      moreMenuAfterReopen?.querySelector<HTMLButtonElement>('button[data-testid="read-aloud-turn-action-button"]')?.click();
+      await flush();
+      await flush();
+      const moreMenuDuringReadAloud = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
+      expect(moreMenuDuringReadAloud).not.toBeNull();
+      expect(moreMenuDuringReadAloud?.parentElement?.classList.contains(UI_CLASS_NAMES.historyEntryActionMenuAnchor)).toBe(true);
+      const hostStopPopupButton = document.createElement('button');
+      hostStopPopupButton.type = 'button';
+      hostStopPopupButton.textContent = 'Stop reading';
+      hostStopPopupButton.setAttribute('data-testid', 'stop-read-aloud-turn-action-button');
+      hostStopPopupButton.setAttribute('aria-label', 'Stop reading');
+      Object.defineProperty(hostStopPopupButton, 'getClientRects', {
+        value: () => [
+          {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 24,
+            top: 0,
+            left: 0,
+            right: 40,
+            bottom: 24,
+            toJSON: () => '',
+          },
+        ],
+      });
+      hostStopPopupButton.addEventListener('click', () => {
+        const current = Number(document.body.dataset.hostActionStopReadAloudCount ?? '0');
+        document.body.dataset.hostActionStopReadAloudCount = String(current + 1);
+      });
+      document.body.append(hostStopPopupButton);
+      hostStopPopupButton.click();
+      await flush();
+
+      expect(Number(document.body.dataset.hostActionCopyCount ?? '0')).toBeGreaterThanOrEqual(2);
+      expect(document.body.dataset.hostActionLikeCount).toBe('1');
+      expect(document.body.dataset.hostActionDislikeCount).toBe('1');
+      expect(document.body.dataset.hostActionShareCount).toBe('1');
+      expect(Number(document.body.dataset.hostActionStopReadAloudCount ?? '0')).toBe(1);
+    } finally {
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      history.replaceState({}, '', originalPath);
+    }
+  }, 30_000);
+
+  it('keeps archived More clicks on the TurboRender menu even when host popovers are available', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/c/chat-123');
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 1,
+        minDescendants: 1,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
     });
-    hostStopPopupButton.addEventListener('click', () => {
-      const current = Number(document.body.dataset.hostActionStopReadAloudCount ?? '0');
-      document.body.dataset.hostActionStopReadAloudCount = String(current + 1);
-    });
-    document.body.append(hostStopPopupButton);
-    hostStopPopupButton.click();
-    await flush();
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    controller.setInitialTrimSession(createInitialTrimSession(20, 10));
 
-    expect(Number(document.body.dataset.hostActionCopyCount ?? '0')).toBeGreaterThanOrEqual(2);
-    expect(document.body.dataset.hostActionLikeCount).toBe('1');
-    expect(document.body.dataset.hostActionDislikeCount).toBe('1');
-    expect(document.body.dataset.hostActionShareCount).toBe('1');
-    expect(Number(document.body.dataset.hostActionStopReadAloudCount ?? '0')).toBe(1);
+    try {
+      controller.start();
+      await flush();
+      await flush();
+
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      expect(inlineRoot).not.toBeNull();
+      await openNewestArchivePage();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+      await flush();
+
+      const assistantMoreButton = inlineRoot?.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"] button[data-turbo-render-action="more"]`,
+      );
+      expect(assistantMoreButton).not.toBeNull();
+      assistantMoreButton?.click();
+      await flush();
+
+      const moreMenu = inlineRoot?.querySelector<HTMLElement>('[data-turbo-render-entry-menu="true"]');
+      expect(moreMenu).not.toBeNull();
+      expect(moreMenu?.closest('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
+      expect(moreMenu?.closest(`.${UI_CLASS_NAMES.inlineBatchEntry}`)).not.toBeNull();
+      expect(moreMenu?.textContent).toContain('Read aloud');
+      expect(document.body.dataset.hostActionMoreCount).toBe('0');
+    } finally {
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      history.replaceState({}, '', originalPath);
+    }
+  }, 30_000);
+
+  it('does not fake archived like and dislike state when host action binding fails', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/c/chat-123');
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 1,
+        minDescendants: 1,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const resolveBindingSpy = vi.spyOn(
+      controller as unknown as {
+        resolveHostArchiveActionBinding(
+          groupId: string,
+          entry: ManagedHistoryEntry,
+          action: ArchiveEntryAction,
+          anchorGetter?: () => HTMLElement | null,
+        ): unknown;
+      },
+      'resolveHostArchiveActionBinding',
+    ).mockReturnValue(null);
+    controller.setInitialTrimSession(createInitialTrimSession(20, 10));
+
+    try {
+      controller.start();
+      await flush();
+      await flush();
+
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      expect(inlineRoot).not.toBeNull();
+      await openNewestArchivePage();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+      await flush();
+
+      const getAssistantActions = () =>
+        inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`) ?? null;
+      const likeButton = getAssistantActions()?.querySelector<HTMLButtonElement>(
+        'button[data-testid="good-response-turn-action-button"]',
+      );
+      expect(likeButton).not.toBeNull();
+      expect(likeButton?.getAttribute('aria-pressed')).toBe('false');
+      expect(likeButton?.dataset.turboRenderActionMode).toBe('unavailable');
+      expect(likeButton?.disabled).toBe(true);
+
+      likeButton?.click();
+      await flush();
+      await flush();
+
+      const unlikedActions = getAssistantActions();
+      expect(
+        unlikedActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]')?.getAttribute(
+          'aria-pressed',
+        ),
+      ).toBe('false');
+      expect(unlikedActions?.querySelector('button[data-testid="bad-response-turn-action-button"]')).not.toBeNull();
+      expect(resolveBindingSpy).toHaveBeenCalled();
+    } finally {
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      history.replaceState({}, '', originalPath);
+    }
   }, 30_000);
 
   it('prefers host message ids over TurboRender archive copies when building read aloud urls', async () => {
@@ -1073,7 +1536,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 1,
       pairIndex: 1,
@@ -1092,7 +1555,7 @@ describe('TurboRenderController', () => {
 
     const url = (controller as unknown as {
       buildReadAloudUrl(
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         groupId: string | null,
       ): string | null;
     }).buildReadAloudUrl(entry, null);
@@ -1154,7 +1617,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 0,
       pairIndex: 0,
@@ -1173,7 +1636,7 @@ describe('TurboRenderController', () => {
 
     const url = (controller as unknown as {
       buildReadAloudUrl(
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         groupId: string | null,
       ): string | null;
     }).buildReadAloudUrl(entry, 'archive-slot-0');
@@ -1214,7 +1677,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 0,
       pairIndex: 0,
@@ -1233,7 +1696,7 @@ describe('TurboRenderController', () => {
 
     const url = (controller as unknown as {
       buildReadAloudUrl(
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         groupId: string | null,
       ): string | null;
     }).buildReadAloudUrl(entry, null);
@@ -1309,7 +1772,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 0,
       pairIndex: 0,
@@ -1329,7 +1792,7 @@ describe('TurboRenderController', () => {
     const acted = await (controller as unknown as {
       clickHostArchiveAction(
         groupId: string,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         action: 'more',
         anchorGetter: () => HTMLElement | null,
       ): Promise<boolean>;
@@ -1383,7 +1846,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 10,
       pairIndex: 5,
@@ -1403,7 +1866,7 @@ describe('TurboRenderController', () => {
     const acted = await (controller as unknown as {
       clickHostArchiveAction(
         groupId: string,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         action: 'more',
         anchorGetter: () => HTMLElement | null,
       ): Promise<boolean>;
@@ -1411,6 +1874,90 @@ describe('TurboRenderController', () => {
 
     expect(acted).toBe(false);
     expect(dispatchSpy).not.toHaveBeenCalled();
+  });
+
+  it('can use a matching global More button when explicitly allowed', async () => {
+    document.body.innerHTML = `
+      <main>
+        <section>
+          <article data-message-author-role="assistant">
+            <div>Assistant reply for speech.</div>
+            <button data-testid="more-turn-action-button" aria-label="More">More</button>
+          </article>
+        </section>
+      </main>
+    `;
+
+    const globalButton = document.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')!;
+    Object.defineProperty(globalButton, 'getClientRects', {
+      value: () => [{ x: 0, y: 0, width: 24, height: 24, top: 0, left: 0, right: 24, bottom: 24, toJSON: () => '' }],
+    });
+    vi.spyOn(globalButton, 'getBoundingClientRect').mockReturnValue({
+      top: 0,
+      bottom: 24,
+      left: 0,
+      right: 24,
+      width: 24,
+      height: 24,
+      x: 0,
+      y: 0,
+      toJSON: () => '',
+    } as DOMRect);
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    vi.spyOn(
+      controller as unknown as {
+        collectHostSearchRootsForEntry(groupId: string, entry: ManagedHistoryEntry): HTMLElement[];
+      },
+      'collectHostSearchRootsForEntry',
+    ).mockReturnValue([]);
+    const dispatchSpy = vi.spyOn(
+      controller as unknown as { dispatchHumanClick(target: HTMLElement): void },
+      'dispatchHumanClick',
+    );
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim' as const,
+      role: 'assistant' as const,
+      turnIndex: 10,
+      pairIndex: 5,
+      turnId: 'turn-chat:missing-message-id',
+      liveTurnId: null,
+      messageId: 'missing-message-id',
+      groupId: 'archive-slot-0',
+      parts: ['Assistant reply for speech.'],
+      text: 'Assistant reply for speech.',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const acted = await (controller as unknown as {
+      clickHostArchiveAction(
+        groupId: string,
+        entry: ManagedHistoryEntry,
+        action: 'more',
+        anchorGetter: () => HTMLElement | null,
+        options?: { allowBroadMoreFallback?: boolean },
+      ): Promise<boolean>;
+    }).clickHostArchiveAction('archive-slot-0', entry, 'more', () => globalButton, {
+      allowBroadMoreFallback: true,
+    });
+
+    expect(acted).toBe(true);
+    expect(dispatchSpy).toHaveBeenCalledWith(globalButton);
   });
 
   it('does not click a connected host More button when its surrounding text does not match the archive entry', async () => {
@@ -1466,7 +2013,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 0,
       pairIndex: 0,
@@ -1486,7 +2033,7 @@ describe('TurboRenderController', () => {
     const acted = await (controller as unknown as {
       clickHostArchiveAction(
         groupId: string,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         action: 'more',
         anchorGetter: () => HTMLElement | null,
       ): Promise<boolean>;
@@ -1563,7 +2110,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 1,
       pairIndex: 0,
@@ -1583,7 +2130,7 @@ describe('TurboRenderController', () => {
     const acted = await (controller as unknown as {
       clickHostArchiveAction(
         groupId: string,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         action: 'more',
         anchorGetter: () => HTMLElement | null,
       ): Promise<boolean>;
@@ -1643,7 +2190,7 @@ describe('TurboRenderController', () => {
 
     const entry = {
       id: 'history-entry',
-      source: 'initial-trim',
+      source: 'initial-trim' as const,
       role: 'assistant' as const,
       turnIndex: 10,
       pairIndex: 5,
@@ -1663,7 +2210,7 @@ describe('TurboRenderController', () => {
     const acted = await (controller as unknown as {
       clickHostArchiveAction(
         groupId: string,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         action: 'more',
         anchorGetter: () => HTMLElement | null,
       ): Promise<boolean>;
@@ -1793,7 +2340,93 @@ describe('TurboRenderController', () => {
     expect(Number.parseInt(menu.style.top, 10)).toBeLessThan(0);
   });
 
-  it('falls back to inline More menu when host popover discovery times out', async () => {
+  it('dispatches host clicks through React handlers when host props are available', () => {
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const dispatchEventSpy = vi.fn();
+    const target = {
+      getBoundingClientRect: () =>
+        ({
+          x: 10,
+          y: 20,
+          width: 32,
+          height: 24,
+          left: 10,
+          top: 20,
+          right: 42,
+          bottom: 44,
+          toJSON: () => '',
+        }) as DOMRect,
+      dispatchEvent: dispatchEventSpy,
+    } as unknown as HTMLElement & Record<string, unknown>;
+    const calls: string[] = [];
+    Object.defineProperty(target, '__reactProps$test', {
+      configurable: true,
+      value: {
+        onPointerMove: (event: { buttons: number }) => {
+          calls.push(`move:${event.buttons}`);
+        },
+        onPointerDown: (event: { preventDefault(): void }) => {
+          calls.push('down');
+          event.preventDefault();
+        },
+        onPointerUp: () => {
+          calls.push('up');
+        },
+        onClick: () => {
+          calls.push('click');
+        },
+      },
+    });
+
+    (controller as unknown as { dispatchHumanClick(target: HTMLElement): void }).dispatchHumanClick(target);
+
+    expect(calls).toEqual(['move:1', 'down', 'up', 'click']);
+    expect(dispatchEventSpy).not.toHaveBeenCalled();
+  });
+
+  it('finds host More menu items rendered as menuitem divs', () => {
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const menu = document.createElement('div');
+    menu.innerHTML = `
+      <div role="menuitem" data-testid="branch-in-new-chat-turn-action-button" aria-label="新聊天中的分支">
+        <div>新聊天中的分支</div>
+      </div>
+      <div role="menuitem" data-testid="voice-play-turn-action-button" aria-label="朗读">
+        <div>朗读</div>
+      </div>
+    `;
+
+    expect(
+      (controller as unknown as {
+        findHostMoreMenuAction(menu: ParentNode, action: 'branch' | 'read-aloud' | 'stop-read-aloud'): HTMLElement | null;
+      }).findHostMoreMenuAction(menu, 'branch'),
+    ).toBe(menu.querySelector('[role="menuitem"][data-testid="branch-in-new-chat-turn-action-button"]'));
+    expect(
+      (controller as unknown as {
+        findHostMoreMenuAction(menu: ParentNode, action: 'branch' | 'read-aloud' | 'stop-read-aloud'): HTMLElement | null;
+      }).findHostMoreMenuAction(menu, 'read-aloud'),
+    ).toBe(menu.querySelector('[role="menuitem"][data-testid="voice-play-turn-action-button"]'));
+  });
+
+  it('opens the inline archived More menu without probing host popovers', async () => {
     mountTranscriptFixture(document, { turnCount: 20, streaming: false });
     const controller = new TurboRenderController({
       settings: {
@@ -1810,7 +2443,11 @@ describe('TurboRenderController', () => {
     });
     activeControllers.push(controller);
 
-    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    const session = createInitialTrimSession(24, 8);
+    for (const turn of session.turns) {
+      turn.createTime = 1_712_740_680;
+    }
+    controller.setInitialTrimSession(session);
     controller.start();
     await flush();
 
@@ -1826,6 +2463,7 @@ describe('TurboRenderController', () => {
     ).mockReturnValue(true);
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
 
@@ -1839,9 +2477,172 @@ describe('TurboRenderController', () => {
     const fallbackMenu = inlineRoot?.querySelector<HTMLElement>(
       `.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`,
     );
-    expect(openHostMenuSpy).toHaveBeenCalled();
+    expect(openHostMenuSpy).not.toHaveBeenCalled();
     expect(fallbackMenu).not.toBeNull();
     expect(fallbackMenu?.textContent).toContain('Branch');
+  });
+
+  it('copies folded assistant entries with rich clipboard data and local copied feedback', async () => {
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const write = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    class TestClipboardItem {
+      readonly items: Record<string, Blob>;
+
+      constructor(items: Record<string, Blob>) {
+        this.items = items;
+      }
+    }
+    const originalClipboard = window.navigator.clipboard;
+    const originalClipboardItem = (window as Window & { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { write, writeText },
+    });
+    Object.defineProperty(window, 'ClipboardItem', {
+      configurable: true,
+      value: TestClipboardItem,
+    });
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+    vi.spyOn(
+      controller as unknown as { shouldUseHostActionClicks(): boolean },
+      'shouldUseHostActionClicks',
+    ).mockReturnValue(false);
+
+    try {
+      controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+      controller.start();
+      await flush();
+
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      await openNewestArchivePage();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+
+      const archiveEntry = inlineRoot?.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.inlineBatchEntry} .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"]`,
+      );
+      const copyButton = archiveEntry?.querySelector<HTMLButtonElement>('button[data-turbo-render-action="copy"]');
+      expect(copyButton).not.toBeNull();
+      copyButton?.click();
+      await flush();
+
+      const copiedButton = inlineRoot?.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.inlineBatchEntry} .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"] button[data-turbo-render-action="copy"]`,
+      );
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(writeText).not.toHaveBeenCalled();
+      expect(copiedButton?.dataset.copyState).toBe('copied');
+      expect(copiedButton?.getAttribute('aria-label')).toBe('Copied');
+      const clipboardItems = write.mock.calls[0]?.[0] as TestClipboardItem[] | undefined;
+      expect(clipboardItems).toHaveLength(1);
+      const item = clipboardItems![0]!;
+      expect(Object.keys(item.items)).toEqual(['text/plain', 'text/html']);
+    } finally {
+      Object.defineProperty(window.navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      });
+      Object.defineProperty(window, 'ClipboardItem', {
+        configurable: true,
+        value: originalClipboardItem,
+      });
+    }
+  });
+
+  it('prefers a precise host copy action before local clipboard fallback', async () => {
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    const write = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = window.navigator.clipboard;
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { write },
+    });
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    try {
+      controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+      controller.start();
+      await flush();
+
+      const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+      await openNewestArchivePage();
+      inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+
+      const hostButton = document.createElement('button');
+      const resolveBindingSpy = vi.spyOn(
+        controller as unknown as {
+          resolveHostArchiveActionBinding(
+            groupId: string,
+            entry: ManagedHistoryEntry,
+            action: 'copy',
+            anchorGetter: () => HTMLElement | null,
+          ): unknown;
+        },
+        'resolveHostArchiveActionBinding',
+      ).mockImplementation((_groupId, _entry, action, anchorGetter) => ({
+        action,
+        anchor: typeof anchorGetter === 'function' ? anchorGetter() : null,
+        button: hostButton,
+      }));
+      const dispatchSpy = vi.spyOn(
+        controller as unknown as {
+          dispatchHostArchiveAction(binding: unknown, groupId: string, entry: ManagedHistoryEntry): boolean;
+        },
+        'dispatchHostArchiveAction',
+      ).mockReturnValue(true);
+
+      const copyButton = inlineRoot?.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.inlineBatchEntry} .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"] button[data-turbo-render-action="copy"]`,
+      );
+      expect(copyButton).not.toBeNull();
+      copyButton?.click();
+      await flush();
+
+      expect(resolveBindingSpy).toHaveBeenCalled();
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      expect(write).not.toHaveBeenCalled();
+      const refreshedCopyButton = inlineRoot?.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.inlineBatchEntry} .${UI_CLASS_NAMES.historyEntryFrame}[data-lane="assistant"] button[data-turbo-render-action="copy"]`,
+      );
+      expect(refreshedCopyButton?.dataset.copyState).toBe('copied');
+    } finally {
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      Object.defineProperty(window.navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
   });
 
   it('anchors host More popovers once and keeps them static after open', async () => {
@@ -1909,7 +2710,7 @@ describe('TurboRenderController', () => {
       controller as unknown as {
         clickHostArchiveAction(
           groupId: string,
-          candidateEntry: typeof entry,
+          candidateEntry: ManagedHistoryEntry,
           action: 'more',
           anchorGetter: () => HTMLElement | null,
         ): Promise<boolean>;
@@ -1929,7 +2730,7 @@ describe('TurboRenderController', () => {
     const result = await (controller as unknown as {
       openHostMoreMenu(
         groupId: string,
-        candidateEntry: typeof entry,
+        candidateEntry: ManagedHistoryEntry,
         anchorGetter: () => HTMLElement | null,
       ): Promise<{ menu: HTMLElement } | null>;
     }).openHostMoreMenu('archive-slot-0', entry, () => anchor);
@@ -1949,7 +2750,7 @@ describe('TurboRenderController', () => {
     expect(menu.style.left).toBe(leftBefore);
   });
 
-  it('primes the conversation mapping before backend read aloud playback', async () => {
+  it('prefers conversation payload ids over stale archive ids before backend read aloud playback', async () => {
     const conversationId = 'e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f';
     document.body.innerHTML = `
       <main>
@@ -1983,6 +2784,19 @@ describe('TurboRenderController', () => {
             : input instanceof Request
               ? input.url
               : String(input);
+
+      if (requestUrl.includes('/api/auth/session')) {
+        return new Response(
+          JSON.stringify({
+            accessToken: 'test-read-aloud-access-token',
+            expires: '2099-01-01T00:00:00.000Z',
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
 
       if (requestUrl.includes(`/backend-api/conversation/${conversationId}`)) {
         return new Response(
@@ -2076,14 +2890,31 @@ describe('TurboRenderController', () => {
     await (controller as unknown as {
       startReadAloudPlayback(
         groupId: string | null,
-        entry: typeof entry,
+        entry: ManagedHistoryEntry,
         entryKey: string,
+        options?: {
+          conversationId?: string | null;
+          resolvedConversationMessageId?: string | null;
+        },
       ): Promise<void>;
-    }).startReadAloudPlayback(null, entry, 'history-entry');
+    }).startReadAloudPlayback(null, entry, 'history-entry', {
+      conversationId,
+      resolvedConversationMessageId: 'stale-archive-message-id',
+    });
 
-    expect(nativeFetch).toHaveBeenCalledTimes(2);
-    const conversationCall = nativeFetch.mock.calls[0]![0];
-    const synthesizeCall = nativeFetch.mock.calls[1]![0];
+    expect(nativeFetch).toHaveBeenCalledTimes(3);
+    const sessionCall = (nativeFetch as unknown as Mock).mock.calls[0]![0];
+    const conversationCall = (nativeFetch as unknown as Mock).mock.calls[1]![0];
+    const conversationInit = (nativeFetch as unknown as Mock).mock.calls[1]![1] as RequestInit | undefined;
+    const synthesizeCall = (nativeFetch as unknown as Mock).mock.calls[2]![0];
+    const synthesizeInit = (nativeFetch as unknown as Mock).mock.calls[2]![1] as RequestInit | undefined;
+    expect(
+      typeof sessionCall === 'string'
+        ? sessionCall
+        : sessionCall instanceof Request
+          ? sessionCall.url
+          : String(sessionCall),
+    ).toContain('/api/auth/session');
     expect(
       typeof conversationCall === 'string'
         ? conversationCall
@@ -2101,15 +2932,287 @@ describe('TurboRenderController', () => {
             ? synthesizeCall.url
             : String(synthesizeCall),
     );
+    expect((conversationInit?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+      'Bearer test-read-aloud-access-token',
+    );
+    expect((synthesizeInit?.headers as Record<string, string> | undefined)?.Authorization).toBe(
+      'Bearer test-read-aloud-access-token',
+    );
     expect(synthesizeUrl.searchParams.get('conversation_id')).toBe(conversationId);
     expect(synthesizeUrl.searchParams.get('message_id')).toBe('assistant5');
     expect(synthesizeUrl.searchParams.get('message_id')).not.toMatch(/^turn-chat:/);
+    expect(document.body.dataset.turboRenderDebugReadAloudResolvedSource).toBe('conversation-payload');
+    expect(document.body.dataset.turboRenderDebugReadAloudResponseStatus).toBe('200');
     expect(playSpy).toHaveBeenCalledTimes(1);
 
     playSpy.mockRestore();
     createObjectUrlSpy.mockRestore();
     revokeObjectUrlSpy.mockRestore();
     cleanupBootstrap();
+  });
+
+  it('marks backend read aloud active before the synthesize body finishes', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/');
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugReadAloudUrl =
+      'https://chatgpt.com/backend-api/synthesize?message_id=assistant5&conversation_id=conversation-real-id&voice=cove&format=aac';
+
+    let closeSynthesizeStream: (() => void) | null = null;
+    const synthesizeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeSynthesizeStream = () => controller.close();
+      },
+    });
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.includes('/api/auth/session')) {
+        return new Response(JSON.stringify({ accessToken: 'token', expires: '2099-01-01T00:00:00.000Z' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (requestUrl.includes('/backend-api/synthesize')) {
+        return new Response(synthesizeStream, {
+          status: 200,
+          headers: { 'content-type': 'audio/aac' },
+        });
+      }
+      throw new Error(`Unexpected fetch request: ${requestUrl}`);
+    }) as typeof window.fetch;
+    const originalFetch = window.fetch;
+    window.fetch = fetchSpy;
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const states: Array<{ entryActionSpeakingEntryKey: string | null }> = [];
+    (controller as unknown as {
+      statusBar: {
+        update(status: unknown, target: HTMLElement | null, state: { entryActionSpeakingEntryKey: string | null }): 'hidden';
+        destroy(): void;
+      };
+    }).statusBar = {
+      update: (_status, _target, state) => {
+        states.push({ entryActionSpeakingEntryKey: state.entryActionSpeakingEntryKey });
+        return 'hidden';
+      },
+      destroy: () => {},
+    };
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim' as const,
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'assistant5',
+      liveTurnId: null,
+      messageId: 'assistant5',
+      groupId: null,
+      parts: ['assistant-5'],
+      text: 'assistant-5',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const playSpy = vi.spyOn(HTMLAudioElement.prototype, 'play').mockResolvedValue(undefined);
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:read-aloud');
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    try {
+      const playback = (controller as unknown as {
+        startReadAloudPlayback(
+          groupId: string | null,
+          entry: ManagedHistoryEntry,
+          entryKey: string,
+        ): Promise<void>;
+      }).startReadAloudPlayback(null, entry, 'history-entry');
+      await flush();
+
+      expect(states.some((state) => state.entryActionSpeakingEntryKey === 'history-entry')).toBe(true);
+      expect(document.body.dataset.turboRenderReadAloudMode).toBe('backend');
+      expect(playSpy).not.toHaveBeenCalled();
+
+      expect(closeSynthesizeStream).not.toBeNull();
+      closeSynthesizeStream!();
+      await playback;
+      expect(playSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.fetch = originalFetch;
+      playSpy.mockRestore();
+      createObjectUrlSpy.mockRestore();
+      revokeObjectUrlSpy.mockRestore();
+      history.replaceState({}, '', originalPath);
+    }
+  });
+
+  it('streams backend read aloud through MediaSource before the response closes', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/');
+    document.body.dataset.turboRenderDebugReadAloudBackend = '1';
+    document.body.dataset.turboRenderDebugReadAloudUrl =
+      'https://chatgpt.com/backend-api/synthesize?message_id=assistant5&conversation_id=conversation-real-id&voice=cove&format=aac';
+
+    const originalMediaSource = (window as Window & { MediaSource?: typeof MediaSource }).MediaSource;
+    const originalFetch = window.fetch;
+    const appendedChunks: Uint8Array[] = [];
+    class FakeSourceBuffer extends EventTarget {
+      updating = false;
+
+      appendBuffer(chunk: BufferSource): void {
+        appendedChunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBuffer));
+        this.updating = true;
+        window.setTimeout(() => {
+          this.updating = false;
+          this.dispatchEvent(new Event('updateend'));
+        }, 0);
+      }
+    }
+    class FakeMediaSource extends EventTarget {
+      static isTypeSupported(type: string): boolean {
+        return type === 'audio/aac';
+      }
+
+      readyState: ReadyState = 'closed';
+
+      constructor() {
+        super();
+        window.setTimeout(() => {
+          this.readyState = 'open';
+          this.dispatchEvent(new Event('sourceopen'));
+        }, 0);
+      }
+
+      addSourceBuffer(): SourceBuffer {
+        return new FakeSourceBuffer() as SourceBuffer;
+      }
+
+      endOfStream(): void {
+        this.readyState = 'ended';
+      }
+    }
+    Object.defineProperty(window, 'MediaSource', {
+      configurable: true,
+      value: FakeMediaSource,
+    });
+
+    let closeSynthesizeStream: (() => void) | null = null;
+    const synthesizeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        closeSynthesizeStream = () => controller.close();
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+      },
+    });
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.includes('/api/auth/session')) {
+        return new Response(JSON.stringify({ accessToken: 'token', expires: '2099-01-01T00:00:00.000Z' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (requestUrl.includes('/backend-api/synthesize')) {
+        return new Response(synthesizeStream, {
+          status: 200,
+          headers: { 'content-type': 'audio/aac' },
+        });
+      }
+      throw new Error(`Unexpected fetch request: ${requestUrl}`);
+    }) as typeof window.fetch;
+    window.fetch = fetchSpy;
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+      },
+      paused: false,
+      mountUi: false,
+    });
+    activeControllers.push(controller);
+
+    const entry = {
+      id: 'history-entry',
+      source: 'initial-trim' as const,
+      role: 'assistant' as const,
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: 'assistant5',
+      liveTurnId: null,
+      messageId: 'assistant5',
+      groupId: null,
+      parts: ['assistant-5'],
+      text: 'assistant-5',
+      renderKind: 'markdown-text' as const,
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    const playSpy = vi.spyOn(HTMLAudioElement.prototype, 'play').mockResolvedValue(undefined);
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:read-aloud-stream');
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    try {
+      let resolved = false;
+      const playback = (controller as unknown as {
+        startReadAloudPlayback(
+          groupId: string | null,
+          entry: ManagedHistoryEntry,
+          entryKey: string,
+        ): Promise<void>;
+      }).startReadAloudPlayback(null, entry, 'history-entry').finally(() => {
+        resolved = true;
+      });
+      await flush();
+
+      expect(appendedChunks).toHaveLength(1);
+      expect(playSpy).toHaveBeenCalledTimes(1);
+      expect(document.body.dataset.turboRenderReadAloudStreaming).toBe('1');
+      expect(resolved).toBe(false);
+
+      expect(closeSynthesizeStream).not.toBeNull();
+      closeSynthesizeStream!();
+      await playback;
+    } finally {
+      window.fetch = originalFetch;
+      Object.defineProperty(window, 'MediaSource', {
+        configurable: true,
+        value: originalMediaSource,
+      });
+      playSpy.mockRestore();
+      createObjectUrlSpy.mockRestore();
+      revokeObjectUrlSpy.mockRestore();
+      history.replaceState({}, '', originalPath);
+    }
   });
 
   it('backs off repeated failed read aloud conversation snapshot prewarms', async () => {
@@ -2133,7 +3236,29 @@ describe('TurboRenderController', () => {
     activeControllers.push(controller);
 
     const originalFetch = window.fetch;
-    const fetchSpy = vi.fn(async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.includes('/api/auth/session')) {
+        return new Response(
+          JSON.stringify({
+            accessToken: 'test-read-aloud-access-token',
+            expires: '2099-01-01T00:00:00.000Z',
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+
       return new Response('missing', {
         status: 404,
         headers: { 'content-type': 'text/plain; charset=utf-8' },
@@ -2149,7 +3274,7 @@ describe('TurboRenderController', () => {
         ensureConversationSnapshotForReadAloud(conversationId: string | null): Promise<void>;
       }).ensureConversationSnapshotForReadAloud(conversationId);
 
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     } finally {
       window.fetch = originalFetch;
     }
@@ -2211,7 +3336,11 @@ describe('TurboRenderController', () => {
     });
     activeControllers.push(controller);
 
-    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    const session = createInitialTrimSession(24, 8);
+    for (const turn of session.turns) {
+      turn.createTime = 1_712_740_680;
+    }
+    controller.setInitialTrimSession(session);
     controller.start();
     await flush();
 
@@ -2220,6 +3349,7 @@ describe('TurboRenderController', () => {
     expect(status.routeKind).toBe('share');
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
     expect(inlineRoot).not.toBeNull();
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.historyEntryActions}`)).toBeNull();
@@ -2245,12 +3375,17 @@ describe('TurboRenderController', () => {
     });
     activeControllers.push(controller);
 
-    controller.setInitialTrimSession(createInitialTrimSession(24, 8));
+    const session = createInitialTrimSession(24, 8);
+    for (const turn of session.turns) {
+      turn.createTime = 1_712_740_680;
+    }
+    controller.setInitialTrimSession(session);
     controller.start();
     await flush();
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
     expect(inlineRoot).not.toBeNull();
+    await openNewestArchivePage();
     inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
     await flush();
 
@@ -2263,8 +3398,44 @@ describe('TurboRenderController', () => {
     );
     const menu = refreshedAssistantActions?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}`);
     expect(menu).not.toBeNull();
+    expect(menu?.className).toContain('popover');
+    expect(menu?.querySelector<HTMLElement>('[data-turbo-render-menu-header="true"]')?.textContent?.trim()).not.toBe('');
     expect(menu?.textContent).toContain('新聊天中的分支');
     expect(menu?.textContent).toContain('朗读');
+
+    refreshedAssistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')?.click();
+    await flush();
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).toBeNull();
+
+    inlineRoot
+      ?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`)
+      ?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')
+      ?.click();
+    await flush();
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).not.toBeNull();
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await flush();
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).toBeNull();
+
+    inlineRoot
+      ?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`)
+      ?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')
+      ?.click();
+    await flush();
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).not.toBeNull();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flush();
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).toBeNull();
   });
 
   it('does not clear applied inline history when a later non-applied session arrives', async () => {
@@ -2363,6 +3534,7 @@ describe('TurboRenderController', () => {
     controller.start();
     await flush();
 
+    await openNewestArchivePage();
     const refreshBefore = controller.getStatus().refreshCount;
     const toggle = document.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`);
     expect(toggle).not.toBeNull();

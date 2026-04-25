@@ -10,7 +10,7 @@ export interface RuntimeRecoveryTab {
 }
 
 export interface TabMessageRecoveryDeps {
-  sendMessage<T>(tabId: number, message: unknown): Promise<T | null>;
+  sendMessage: (tabId: number, message: unknown) => Promise<unknown | null>;
   getTab(tabId: number): Promise<RuntimeRecoveryTab | null>;
   injectContentScripts(tabId: number): Promise<boolean>;
   wait(ms: number): Promise<void>;
@@ -60,7 +60,7 @@ export async function sendMessageWithRuntimeRecovery<T>(
   tabId: number,
   message: unknown,
 ): Promise<T | null> {
-  const firstAttempt = await deps.sendMessage<T>(tabId, message);
+  const firstAttempt = (await deps.sendMessage(tabId, message)) as T | null;
   if (firstAttempt != null) {
     return firstAttempt;
   }
@@ -80,5 +80,5 @@ export async function sendMessageWithRuntimeRecovery<T>(
   }
 
   await deps.wait(RECOVERY_RETRY_DELAY_MS);
-  return deps.sendMessage<T>(tabId, message);
+  return (await deps.sendMessage(tabId, message)) as T | null;
 }

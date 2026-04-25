@@ -1,0 +1,16 @@
+[
+  {
+    "id": "small-real-conversation",
+    "url": "https://chatgpt.com/c/e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f",
+    "conversationId": "e77b97e5-a8b7-4380-a2d7-f3f6b775bc5f",
+    "expectedMinTurns": 16,
+    "warmupProfile": "archive-read-aloud-smoke"
+  },
+  {
+    "id": "large-real-conversation",
+    "url": "https://chatgpt.com/c/ceb4ea77-5357-49fb-b35c-607b533846f1",
+    "conversationId": "ceb4ea77-5357-49fb-b35c-607b533846f1",
+    "expectedMinTurns": 680,
+    "warmupProfile": "archive-scroll-regression"
+  }
+]

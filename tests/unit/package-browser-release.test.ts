@@ -4,7 +4,6 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error - The helper lives in an executable .mjs script.
 import {
   downloadExistingFirefoxSignedArtifact,
 } from '../../scripts/package-browser-release.mjs';
@@ -34,7 +33,7 @@ describe('browser release packaging', () => {
     );
 
     const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
-      calls.push({ url: String(url), headers: init?.headers });
+      calls.push({ url: String(url), ...(init?.headers != null ? { headers: init.headers } : {}) });
 
       if (String(url) === versionDetailUrl) {
         return {
@@ -70,11 +69,11 @@ describe('browser release packaging', () => {
         artifactsDir,
         apiKey: 'issuer',
         apiSecret: 'secret',
-        fetchImpl,
+        fetchImpl: fetchImpl as typeof fetch,
       });
 
       expect(signedXpiPath).toBe(path.join(artifactsDir, 'firefox-signed.xpi'));
-      expect(readFileSync(signedXpiPath, 'utf8')).toBe('dummy xpi');
+      expect(readFileSync(signedXpiPath!, 'utf8')).toBe('dummy xpi');
       expect(calls).toEqual([
         {
           url: versionDetailUrl,
@@ -115,7 +114,7 @@ describe('browser release packaging', () => {
     );
 
     const fetchImpl = async (url: string, init?: { headers?: Record<string, string> }) => {
-      calls.push({ url: String(url), headers: init?.headers });
+      calls.push({ url: String(url), ...(init?.headers != null ? { headers: init.headers } : {}) });
 
       return {
         ok: true,
@@ -140,7 +139,7 @@ describe('browser release packaging', () => {
           apiSecret: 'secret',
           timeoutMs: 20,
           pollIntervalMs: 1,
-          fetchImpl,
+          fetchImpl: fetchImpl as typeof fetch,
         }),
       ).rejects.toThrow(/did not become downloadable before timeout/);
       expect(calls.length).toBeGreaterThan(0);

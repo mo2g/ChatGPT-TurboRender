@@ -30,6 +30,8 @@ function createRuntime(overrides: Partial<TabRuntimeStatus> = {}): TabRuntimeSta
     finalizedTurns: 18,
     handledTurnsTotal: 6,
     historyPanelOpen: false,
+    archivePageCount: 0,
+    currentArchivePageIndex: null,
     archivedTurnsTotal: 6,
     expandedArchiveGroups: 0,
     historyAnchorMode: 'hidden',

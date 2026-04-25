@@ -67,9 +67,8 @@ describe('chatgpt content entrypoint', () => {
 
   it('responds to runtime messages through chrome sendResponse semantics', async () => {
     const invalidations: Array<() => void> = [];
-    let runtimeListener:
-      | ((message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown)
-      | null = null;
+    type RuntimeListener = (message: unknown, sender: unknown, sendResponse: (response: unknown) => void) => unknown;
+    let runtimeListener: RuntimeListener | null = null;
     const statusPayload = {
       supported: true,
       chatId: 'share:test-share',
@@ -177,11 +176,15 @@ describe('chatgpt content entrypoint', () => {
     expect(runtimeListener).not.toBeNull();
 
     const ignoredResponse = vi.fn();
-    expect(runtimeListener?.({ type: 'GET_TAB_STATUS' }, null, ignoredResponse)).toBeUndefined();
+    if (runtimeListener != null) {
+      expect((runtimeListener as any)({ type: 'GET_TAB_STATUS' }, null, ignoredResponse)).toBeUndefined();
+    }
     expect(ignoredResponse).not.toHaveBeenCalled();
 
     const sendResponse = vi.fn();
-    expect(runtimeListener?.({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse)).toBe(true);
+    if (runtimeListener != null) {
+      expect((runtimeListener as any)({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse)).toBe(true);
+    }
     await Promise.resolve();
 
     expect(sendResponse).toHaveBeenCalledWith(statusPayload);
@@ -311,11 +314,11 @@ describe('chatgpt content entrypoint', () => {
     expect(chromeRuntimeListener).not.toBeNull();
 
     const ignoredResponse = vi.fn();
-    expect(chromeRuntimeListener?.({ type: 'GET_TAB_STATUS' }, null, ignoredResponse)).toBeUndefined();
+    expect(chromeRuntimeListener != null ? (chromeRuntimeListener as (...args: unknown[]) => unknown)({ type: 'GET_TAB_STATUS' }, null, ignoredResponse) : undefined).toBeUndefined();
     expect(ignoredResponse).not.toHaveBeenCalled();
 
     const sendResponse = vi.fn();
-    expect(chromeRuntimeListener?.({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse)).toBe(true);
+    expect(chromeRuntimeListener != null ? (chromeRuntimeListener as (...args: unknown[]) => unknown)({ type: 'GET_RUNTIME_STATUS' }, null, sendResponse) : undefined).toBe(true);
     await Promise.resolve();
 
     expect(sendResponse).toHaveBeenCalledWith(statusPayload);
@@ -455,7 +458,7 @@ describe('chatgpt content entrypoint', () => {
     expect(resetCalls).toEqual(['chat:abc']);
 
     history.replaceState({}, '', '/');
-    poll?.();
+    (poll as (() => void) | null)?.();
     expect(resetCalls).toEqual(['chat:abc', 'chat:home']);
 
     invalidations.forEach((callback) => callback());
@@ -529,12 +532,12 @@ describe('chatgpt content entrypoint', () => {
     expect(resetCalls).toEqual(['chat:abc']);
 
     history.replaceState({}, '', '/unresolved-route');
-    poll?.();
+    (poll as (() => void) | null)?.();
     expect(resetCalls).toEqual(['chat:abc']);
 
     now += 2_100;
-    poll?.();
-    poll?.();
+    (poll as (() => void) | null)?.();
+    (poll as (() => void) | null)?.();
     expect(resetCalls).toEqual(['chat:abc']);
 
     invalidations.forEach((callback) => callback());
@@ -607,7 +610,7 @@ describe('chatgpt content entrypoint', () => {
     expect(resetCalls).toEqual(['share:share-123']);
 
     history.replaceState({}, '', '/share/share-123?locale=zh-CN');
-    poll?.();
+    (poll as (() => void) | null)?.();
     expect(resetCalls).toEqual(['share:share-123']);
 
     invalidations.forEach((callback) => callback());

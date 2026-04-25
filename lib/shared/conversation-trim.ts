@@ -2,6 +2,7 @@ import type {
   CachedConversationTurn,
   ConversationRouteKind,
   InitialTrimSession,
+  ManagedHistoryCitation,
   ManagedHistoryRenderKind,
   TurnRole,
   TurboRenderMode,
@@ -100,7 +101,7 @@ function getNodeDepth(
   const seen = new Set<string>();
 
   while (currentId != null && !seen.has(currentId)) {
-    const node = mapping[currentId];
+    const node: ConversationMappingNode | undefined = mapping[currentId];
     if (node == null) {
       break;
     }
@@ -206,7 +207,7 @@ export function buildActiveChain(
   let currentId: string | null | undefined = activeNodeId;
 
   while (currentId != null && !seen.has(currentId)) {
-    const node = mapping[currentId];
+    const node: ConversationMappingNode | undefined = mapping[currentId];
     if (node == null) {
       break;
     }
@@ -321,8 +322,11 @@ function collectConversationMessageCandidates(payload: ConversationPayload): Arr
     }
     seen.add(nodeId);
 
-    const node = mapping[nodeId];
-    const message = node?.message ?? null;
+    const node: ConversationMappingNode | undefined = mapping[nodeId];
+    if (node == null) {
+      continue;
+    }
+    const message = node.message ?? null;
     if (message == null) {
       continue;
     }
@@ -470,6 +474,183 @@ function extractMessageParts(message: ConversationMessage | null | undefined): s
   return fragments;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value != null ? (value as Record<string, unknown>) : null;
+}
+
+function getString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function getNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function findFirstHttpUrl(value: unknown, depth = 0): string | null {
+  if (depth > 5 || value == null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const match = value.match(/https?:\/\/[^\s"'<>]+/);
+    return match?.[0] ?? null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const url = findFirstHttpUrl(item, depth + 1);
+      if (url != null) {
+        return url;
+      }
+    }
+    return null;
+  }
+
+  const record = asRecord(value);
+  if (record == null) {
+    return null;
+  }
+
+  const preferredKeys = [
+    'url',
+    'href',
+    'link',
+    'source_url',
+    'web_url',
+    'citation_url',
+    'document_url',
+    'cloud_doc_url',
+  ];
+  for (const key of preferredKeys) {
+    const url = findFirstHttpUrl(record[key], depth + 1);
+    if (url != null) {
+      return url;
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    const url = findFirstHttpUrl(value, depth + 1);
+    if (url != null) {
+      return url;
+    }
+  }
+  return null;
+}
+
+function findFirstStringByKeys(value: unknown, keys: string[], depth = 0): string | null {
+  if (depth > 5 || value == null) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const result = findFirstStringByKeys(item, keys, depth + 1);
+      if (result != null) {
+        return result;
+      }
+    }
+    return null;
+  }
+
+  const record = asRecord(value);
+  if (record == null) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const result = getString(record[key]);
+    if (result != null) {
+      return result;
+    }
+  }
+
+  for (const child of Object.values(record)) {
+    const result = findFirstStringByKeys(child, keys, depth + 1);
+    if (result != null) {
+      return result;
+    }
+  }
+  return null;
+}
+
+function extractCitationMarkerFromText(value: string): string | null {
+  const markerStart = '\uE200cite\uE202';
+  const markerEnd = '\uE201';
+  const markerSeparator = '\uE202';
+  const start = value.indexOf(markerStart);
+  if (start === -1) {
+    return value.trim().length > 0 ? value.trim() : null;
+  }
+
+  const end = value.indexOf(markerEnd, start + markerStart.length);
+  if (end === -1) {
+    return null;
+  }
+
+  const marker = value
+    .slice(start + markerStart.length, end)
+    .split(markerSeparator)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join(' ');
+  return marker.length > 0 ? marker : null;
+}
+
+function extractMessageCitations(
+  message: ConversationMessage | null | undefined,
+  parts: string[],
+): ManagedHistoryCitation[] {
+  const rawCitations = message?.metadata?.citations;
+  if (!Array.isArray(rawCitations) || rawCitations.length === 0) {
+    return [];
+  }
+
+  const text = parts.join('\n\n');
+  const citations: ManagedHistoryCitation[] = [];
+  const seen = new Set<string>();
+
+  for (const rawCitation of rawCitations) {
+    const record = asRecord(rawCitation);
+    if (record == null) {
+      continue;
+    }
+
+    const start = getNumber(record.start_ix);
+    const end = getNumber(record.end_ix);
+    const slicedMarker =
+      start != null && end != null && start >= 0 && end > start && end <= text.length
+        ? extractCitationMarkerFromText(text.slice(start, end))
+        : null;
+    const marker =
+      slicedMarker ??
+      findFirstStringByKeys(record, ['marker', 'ref_id', 'reference_id', 'citation_id', 'cite_id']) ??
+      findFirstHttpUrl(record) ??
+      '';
+    const url = findFirstHttpUrl(record);
+    const title = findFirstStringByKeys(record, ['title', 'name', 'document_title', 'display_name']);
+    const source = findFirstStringByKeys(record, ['source', 'domain', 'site_name']);
+
+    if (marker.length === 0 && url == null && title == null) {
+      continue;
+    }
+
+    const key = `${marker}\n${url ?? ''}\n${title ?? ''}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    citations.push({
+      marker,
+      url,
+      title,
+      source,
+    });
+  }
+
+  return citations;
+}
+
 function stringifyStructuredPayload(message: ConversationMessage | null | undefined): string | null {
   if (message?.content == null && message?.metadata == null) {
     return null;
@@ -504,11 +685,18 @@ function createUnsupportedContentPlaceholder(role: TurnRole, contentType: string
 
 function createCachedTurnContent(message: ConversationMessage | null | undefined): Pick<
   CachedConversationTurn,
-  'parts' | 'renderKind' | 'contentType' | 'snapshotHtml' | 'structuredDetails' | 'hiddenFromConversation'
+  | 'parts'
+  | 'renderKind'
+  | 'contentType'
+  | 'snapshotHtml'
+  | 'structuredDetails'
+  | 'hiddenFromConversation'
+  | 'citations'
 > {
   const role = normalizeRole(message?.author?.role);
   const hiddenFromConversation = isHiddenFromConversation(message);
   const parts = extractMessageParts(message);
+  const citations = hiddenFromConversation ? [] : extractMessageCitations(message, parts);
   const contentType = message?.content?.content_type ?? null;
   const structuredDetails = hiddenFromConversation ? null : stringifyStructuredPayload(message);
   const hasText = parts.length > 0;
@@ -531,6 +719,7 @@ function createCachedTurnContent(message: ConversationMessage | null | undefined
     snapshotHtml: null,
     structuredDetails: renderKind === 'structured-message' ? structuredDetails : null,
     hiddenFromConversation,
+    citations,
   };
 }
 
@@ -551,6 +740,7 @@ function createCachedTurn(node: ConversationMappingNode): CachedConversationTurn
     structuredDetails: content.structuredDetails,
     hiddenFromConversation: content.hiddenFromConversation,
     createTime: node.message.create_time ?? null,
+    citations: content.citations,
   };
 }
 

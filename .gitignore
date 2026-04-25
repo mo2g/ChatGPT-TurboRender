@@ -5,6 +5,7 @@ node_modules
 release
 .store
 .wxt
+tests/fixtures-local
 playwright-report
 test-results
 coverage

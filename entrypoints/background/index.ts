@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { defineBackground } from 'wxt/utils/define-background';
 
 import { createBackgroundService } from '../../lib/background/service';
 import { sendMessageWithRuntimeRecovery } from '../../lib/background/tab-message-recovery';

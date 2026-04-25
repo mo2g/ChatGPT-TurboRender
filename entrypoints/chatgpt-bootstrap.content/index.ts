@@ -1,3 +1,4 @@
+import { defineContentScript } from 'wxt/utils/define-content-script';
 import { installConversationBootstrap } from '../../lib/main-world/conversation-bootstrap';
 
 export default defineContentScript({

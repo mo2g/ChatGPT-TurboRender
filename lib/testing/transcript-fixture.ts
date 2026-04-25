@@ -111,7 +111,7 @@ function createHostActionIcon(doc: Document, action: HostActionName): SVGSVGElem
 }
 
 function hostActionCounterKey(action: HostActionName): string {
-  return `hostAction${action[0].toUpperCase()}${action.slice(1)}Count`;
+  return `hostAction${action[0]?.toUpperCase() ?? ''}${action.slice(1)}Count`;
 }
 
 function incrementHostActionCounter(doc: Document, action: HostActionName): void {
@@ -267,7 +267,7 @@ export function mountGroupedTranscriptFixture(
   doc: Document,
   options: FixtureOptions & { daySizes?: number[] },
 ): GroupedTranscriptFixture {
-  const fixture = mountTranscriptFixture(doc, { turnCount: 0, streaming: options.streaming });
+  const fixture = mountTranscriptFixture(doc, { turnCount: 0, streaming: options.streaming ?? false });
   fixture.transcript.remove();
 
   const daySizes = options.daySizes ?? [Math.max(1, Math.floor(options.turnCount / 2)), Math.ceil(options.turnCount / 2)];

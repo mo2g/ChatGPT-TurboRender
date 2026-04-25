@@ -13,10 +13,19 @@ type RuntimeListener = (
   sendResponse: (response: unknown) => void,
 ) => boolean | undefined;
 
+type BackgroundEntrypoint = {
+  main: () => void;
+};
+
 async function invokeRuntimeListener(listener: RuntimeListener, message: unknown): Promise<unknown> {
   return await new Promise((resolve) => {
     expect(listener(message, null, resolve)).toBe(true);
   });
+}
+
+function runBackgroundEntrypoint(module: { default: unknown }): void {
+  const entrypoint = module.default as BackgroundEntrypoint;
+  entrypoint.main();
 }
 
 function createRuntime(overrides: Partial<TabRuntimeStatus> = {}): TabRuntimeStatus {
@@ -41,6 +50,8 @@ function createRuntime(overrides: Partial<TabRuntimeStatus> = {}): TabRuntimeSta
     finalizedTurns: 8,
     handledTurnsTotal: 0,
     historyPanelOpen: false,
+    archivePageCount: 0,
+    currentArchivePageIndex: null,
     archivedTurnsTotal: 0,
     expandedArchiveGroups: 0,
     historyAnchorMode: 'hidden',
@@ -96,6 +107,8 @@ describe('background entrypoint', () => {
         finalizedTurns: 8,
         handledTurnsTotal: 0,
         historyPanelOpen: false,
+        archivePageCount: 0,
+        currentArchivePageIndex: null,
         archivedTurnsTotal: 0,
         expandedArchiveGroups: 0,
         historyAnchorMode: 'hidden',
@@ -157,13 +170,11 @@ describe('background entrypoint', () => {
     vi.stubGlobal('defineBackground', <T>(definition: T) => definition);
 
     const module = await import('../../entrypoints/background/index');
-    const background = module.default as () => void;
-
-    background();
+    runBackgroundEntrypoint(module);
     expect(installedListener).toHaveLength(1);
     expect(runtimeListener).toHaveLength(1);
 
-    const response = await invokeRuntimeListener(runtimeListener[0], { type: 'GET_TAB_STATUS' });
+    const response = await invokeRuntimeListener(runtimeListener[0]!, { type: 'GET_TAB_STATUS' });
     expect(browserTabsSendMessage).toHaveBeenCalledWith(5, { type: 'GET_RUNTIME_STATUS' });
     expect(response).toMatchObject({
       targetTabId: 5,
@@ -231,13 +242,11 @@ describe('background entrypoint', () => {
     vi.stubGlobal('defineBackground', <T>(definition: T) => definition);
 
     const module = await import('../../entrypoints/background/index');
-    const background = module.default as () => void;
-
-    background();
+    runBackgroundEntrypoint(module);
     expect(installedListener).toHaveLength(1);
     expect(runtimeListener).toHaveLength(1);
 
-    const response = await invokeRuntimeListener(runtimeListener[0], { type: 'GET_TAB_STATUS' });
+    const response = await invokeRuntimeListener(runtimeListener[0]!, { type: 'GET_TAB_STATUS' });
     expect(browserTabsSendMessage).toHaveBeenCalledWith(1, { type: 'GET_RUNTIME_STATUS' });
     expect(browserTabsSendMessage).not.toHaveBeenCalledWith(2, { type: 'GET_RUNTIME_STATUS' });
     expect(response).toMatchObject({
@@ -315,13 +324,11 @@ describe('background entrypoint', () => {
     vi.stubGlobal('defineBackground', <T>(definition: T) => definition);
 
     const module = await import('../../entrypoints/background/index');
-    const background = module.default as () => void;
-
-    background();
+    runBackgroundEntrypoint(module);
     expect(installedListener).toHaveLength(1);
     expect(runtimeListener).toHaveLength(1);
 
-    const response = await invokeRuntimeListener(runtimeListener[0], { type: 'GET_TAB_STATUS' });
+    const response = await invokeRuntimeListener(runtimeListener[0]!, { type: 'GET_TAB_STATUS' });
     expect(browserTabsSendMessage).toHaveBeenCalledWith(5, { type: 'GET_RUNTIME_STATUS' });
     expect(response).toMatchObject({
       targetTabId: 5,
@@ -401,13 +408,11 @@ describe('background entrypoint', () => {
     vi.stubGlobal('defineBackground', <T>(definition: T) => definition);
 
     const module = await import('../../entrypoints/background/index');
-    const background = module.default as () => void;
-
-    background();
+    runBackgroundEntrypoint(module);
     expect(installedListener).toHaveLength(1);
     expect(runtimeListener).toHaveLength(1);
 
-    const response = await invokeRuntimeListener(runtimeListener[0], { type: 'GET_TAB_STATUS' });
+    const response = await invokeRuntimeListener(runtimeListener[0]!, { type: 'GET_TAB_STATUS' });
     expect(browserTabsSendMessage).toHaveBeenCalledWith(11, { type: 'GET_RUNTIME_STATUS' });
     expect(response).toMatchObject({
       targetTabId: 11,

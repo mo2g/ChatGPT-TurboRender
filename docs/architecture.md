@@ -160,7 +160,7 @@ TurboRender keeps search local to the archive region.
 
 Development and manual validation use a repo-managed controlled Chrome instance instead of manually loading the unpacked extension inside the DevTools MCP browser.
 
-- launch with `pnpm debug:mcp-chrome -- https://chatgpt.com/c/<chat-id>` or `pnpm debug:mcp-chrome -- https://chatgpt.com/share/<share-id>`
+- launch with `pnpm debug:mcp-chrome -- https://chatgpt.com/c/<chat-id>`
 - the launcher prefers `Google Chrome for Testing` or a compatible Chromium binary
 - the unpacked extension is preloaded from `.output/chrome-mv3`
 - the browser runs with a dedicated profile and remote debugging port so the MCP session can reconnect reliably
@@ -179,12 +179,12 @@ TurboRender limits the live subtree while preserving ChatGPT's reading flow.
 ## Testing strategy
 
 - Unit tests cover route identity, payload trimming, fixed-slot batching, and background message handling
-- Integration tests use local transcript fixtures to verify archive rendering, restore behavior, and soft-fold fallback
-- Controlled Chrome is used for manual verification on real ChatGPT pages, especially `/c/...` and `/share/...`
+- Controlled Chrome plus `pnpm test:e2e` on the default logged-in `https://chatgpt.com/c/ceb4ea77-5357-49fb-b35c-607b533846f1` conversation is the primary host-compatibility validation path; `--use-active-tab` is an explicit convenience mode, and `pnpm test:e2e:live` remains an alias for the same live runner
+- Integration tests and historical local fixture scripts remain supplemental targeted coverage for archive rendering, restore behavior, and soft-fold fallback rather than the host-truth path
 
 ## Future directions
 
 - Collect more real-world DOM variants from ChatGPT updates
 - Improve heuristics for streaming detection and protected regions
 - Tighten the hot-zone observer further if real `/c/...` typing traces still show pressure
-- Continue validating against share pages and long live chats before expanding the restore model
+- Continue validating against long live chats before expanding the restore model

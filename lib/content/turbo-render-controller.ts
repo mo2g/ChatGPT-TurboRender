@@ -14,6 +14,8 @@ import {
   type UiLanguage,
 } from '../shared/i18n';
 import type {
+  ArchivePageMatch,
+  ArchivePageMeta,
   IndexRange,
   InitialTrimSession,
   ManagedHistoryEntry,
@@ -21,17 +23,29 @@ import type {
   Settings,
   TabRuntimeStatus,
   TurnRecord,
+  TurnRole,
 } from '../shared/types';
 
-import { detectTurnRole, isStreamingTurn, isTurnNode, isTurboRenderUiNode, scanChatPage } from './chatgpt-adapter';
+import {
+  buildTurnsFromFixture,
+  checkFixtureCompatibility,
+  detectTurnRole,
+  getFixtureData,
+  isStreamingTurn,
+  isTurnNode,
+  isTurboRenderUiNode,
+  scanChatPage,
+} from './chatgpt-adapter';
 import { FrameSpikeMonitor } from './frame-spike-monitor';
 import {
   captureHostActionTemplate,
+  createArchiveClipboardPayload,
   copyTextToClipboard,
   getArchiveEntrySelectionKey,
   findHostActionButton,
   resolveArchiveCopyText,
   type ArchiveEntryAction,
+  type EntryActionAvailability,
   type EntryActionAvailabilityMap,
   type EntryActionMenuSelection,
   type EntryActionRequest,
@@ -47,8 +61,10 @@ import {
   ManagedHistoryStore,
   extractMessageIdFromHtml,
   isSyntheticMessageId,
+  isSupplementalHistoryEntry,
   resolvePreferredMessageId,
 } from './managed-history';
+import { ArchivePager } from './archive-pager';
 import { ParkingLot } from './parking-lot';
 import { StatusBar } from './status-bar';
 import type { ConversationPayload } from '../shared/conversation-trim';
@@ -68,6 +84,12 @@ export interface TurboRenderControllerOptions {
 type OpenHostMenuResult = {
   menu: HTMLElement;
   previousMenus: Set<HTMLElement>;
+};
+
+type HostArchiveActionBinding = {
+  action: ArchiveEntryAction;
+  anchor: HTMLElement | null;
+  button: HTMLElement;
 };
 
 function requestAnimationFrameCompat(win: Window, callback: FrameRequestCallback): number {
@@ -110,6 +132,7 @@ const HOST_MENU_WAIT_TIMEOUT_MS = 1_000;
 const HOST_MENU_ACTION_WAIT_TIMEOUT_MS = 2_000;
 const LARGE_CONVERSATION_TURN_THRESHOLD = 600;
 const LARGE_CONVERSATION_REFRESH_DELAY_MS = 180;
+const ARCHIVE_PAGE_PAIR_COUNT = 20;
 const DESCENDANT_COUNT_CAP = 4_000;
 const DESCENDANT_COUNT_SAMPLE_INTERVAL_MS = 1_500;
 
@@ -192,7 +215,12 @@ const HOST_ACTION_TESTID_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
 };
 
 interface ArchiveUiState {
+  archivePageCount: number;
+  currentArchivePageIndex: number | null;
+  currentArchivePageMeta: ArchivePageMeta | null;
+  isRecentView: boolean;
   archiveGroups: ManagedHistoryGroup[];
+  currentPageGroups: ManagedHistoryGroup[];
   collapsedBatchCount: number;
   expandedBatchCount: number;
 }
@@ -374,6 +402,7 @@ export class TurboRenderController {
   private readonly frameSpikeMonitor: FrameSpikeMonitor;
   private readonly parkingLot = new ParkingLot();
   private readonly managedHistory = new ManagedHistoryStore();
+  private readonly archivePager = new ArchivePager();
   private mutationObserver: MutationObserver | null = null;
   private observedMutationRoot: Node | null = null;
   private observedRootKind: 'live-turn-container' | 'archive-only-root' = 'archive-only-root';
@@ -397,6 +426,11 @@ export class TurboRenderController {
   private t: Translator = createTranslator('en');
   private readonly records = new Map<string, TurnRecord>();
   private readonly expandedArchiveBatchIds = new Set<string>();
+  private archiveSearchOpen = false;
+  private archiveSearchQuery = '';
+  private archiveSearchResults: ArchivePageMatch[] = [];
+  private activeArchiveSearchPageIndex: number | null = null;
+  private activeArchiveSearchPairIndex: number | null = null;
   private readonly entryActionSelectionByEntryId = new Map<string, EntryActionSelection>();
   private readonly entryActionTemplateByLane = new Map<EntryActionLane, HostActionTemplateSnapshot>();
   private readonly entryHostMessageIdCache = new Map<string, string>();
@@ -410,6 +444,8 @@ export class TurboRenderController {
   private entryActionReadAloudAudio: HTMLAudioElement | null = null;
   private entryActionReadAloudObjectUrl: string | null = null;
   private entryActionReadAloudAbortController: AbortController | null = null;
+  private entryActionCopiedEntryKey: string | null = null;
+  private entryActionCopiedResetHandle: number | null = null;
   private anchoredHostMenu: {
     target: HTMLElement;
     menu: HTMLElement;
@@ -420,7 +456,8 @@ export class TurboRenderController {
   private readonly readAloudConversationSnapshotPrimed = new Set<string>();
   private readonly readAloudConversationSnapshotRequests = new Map<string, Promise<void>>();
   private readonly readAloudConversationSnapshotFailures = new Map<string, number>();
-  private searchQuery = '';
+  private readAloudAccessToken: { value: string; expiresAt: number } | null = null;
+  private readAloudAccessTokenRequest: Promise<string | null> | null = null;
   private ignoreMutationsUntil = 0;
   private ignoreScrollUntil = 0;
   private archiveUiSyncHandle: number | null = null;
@@ -434,6 +471,11 @@ export class TurboRenderController {
     targetAnchorTop: number | null;
     scrollTarget: HTMLElement | null;
     wasExpanded: boolean;
+  } | null = null;
+  private pendingArchiveSearchJump: {
+    pageIndex: number;
+    pairIndex: number;
+    attemptCount: number;
   } | null = null;
   private refreshCount = 0;
   private lastLiveSignature = '';
@@ -470,17 +512,35 @@ export class TurboRenderController {
   }
 
   start(): void {
+    console.log(`[TurboRender] Controller starting, mountUi=${this.mountUi}`);
     if (this.mountUi) {
       this.statusBar = new StatusBar(this.doc, {
-        onSearchQueryChange: (query) => {
-          this.searchQuery = query.trim();
-          this.updateBatchSearchState();
-          const archiveState = this.collectArchiveState();
-          this.refreshRuntimeStatusFromCurrentMetrics(archiveState);
-          this.updateStatusBar(archiveState);
-        },
         onToggleArchiveGroup: (groupId, anchor) => {
           this.toggleArchiveGroup(groupId, anchor);
+        },
+        onOpenNewestArchivePage: () => {
+          this.openNewestArchivePage();
+        },
+        onGoOlderArchivePage: () => {
+          this.goOlderArchivePage();
+        },
+        onGoNewerArchivePage: () => {
+          this.goNewerArchivePage();
+        },
+        onGoToRecentArchiveView: () => {
+          this.goToRecentArchiveView();
+        },
+        onToggleArchiveSearch: () => {
+          this.toggleArchiveSearch();
+        },
+        onArchiveSearchQueryChange: (query) => {
+          this.setArchiveSearchQuery(query);
+        },
+        onClearArchiveSearch: () => {
+          this.clearArchiveSearch();
+        },
+        onOpenArchiveSearchResult: (result) => {
+          this.openArchiveSearchResult(result);
         },
         onEntryAction: (request) => {
           void this.handleArchiveEntryAction(request);
@@ -489,6 +549,7 @@ export class TurboRenderController {
           void this.handleMoreMenuAction(request);
         },
       });
+      console.log(`[TurboRender] StatusBar created: ${this.statusBar != null}`);
     }
 
     this.refreshLanguage();
@@ -498,20 +559,24 @@ export class TurboRenderController {
   }
 
   stop(): void {
+    this.archivePager.goToRecent();
     this.parkingLot.restoreAll();
     this.managedHistory.clear();
     this.expandedArchiveBatchIds.clear();
+    this.resetArchiveSearchState();
     this.entryActionSelectionByEntryId.clear();
     this.entryActionTemplateByLane.clear();
     this.entryHostMessageIdCache.clear();
     this.restoreAnchoredHostMenuStyle();
     this.clearPendingHostMoreActionRestore();
     this.entryActionMenu = null;
+    this.clearCopiedEntryFeedback(false);
     this.clearReadAloudPlayback({ updateStatusBar: false });
     this.readAloudConversationPayloadCache.clear();
     this.readAloudConversationSnapshotPrimed.clear();
     this.readAloudConversationSnapshotRequests.clear();
     this.readAloudConversationSnapshotFailures.clear();
+    this.clearReadAloudAccessToken();
     this.cachedLiveDescendantCount = 0;
     this.lastLiveDescendantSampleAt = 0;
     this.liveDescendantSampleDirty = true;
@@ -571,16 +636,19 @@ export class TurboRenderController {
     this.parkingLot.restoreAll();
     this.managedHistory.clear();
     this.expandedArchiveBatchIds.clear();
+    this.resetArchiveSearchState();
     this.entryActionSelectionByEntryId.clear();
     this.entryActionTemplateByLane.clear();
     this.entryActionMenu = null;
     this.restoreAnchoredHostMenuStyle();
     this.clearPendingHostMoreActionRestore();
+    this.clearCopiedEntryFeedback(false);
     this.clearReadAloudPlayback({ updateStatusBar: false });
     this.readAloudConversationPayloadCache.clear();
     this.readAloudConversationSnapshotPrimed.clear();
     this.readAloudConversationSnapshotRequests.clear();
     this.readAloudConversationSnapshotFailures.clear();
+    this.clearReadAloudAccessToken();
     this.clearHighlights();
     this.records.clear();
     this.active = false;
@@ -590,7 +658,7 @@ export class TurboRenderController {
     this.historyMountTarget = null;
     this.turnContainer = null;
     this.chatId = chatId;
-    this.searchQuery = '';
+    this.archivePager.goToRecent();
     if (this.archiveUiSyncHandle != null) {
       this.win.cancelAnimationFrame?.(this.archiveUiSyncHandle) ?? this.win.clearTimeout(this.archiveUiSyncHandle);
       this.archiveUiSyncHandle = null;
@@ -662,17 +730,85 @@ export class TurboRenderController {
       this.ignoreScrollUntil = 0;
       this.pendingArchiveToggle = null;
       this.entryActionMenu = null;
+      this.clearCopiedEntryFeedback(false);
       this.clearReadAloudPlayback({ updateStatusBar: false });
       this.readAloudConversationPayloadCache.clear();
       this.readAloudConversationSnapshotPrimed.clear();
       this.readAloudConversationSnapshotRequests.clear();
       this.readAloudConversationSnapshotFailures.clear();
+      this.clearReadAloudAccessToken();
       this.statusBar?.destroy();
     } else if (this.settings.enabled) {
       this.active = true;
       this.manualRestoreHoldUntil = 0;
     }
     this.scheduleRefresh();
+  }
+
+  private clearReadAloudAccessToken(): void {
+    this.readAloudAccessToken = null;
+    this.readAloudAccessTokenRequest = null;
+  }
+
+  private async resolveReadAloudAccessToken(): Promise<string | null> {
+    const cached = this.readAloudAccessToken;
+    if (cached != null && cached.expiresAt > Date.now()) {
+      return cached.value;
+    }
+
+    if (this.readAloudAccessTokenRequest != null) {
+      return this.readAloudAccessTokenRequest;
+    }
+
+    const request = (async () => {
+      try {
+        const sessionUrl = new URL('/api/auth/session', this.win.location.origin);
+        const response = await this.win.fetch(sessionUrl.toString(), {
+          credentials: 'include',
+        });
+        if (!response.ok) {
+          this.clearReadAloudAccessToken();
+          return null;
+        }
+
+        const payload = (await response.json()) as {
+          accessToken?: unknown;
+          expires?: unknown;
+        };
+        const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken.trim() : '';
+        if (accessToken.length === 0) {
+          this.clearReadAloudAccessToken();
+          return null;
+        }
+
+        const expiresAt =
+          typeof payload.expires === 'string'
+            ? Math.min(Date.parse(payload.expires) - 60_000, Date.now() + 10 * 60_000)
+            : Date.now() + 10 * 60_000;
+        this.readAloudAccessToken = {
+          value: accessToken,
+          expiresAt: Number.isFinite(expiresAt) && expiresAt > Date.now() ? expiresAt : Date.now() + 60_000,
+        };
+        return accessToken;
+      } catch {
+        this.clearReadAloudAccessToken();
+        return null;
+      }
+    })();
+
+    this.readAloudAccessTokenRequest = request;
+    try {
+      return await request;
+    } finally {
+      if (this.readAloudAccessTokenRequest === request) {
+        this.readAloudAccessTokenRequest = null;
+      }
+    }
+  }
+
+  private async buildReadAloudAuthorizationHeaders(): Promise<HeadersInit | undefined> {
+    const accessToken = await this.resolveReadAloudAccessToken();
+    return accessToken == null ? undefined : { Authorization: `Bearer ${accessToken}` };
   }
 
   private async ensureConversationSnapshotForReadAloud(conversationId: string | null): Promise<void> {
@@ -701,8 +837,10 @@ export class TurboRenderController {
           this.win.location.origin,
         );
         snapshotUrl.searchParams.set('__turbo_render_read_aloud_snapshot', '1');
+        const headers = await this.buildReadAloudAuthorizationHeaders();
         const response = await this.win.fetch(snapshotUrl.toString(), {
           credentials: 'include',
+          headers,
         });
         if (!response.ok) {
           this.readAloudConversationSnapshotFailures.set(
@@ -803,7 +941,7 @@ export class TurboRenderController {
   }
 
   private primeConversationMetadataIfNeeded(archiveState: ArchiveUiState): void {
-    if (!this.shouldUseBackendReadAloud() || archiveState.archiveGroups.length === 0) {
+    if (!this.shouldUseBackendReadAloud() || archiveState.currentPageGroups.length === 0) {
       return;
     }
 
@@ -838,37 +976,51 @@ export class TurboRenderController {
   }
 
   restoreAll(): void {
-    const batchPairCount = this.getBatchPairCount();
-    const hotPairCount = this.getHotPairCount(this.managedHistory.getTotalPairs());
-    for (const group of this.managedHistory.getArchiveGroups(
-      hotPairCount,
-      batchPairCount,
-      this.searchQuery,
-      this.expandedArchiveBatchIds,
-    )) {
+    const totalPairs = this.managedHistory.getTotalPairs();
+    const pageCount = this.getArchivePageCount(totalPairs);
+    if (pageCount <= 0) {
+      this.goToRecentArchiveView();
+      return;
+    }
+
+    if (this.archivePager.currentPageIndex == null) {
+      this.archivePager.openNewest(pageCount);
+    }
+
+    const currentPageGroups = this.getArchiveGroupsForPage(this.archivePager.currentPageIndex, totalPairs, new Set());
+    this.expandedArchiveBatchIds.clear();
+    for (const group of currentPageGroups) {
       this.expandedArchiveBatchIds.add(group.id);
     }
+
     this.manualRestoreHoldUntil = this.win.performance.now() + 5000;
     this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
     this.scheduleRefresh();
   }
 
   restoreNearby(): void {
-    const visibleRange = this.runtimeStatus.visibleRange;
-    const hotPairCount = this.getHotPairCount(this.managedHistory.getTotalPairs());
-    const archiveGroups = this.managedHistory.getArchiveGroups(
-      hotPairCount,
-      this.getBatchPairCount(),
-      this.searchQuery,
-      this.expandedArchiveBatchIds,
-    );
+    const totalPairs = this.managedHistory.getTotalPairs();
+    const pageCount = this.getArchivePageCount(totalPairs);
+    if (pageCount <= 0) {
+      this.goToRecentArchiveView();
+      return;
+    }
+
+    if (this.archivePager.currentPageIndex == null) {
+      this.archivePager.openNewest(pageCount);
+    }
+
+    const archiveGroups = this.getArchiveGroupsForPage(this.archivePager.currentPageIndex, totalPairs, new Set());
     const latestCollapsedGroup = [...archiveGroups].reverse().find((group) => !group.expanded);
+    this.expandedArchiveBatchIds.clear();
     if (latestCollapsedGroup != null) {
       this.expandedArchiveBatchIds.add(latestCollapsedGroup.id);
     }
 
     this.manualRestoreHoldUntil = this.win.performance.now() + 3000;
     this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
     this.scheduleRefresh();
   }
 
@@ -1445,7 +1597,10 @@ export class TurboRenderController {
       return null;
     }
 
-    const archiveGroup = this.collectArchiveState().archiveGroups.find((group) => group.id === groupId) ?? null;
+    const archiveGroup = this.collectArchiveState().currentPageGroups.find((group) => group.id === groupId) ?? null;
+    if (archiveGroup == null) {
+      return null;
+    }
     const entryIndex = archiveGroup?.entries.findIndex((candidate) => candidate.id === entry.id) ?? -1;
     if (entryIndex >= 0) {
       const indexedMessageId = parkedGroup.messageIds[entryIndex] ?? null;
@@ -1561,7 +1716,7 @@ export class TurboRenderController {
     const archiveGroup =
       archiveGroupOverride ??
       (groupId != null
-        ? this.collectArchiveState().archiveGroups.find((candidate) => candidate.id === groupId) ?? null
+        ? this.collectArchiveState().currentPageGroups.find((candidate) => candidate.id === groupId) ?? null
         : null);
     const archiveTurnOffset = this.initialTrimSession?.archivedTurnCount ?? 0;
     const setHostReadAloudDebug = (debug: {
@@ -1872,6 +2027,239 @@ export class TurboRenderController {
     return audio;
   }
 
+  private clearCopiedEntryFeedback(updateStatusBar = false): void {
+    if (this.entryActionCopiedResetHandle != null) {
+      this.win.clearTimeout(this.entryActionCopiedResetHandle);
+      this.entryActionCopiedResetHandle = null;
+    }
+    if (this.entryActionCopiedEntryKey == null) {
+      return;
+    }
+    this.entryActionCopiedEntryKey = null;
+    if (updateStatusBar) {
+      this.updateStatusBar(this.collectArchiveState());
+    }
+  }
+
+  private markArchiveEntryCopied(entryKey: string): void {
+    if (this.entryActionCopiedResetHandle != null) {
+      this.win.clearTimeout(this.entryActionCopiedResetHandle);
+    }
+    this.entryActionCopiedEntryKey = entryKey;
+    this.updateStatusBar(this.collectArchiveState());
+    this.entryActionCopiedResetHandle = this.win.setTimeout(() => {
+      if (this.entryActionCopiedEntryKey !== entryKey) {
+        return;
+      }
+      this.entryActionCopiedEntryKey = null;
+      this.entryActionCopiedResetHandle = null;
+      this.updateStatusBar(this.collectArchiveState());
+    }, 1600);
+  }
+
+  private setReadAloudStreamingDebug(value: '0' | '1' | 'unsupported' | 'error'): void {
+    if (this.doc.body != null) {
+      this.doc.body.dataset.turboRenderReadAloudStreaming = value;
+    }
+    if (this.doc.documentElement != null) {
+      this.doc.documentElement.dataset.turboRenderReadAloudStreaming = value;
+    }
+  }
+
+  private configureBackendReadAloudAudio(audio: HTMLAudioElement, entryKey: string, generation: number): void {
+    audio.dataset.turboRenderReadAloudMode = 'backend';
+    audio.onended = () => {
+      if (this.entryActionSpeakingEntryKey === entryKey && this.entryActionReadAloudGeneration === generation) {
+        this.clearReadAloudPlayback({ updateStatusBar: true });
+      }
+    };
+    audio.onerror = () => {
+      if (this.entryActionSpeakingEntryKey === entryKey && this.entryActionReadAloudGeneration === generation) {
+        this.clearReadAloudPlayback({ updateStatusBar: true });
+      }
+    };
+  }
+
+  private activateBackendReadAloud(audio: HTMLAudioElement, entryKey: string, generation: number): void {
+    this.configureBackendReadAloudAudio(audio, entryKey, generation);
+    this.entryActionSpeakingEntryKey = entryKey;
+    this.entryActionReadAloudMode = 'backend';
+    this.updateStatusBar(this.collectArchiveState());
+  }
+
+  private resolveReadAloudStreamMimeType(response: Response): string | null {
+    const MediaSourceCtor = (this.win as Window & { MediaSource?: typeof MediaSource }).MediaSource;
+    if (MediaSourceCtor == null || typeof MediaSourceCtor.isTypeSupported !== 'function') {
+      return null;
+    }
+
+    const responseType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+    const candidates = [
+      responseType,
+      responseType === 'audio/aac' ? 'audio/aac' : '',
+      responseType.includes('aac') ? 'audio/mp4; codecs="mp4a.40.2"' : '',
+      responseType === 'audio/mpeg' ? 'audio/mpeg' : '',
+    ].filter((candidate): candidate is string => candidate.length > 0);
+
+    for (const candidate of [...new Set(candidates)]) {
+      if (MediaSourceCtor.isTypeSupported(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  private waitForMediaSourceOpen(mediaSource: MediaSource): Promise<boolean> {
+    if (mediaSource.readyState === 'open') {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timeout = this.win.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        mediaSource.removeEventListener('sourceopen', onOpen);
+        resolve(false);
+      }, 3000);
+      const onOpen = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.win.clearTimeout(timeout);
+        resolve(true);
+      };
+      mediaSource.addEventListener('sourceopen', onOpen);
+    });
+  }
+
+  private appendReadAloudChunk(sourceBuffer: SourceBuffer, chunk: Uint8Array): Promise<void> {
+    if (chunk.byteLength === 0) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        sourceBuffer.removeEventListener('updateend', onUpdateEnd);
+        sourceBuffer.removeEventListener('error', onError);
+      };
+      const onUpdateEnd = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error('read aloud source buffer append failed'));
+      };
+      sourceBuffer.addEventListener('updateend', onUpdateEnd);
+      sourceBuffer.addEventListener('error', onError);
+      try {
+        const buffer = new Uint8Array(chunk.byteLength);
+        buffer.set(chunk);
+        sourceBuffer.appendBuffer(buffer.buffer);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+  }
+
+  private cleanupUnusedReadAloudObjectUrl(audio: HTMLAudioElement, objectUrl: string): void {
+    if (this.entryActionReadAloudObjectUrl === objectUrl) {
+      this.entryActionReadAloudObjectUrl = null;
+    }
+    audio.removeAttribute('src');
+    try {
+      audio.load();
+    } catch {
+      // Ignore load failures in detached/test contexts.
+    }
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  private async tryStreamReadAloudResponse(
+    response: Response,
+    audio: HTMLAudioElement,
+    entryKey: string,
+    generation: number,
+  ): Promise<boolean> {
+    const stream = response.body;
+    const mimeType = this.resolveReadAloudStreamMimeType(response);
+    const MediaSourceCtor = (this.win as Window & { MediaSource?: typeof MediaSource }).MediaSource;
+    if (stream == null || mimeType == null || MediaSourceCtor == null) {
+      this.setReadAloudStreamingDebug('unsupported');
+      return false;
+    }
+
+    const mediaSource = new MediaSourceCtor();
+    const objectUrl = URL.createObjectURL(mediaSource);
+    this.entryActionReadAloudObjectUrl = objectUrl;
+    audio.src = objectUrl;
+    audio.load();
+
+    const opened = await this.waitForMediaSourceOpen(mediaSource);
+    if (!opened || this.entryActionReadAloudGeneration !== generation) {
+      this.cleanupUnusedReadAloudObjectUrl(audio, objectUrl);
+      return false;
+    }
+
+    let sourceBuffer: SourceBuffer;
+    try {
+      sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    } catch {
+      this.cleanupUnusedReadAloudObjectUrl(audio, objectUrl);
+      this.setReadAloudStreamingDebug('unsupported');
+      return false;
+    }
+
+    const reader = stream.getReader();
+    let started = false;
+    this.setReadAloudStreamingDebug('1');
+    audio.dataset.turboRenderReadAloudMode = 'backend-stream';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (this.entryActionReadAloudGeneration !== generation || this.entryActionSpeakingEntryKey !== entryKey) {
+          await reader.cancel().catch(() => undefined);
+          return true;
+        }
+        if (done) {
+          break;
+        }
+        if (value == null || value.byteLength === 0) {
+          continue;
+        }
+        await this.appendReadAloudChunk(sourceBuffer, value);
+        if (!started) {
+          started = true;
+          await audio.play();
+        }
+      }
+
+      if (!started) {
+        this.clearReadAloudPlayback({ updateStatusBar: true });
+        return true;
+      }
+      if (mediaSource.readyState === 'open') {
+        mediaSource.endOfStream();
+      }
+      return true;
+    } catch {
+      if (this.entryActionReadAloudGeneration !== generation || this.entryActionSpeakingEntryKey !== entryKey) {
+        return true;
+      }
+      this.setReadAloudStreamingDebug('error');
+      this.clearReadAloudPlayback({ updateStatusBar: true });
+      return true;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   private clearReadAloudPlayback(options: {
     incrementStopCount?: boolean;
     updateStatusBar?: boolean;
@@ -1908,7 +2296,7 @@ export class TurboRenderController {
       delete audio.dataset.turboRenderReadAloudUrl;
     }
     if (objectUrl != null) {
-      this.win.URL.revokeObjectURL(objectUrl);
+      URL.revokeObjectURL(objectUrl);
     }
     if (mode === 'speech') {
       this.win.speechSynthesis?.cancel();
@@ -1937,10 +2325,12 @@ export class TurboRenderController {
     if (this.doc.body != null) {
       this.doc.body.dataset.turboRenderReadAloudMode = '';
       delete this.doc.body.dataset.turboRenderReadAloudUrl;
+      delete this.doc.body.dataset.turboRenderReadAloudStreaming;
     }
     if (this.doc.documentElement != null) {
       this.doc.documentElement.dataset.turboRenderReadAloudMode = '';
       delete this.doc.documentElement.dataset.turboRenderReadAloudUrl;
+      delete this.doc.documentElement.dataset.turboRenderReadAloudStreaming;
     }
   }
 
@@ -1964,23 +2354,29 @@ export class TurboRenderController {
     }
 
     const conversationPayload = this.getConversationPayloadForReadAloud(conversationId);
-    const resolvedConversationMessageId =
-      options.resolvedConversationMessageId ??
-      this.getResolvedConversationReadAloudMessageId() ??
-      (conversationPayload != null
+    const payloadResolvedConversationMessageId =
+      conversationPayload != null
         ? resolveReadAloudMessageIdFromPayload(conversationPayload, {
             entryRole: entry.role === 'user' ? 'user' : 'assistant',
             entryText: resolveArchiveCopyText(entry),
             entryMessageId: entry.messageId ?? entry.liveTurnId ?? entry.turnId ?? null,
             syntheticMessageId: entry.messageId ?? entry.turnId ?? null,
           })
-        : null);
+        : null;
+    const bootstrapResolvedConversationMessageId = this.getResolvedConversationReadAloudMessageId();
+    const optionResolvedConversationMessageId = options.resolvedConversationMessageId ?? null;
+    const resolvedConversationMessageId =
+      payloadResolvedConversationMessageId ??
+      bootstrapResolvedConversationMessageId ??
+      optionResolvedConversationMessageId;
     const resolvedConversationSource =
-      this.getResolvedConversationReadAloudMessageId() != null
-        ? 'bootstrap-dataset'
-        : conversationPayload != null
-          ? 'conversation-payload'
-          : 'fallback';
+      payloadResolvedConversationMessageId != null
+        ? 'conversation-payload'
+        : bootstrapResolvedConversationMessageId != null
+          ? 'bootstrap-dataset'
+          : optionResolvedConversationMessageId != null
+            ? 'request-option'
+            : 'fallback';
     if (this.doc.body != null) {
       this.doc.body.dataset.turboRenderDebugReadAloudResolvedConversationId = conversationId ?? '';
       this.doc.body.dataset.turboRenderDebugReadAloudResolvedMessageId = resolvedConversationMessageId ?? '';
@@ -2000,6 +2396,8 @@ export class TurboRenderController {
       this.entryActionReadAloudAbortController = abortController;
       const audio = this.ensureReadAloudAudio();
       audio.dataset.turboRenderReadAloudUrl = backendUrl;
+      this.activateBackendReadAloud(audio, entryKey, generation);
+      this.setReadAloudStreamingDebug('0');
       if (this.doc.body != null) {
         this.doc.body.dataset.turboRenderReadAloudUrl = backendUrl;
         this.doc.body.dataset.turboRenderReadAloudMode = 'backend';
@@ -2011,10 +2409,18 @@ export class TurboRenderController {
         this.doc.documentElement.dataset.turboRenderReadAloudBranch = 'backend';
       }
       try {
+        const headers = await this.buildReadAloudAuthorizationHeaders();
         const response = await this.win.fetch(backendUrl, {
           credentials: 'include',
+          headers,
           signal: abortController.signal,
         });
+        if (this.doc.body != null) {
+          this.doc.body.dataset.turboRenderDebugReadAloudResponseStatus = String(response.status);
+        }
+        if (this.doc.documentElement != null) {
+          this.doc.documentElement.dataset.turboRenderDebugReadAloudResponseStatus = String(response.status);
+        }
         if (this.entryActionReadAloudGeneration !== generation) {
           return;
         }
@@ -2022,28 +2428,19 @@ export class TurboRenderController {
           this.clearReadAloudPlayback({ updateStatusBar: true });
           return;
         }
+        if (await this.tryStreamReadAloudResponse(response, audio, entryKey, generation)) {
+          return;
+        }
+        this.setReadAloudStreamingDebug('0');
         const blob = await response.blob();
         if (this.entryActionReadAloudGeneration !== generation) {
           return;
         }
-        const objectUrl = this.win.URL.createObjectURL(blob);
+        const objectUrl = URL.createObjectURL(blob);
         this.entryActionReadAloudObjectUrl = objectUrl;
-        audio.dataset.turboRenderReadAloudMode = 'backend';
-        audio.onended = () => {
-          if (this.entryActionSpeakingEntryKey === entryKey && this.entryActionReadAloudGeneration === generation) {
-            this.clearReadAloudPlayback({ updateStatusBar: true });
-          }
-        };
-        audio.onerror = () => {
-          if (this.entryActionSpeakingEntryKey === entryKey && this.entryActionReadAloudGeneration === generation) {
-            this.clearReadAloudPlayback({ updateStatusBar: true });
-          }
-        };
+        this.configureBackendReadAloudAudio(audio, entryKey, generation);
         audio.src = objectUrl;
         audio.load();
-        this.entryActionSpeakingEntryKey = entryKey;
-        this.entryActionReadAloudMode = 'backend';
-        this.updateStatusBar(this.collectArchiveState());
         try {
           await audio.play();
           if (this.entryActionReadAloudGeneration !== generation || this.entryActionSpeakingEntryKey !== entryKey) {
@@ -2125,9 +2522,9 @@ export class TurboRenderController {
     }
 
     const archiveState = this.collectArchiveState();
-    const group = archiveState.archiveGroups.find((candidate) => candidate.id === request.groupId) ?? null;
+    const group = archiveState.currentPageGroups.find((candidate) => candidate.id === request.groupId) ?? null;
     const entry = group?.entries.find((candidate) => candidate.id === request.entryId) ?? null;
-    if (entry == null) {
+    if (group == null || entry == null) {
       return;
     }
     const entryKey = getArchiveEntrySelectionKey(entry);
@@ -2152,15 +2549,6 @@ export class TurboRenderController {
     const scrollTarget = this.scrollTarget ?? ((this.doc.scrollingElement as HTMLElement | null) ?? this.doc.body);
 
     if (request.action === 'more') {
-      if (this.shouldPreferHostMorePopover()) {
-        const openedHostMenu = await this.openHostMoreMenu(group.id, entry, actionAnchorGetter);
-        if (openedHostMenu != null) {
-          return;
-        }
-        this.toggleEntryActionMenu(group.id, entryKey, entry.role === 'user' ? 'user' : 'assistant');
-        return;
-      }
-
       this.toggleEntryActionMenu(group.id, entryKey, entry.role === 'user' ? 'user' : 'assistant');
       return;
     }
@@ -2168,56 +2556,66 @@ export class TurboRenderController {
     this.closeEntryActionMenu();
 
     if (request.action === 'copy') {
-      const copied = await this.clickHostArchiveAction(request.groupId, entry, request.action, actionAnchorGetter);
-      if (!copied) {
-        await copyTextToClipboard(this.doc, resolveArchiveCopyText(entry));
+      const hostBinding = this.resolveHostArchiveActionBinding(
+        request.groupId,
+        entry,
+        request.action,
+        actionAnchorGetter,
+      );
+      if (hostBinding != null && this.dispatchHostArchiveAction(hostBinding, request.groupId, entry)) {
+        this.markArchiveEntryCopied(entryKey);
+        return;
+      }
+
+      const renderedBody = this.statusBar?.getEntryBody(request.groupId, request.entryId) ?? null;
+      const copied = await copyTextToClipboard(
+        this.doc,
+        createArchiveClipboardPayload(this.doc, entry, renderedBody),
+      );
+      if (copied) {
+        this.markArchiveEntryCopied(entryKey);
       }
       return;
     }
 
     if (request.action === 'like' || request.action === 'dislike') {
-      const currentSelection = request.selectedAction ?? this.entryActionSelectionByEntryId.get(entryKey) ?? null;
       const previousScrollTop = scrollTarget?.scrollTop ?? null;
-      if (this.shouldPreferHostMorePopover()) {
-        const acted = await this.clickHostArchiveAction(request.groupId, entry, request.action, actionAnchorGetter);
-        if (acted) {
-          await new Promise<void>((resolve) => {
-            requestAnimationFrameCompat(this.win, () => resolve());
-          });
-          const hostSelection = this.readHostEntryActionSelection(request.groupId, entry);
-          if (hostSelection.matched) {
-            if (hostSelection.selection == null) {
-              this.entryActionSelectionByEntryId.delete(entryKey);
-            } else {
-              this.entryActionSelectionByEntryId.set(entryKey, hostSelection.selection);
-            }
+      const hostBinding = this.resolveHostArchiveActionBinding(
+        request.groupId,
+        entry,
+        request.action,
+        actionAnchorGetter,
+      );
+      if (hostBinding != null && this.dispatchHostArchiveAction(hostBinding, request.groupId, entry)) {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrameCompat(this.win, () => resolve());
+        });
+        const hostSelection = this.readHostEntryActionSelection(request.groupId, entry);
+        if (hostSelection.matched) {
+          if (hostSelection.selection == null) {
+            this.entryActionSelectionByEntryId.delete(entryKey);
+          } else {
+            this.entryActionSelectionByEntryId.set(entryKey, hostSelection.selection);
           }
           this.updateStatusBar(this.collectArchiveState());
           this.restoreExactScrollTop(scrollTarget, previousScrollTop);
         }
-        return;
       }
-
-      if (currentSelection === request.action) {
-        this.entryActionSelectionByEntryId.delete(entryKey);
-        this.updateStatusBar(this.collectArchiveState());
-        this.restoreExactScrollTop(scrollTarget, previousScrollTop);
-        return;
-      }
-
-      this.entryActionSelectionByEntryId.set(entryKey, request.action);
-      this.updateStatusBar(this.collectArchiveState());
-      this.restoreExactScrollTop(scrollTarget, previousScrollTop);
-      await this.clickHostArchiveAction(request.groupId, entry, request.action, actionAnchorGetter);
       return;
     }
 
     const shareCountBefore =
       request.action === 'share' ? Number(this.doc.body?.dataset.hostActionShareCount ?? '0') : null;
-    const acted = await this.clickHostArchiveAction(request.groupId, entry, request.action, actionAnchorGetter);
+    const hostBinding = this.resolveHostArchiveActionBinding(
+      request.groupId,
+      entry,
+      request.action,
+      actionAnchorGetter,
+    );
+    const acted = hostBinding != null && this.dispatchHostArchiveAction(hostBinding, request.groupId, entry);
     if (request.action === 'share') {
       const shareCountAfter = Number(this.doc.body?.dataset.hostActionShareCount ?? '0');
-      if (!this.shouldPreferHostMorePopover() && shareCountAfter === shareCountBefore) {
+      if (!acted || shareCountAfter === shareCountBefore) {
         this.incrementDebugActionCounter('share');
       }
     } else if (!acted) {
@@ -2235,8 +2633,11 @@ export class TurboRenderController {
     }
 
     const archiveState = this.collectArchiveState();
-    const group = archiveState.archiveGroups.find((candidate) => candidate.id === request.groupId) ?? null;
+    const group = archiveState.currentPageGroups.find((candidate) => candidate.id === request.groupId) ?? null;
     const entry = group?.entries.find((candidate) => candidate.id === request.entryId) ?? null;
+    if (group == null || entry == null) {
+      return;
+    }
     const actionAnchorGetter = () =>
       this.statusBar?.getEntryActionButton(request.groupId, request.entryId, 'more') ??
       this.statusBar?.getEntryActionAnchor(request.groupId, request.entryId) ??
@@ -2244,12 +2645,13 @@ export class TurboRenderController {
       this.statusBar?.getBatchCardAnchor(request.groupId) ??
       null;
     const resolvedReadAloudMessageId =
-      this.findRenderedArchiveMessageIdForEntry(request.groupId, entry) ??
-      this.findHostMessageIdForEntry(entry, request.groupId) ??
-      entry.messageId ??
-      entry.liveTurnId ??
-      entry.turnId ??
-      '';
+      resolveRealMessageId(
+        this.findRenderedArchiveMessageIdForEntry(request.groupId, entry),
+        this.findHostMessageIdForEntry(entry, request.groupId),
+        entry.messageId,
+        entry.liveTurnId,
+        entry.turnId,
+      ) ?? '';
     const conversationId = this.getConversationIdForReadAloud();
     this.setReadAloudRequestContext({
       conversationId,
@@ -2294,33 +2696,14 @@ export class TurboRenderController {
     const entryKey = getArchiveEntrySelectionKey(entry);
     const isLocalReadAloudActive =
       this.entryActionSpeakingEntryKey === entryKey || this.entryActionReadAloudMode != null;
-    if (this.shouldPreferHostMorePopover()) {
-      if (request.action === 'stop-read-aloud' || isLocalReadAloudActive) {
+    if (this.shouldPreferHostMorePopover() && !isLocalReadAloudActive && request.action !== 'read-aloud') {
+      if (request.action === 'stop-read-aloud') {
         const hostStopped = await this.clickHostMoreMenuAction(group.id, entry, 'stop-read-aloud', actionAnchorGetter);
         if (hostStopped) {
           this.incrementDebugActionCounter('stop-read-aloud');
           this.clearReadAloudPlayback({ incrementStopCount: false, updateStatusBar: true });
+          return;
         }
-        return;
-      }
-
-      if (request.action === 'read-aloud') {
-        const hostReadAloud = await this.clickHostMoreMenuAction(group.id, entry, 'read-aloud', actionAnchorGetter);
-        if (hostReadAloud) {
-          this.incrementDebugActionCounter('read-aloud');
-          this.entryActionSpeakingEntryKey = entryKey;
-          this.entryActionReadAloudMode = 'backend';
-          if (this.doc.body != null) {
-            this.doc.body.dataset.turboRenderReadAloudMode = 'backend';
-            this.doc.body.dataset.turboRenderReadAloudBranch = 'host-menu';
-          }
-          if (this.doc.documentElement != null) {
-            this.doc.documentElement.dataset.turboRenderReadAloudMode = 'backend';
-            this.doc.documentElement.dataset.turboRenderReadAloudBranch = 'host-menu';
-          }
-          this.updateStatusBar(this.collectArchiveState());
-        }
-        return;
       }
     }
 
@@ -2374,7 +2757,7 @@ export class TurboRenderController {
       await this.runWithSuppressedEntryActionMenuDismissal(async () => {
         await this.startReadAloudPlayback(request.groupId, entry, entryKey, {
           conversationId,
-          resolvedConversationMessageId: resolvedReadAloudMessageId || undefined,
+          resolvedConversationMessageId: resolvedReadAloudMessageId || null,
         });
       });
       if (this.entryActionMenu == null && preservedEntryActionMenu != null) {
@@ -2450,6 +2833,197 @@ export class TurboRenderController {
     });
   }
 
+  private escapeAttributeSelectorValue(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  private collectPreciseHostActionRoots(
+    groupId: string,
+    entry: ManagedHistoryEntry,
+    anchor: HTMLElement | null,
+  ): HTMLElement[] {
+    const roots: HTMLElement[] = [];
+    const addRoot = (candidate: HTMLElement | null): void => {
+      if (
+        candidate == null ||
+        isTurboRenderUiNode(candidate) ||
+        candidate === this.doc.body ||
+        candidate === this.doc.documentElement ||
+        roots.includes(candidate)
+      ) {
+        return;
+      }
+      roots.push(candidate);
+    };
+    const addRootWithTurnScope = (candidate: HTMLElement): void => {
+      addRoot(candidate);
+      addRoot(
+        candidate.closest<HTMLElement>(
+          '[data-testid^="conversation-turn-"], [data-message-author-role], article, section',
+        ),
+      );
+    };
+
+    const anchorMessageIds =
+      anchor == null
+        ? []
+        : [
+            anchor.getAttribute('data-host-message-id')?.trim() ?? '',
+            anchor.getAttribute('data-message-id')?.trim() ?? '',
+          ];
+    const entryKey = getArchiveEntrySelectionKey(entry);
+    const record = this.getRecordForEntry(entry);
+    const messageIds = [
+      ...anchorMessageIds,
+      this.findRenderedArchiveMessageIdForEntry(groupId, entry),
+      this.findParkedMessageIdForEntry(groupId, entry),
+      this.entryHostMessageIdCache.get(entryKey) ?? null,
+      record?.messageId ?? null,
+      resolveMessageId(record?.node ?? null),
+      resolvePreferredMessageId(entry.messageId, entry.liveTurnId, entry.turnId),
+    ]
+      .map((candidate) => candidate?.trim() ?? '')
+      .filter(
+        (candidate, index, values) =>
+          candidate.length > 0 &&
+          !isSyntheticMessageId(candidate) &&
+          values.indexOf(candidate) === index,
+      );
+
+    for (const messageId of messageIds) {
+      const escaped = this.escapeAttributeSelectorValue(messageId);
+      for (const exactRoot of this.doc.querySelectorAll<HTMLElement>(
+        `[data-message-id="${escaped}"], [data-host-message-id="${escaped}"]`,
+      )) {
+        if (!isTurboRenderUiNode(exactRoot)) {
+          addRootWithTurnScope(exactRoot);
+        }
+      }
+    }
+
+    if (record?.node != null && !isTurboRenderUiNode(record.node)) {
+      addRoot(record.node);
+    }
+
+    return roots;
+  }
+
+  private resolveHostArchiveActionBinding(
+    groupId: string,
+    entry: ManagedHistoryEntry,
+    action: ArchiveEntryAction,
+    anchorGetter: () => HTMLElement | null = () => null,
+  ): HostArchiveActionBinding | null {
+    if (!this.shouldUseHostActionClicks()) {
+      return null;
+    }
+
+    const anchor = anchorGetter();
+    for (const root of this.collectPreciseHostActionRoots(groupId, entry, anchor)) {
+      const button = findHostActionButton(root, action);
+      if (button == null || isTurboRenderUiNode(button)) {
+        continue;
+      }
+      if (button instanceof HTMLButtonElement && button.disabled) {
+        continue;
+      }
+      if (button.getAttribute('aria-disabled') === 'true') {
+        continue;
+      }
+      if (button.isConnected && !this.isHostActionButtonRenderable(button)) {
+        continue;
+      }
+      if (button.isConnected && !this.doesHostActionButtonMatchEntry(button, entry)) {
+        continue;
+      }
+      return { action, anchor, button };
+    }
+
+    return null;
+  }
+
+  private isHostActionButtonRenderable(button: HTMLElement): boolean {
+    if (button.getClientRects().length > 0) {
+      return true;
+    }
+
+    const style = this.win.getComputedStyle(button);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+  }
+
+  private dispatchHostArchiveAction(
+    binding: HostArchiveActionBinding,
+    groupId: string,
+    entry: ManagedHistoryEntry,
+  ): boolean {
+    const scrollTarget = this.scrollTarget ?? ((this.doc.scrollingElement as HTMLElement | null) ?? this.doc.body);
+    const previousScrollTop = scrollTarget?.scrollTop ?? null;
+    const { action, anchor, button } = binding;
+    const shouldSuppressMutationsForAction = action === 'more' || action === 'like' || action === 'dislike';
+    const shouldAnchorToArchiveProxy =
+      anchor != null &&
+      this.shouldPreferHostMorePopover() &&
+      (action === 'more' || action === 'like' || action === 'dislike');
+
+    const dispatch = (): void => {
+      const restoreAnchoredTarget = shouldAnchorToArchiveProxy
+        ? this.temporarilyAnchorHostActionTarget(button, anchor)
+        : null;
+      try {
+        if (shouldSuppressMutationsForAction) {
+          this.ignoreMutationsUntil = this.win.performance.now() + 500;
+        }
+        this.dispatchHumanClick(button);
+      } finally {
+        if (restoreAnchoredTarget != null) {
+          if (action === 'more') {
+            this.clearPendingHostMoreActionRestore();
+            this.pendingHostMoreActionRestore = restoreAnchoredTarget;
+          } else {
+            this.scheduleHostActionTargetRestore(restoreAnchoredTarget, 1);
+          }
+        }
+      }
+    };
+
+    if (button.isConnected) {
+      dispatch();
+      this.restoreExactScrollTop(scrollTarget, previousScrollTop);
+      return true;
+    }
+
+    if (!this.parkingLot.has(groupId)) {
+      return false;
+    }
+
+    const parkedGroup = this.parkingLot.getGroup(groupId);
+    if (parkedGroup == null) {
+      return false;
+    }
+
+    this.ignoreMutationsUntil = this.win.performance.now() + 128;
+    if (!this.parkingLot.restoreGroup(groupId)) {
+      return false;
+    }
+
+    for (const turnId of parkedGroup.turnIds) {
+      const parkedRecord = this.records.get(turnId);
+      if (parkedRecord != null) {
+        parkedRecord.parked = false;
+      }
+    }
+
+    try {
+      dispatch();
+      return true;
+    } finally {
+      this.ignoreMutationsUntil = this.win.performance.now() + 128;
+      this.syncParkedGroups(this.collectArchiveState());
+      this.restoreExactScrollTop(scrollTarget, previousScrollTop);
+      this.scheduleRefresh();
+    }
+  }
+
   private async openHostMoreMenu(
     groupId: string,
     entry: ManagedHistoryEntry,
@@ -2463,7 +3037,9 @@ export class TurboRenderController {
     this.suppressEntryActionMenuToggle = true;
     let openedMore = false;
     try {
-      openedMore = await this.clickHostArchiveAction(groupId, entry, 'more', anchorGetter);
+      openedMore = await this.clickHostArchiveAction(groupId, entry, 'more', anchorGetter, {
+        allowBroadMoreFallback: true,
+      });
     } finally {
       this.suppressEntryActionMenuToggle = false;
     }
@@ -2544,8 +3120,8 @@ export class TurboRenderController {
         });
       };
 
-      if (observeRoot != null && typeof this.win.MutationObserver === 'function') {
-        observer = new this.win.MutationObserver(() => {
+      if (observeRoot != null && typeof MutationObserver === 'function') {
+        observer = new MutationObserver(() => {
           probe();
         });
         observer.observe(observeRoot, {
@@ -2623,8 +3199,8 @@ export class TurboRenderController {
         });
       };
 
-      if (observeRoot != null && typeof this.win.MutationObserver === 'function') {
-        observer = new this.win.MutationObserver(() => {
+      if (observeRoot != null && typeof MutationObserver === 'function') {
+        observer = new MutationObserver(() => {
           probe();
         });
         observer.observe(observeRoot, {
@@ -2720,6 +3296,9 @@ export class TurboRenderController {
     entry: ManagedHistoryEntry,
     action: ArchiveEntryAction,
     anchorGetter: () => HTMLElement | null,
+    options: {
+      allowBroadMoreFallback?: boolean;
+    } = {},
   ): Promise<boolean> {
     if (!this.shouldUseHostActionClicks()) {
       return false;
@@ -2762,14 +3341,17 @@ export class TurboRenderController {
         return null;
       }
 
+      const matchedCandidates = candidates.filter((candidate) => this.doesHostActionButtonMatchEntry(candidate, entry));
+      const scoredCandidates = matchedCandidates.length > 0 ? matchedCandidates : candidates;
+
       if (anchor == null) {
-        return candidates[0] ?? null;
+        return scoredCandidates[0] ?? null;
       }
 
       const anchorRect = anchor.getBoundingClientRect();
       const anchorCenterX = anchorRect.left + anchorRect.width / 2;
       const anchorCenterY = anchorRect.top + anchorRect.height / 2;
-      const scored = candidates
+      const scored = scoredCandidates
         .map((candidate) => {
           const rect = candidate.getBoundingClientRect();
           const centerX = rect.left + rect.width / 2;
@@ -2897,6 +3479,20 @@ export class TurboRenderController {
       }
     }
 
+    if (action === 'more' && options.allowBroadMoreFallback) {
+      const broadButton = findGlobalHostActionButton();
+      if (broadButton != null && broadButton.isConnected) {
+        if (shouldSuppressMutationsForAction) {
+          this.ignoreMutationsUntil = this.win.performance.now() + 500;
+        }
+        dispatchAnchoredHostAction(broadButton);
+        if (shouldRestoreScrollAfterAction) {
+          this.restoreExactScrollTop(scrollTarget, previousScrollTop);
+        }
+        return true;
+      }
+    }
+
     const record = this.getRecordForEntry(entry);
     const node = record?.node ?? null;
     if (node == null) {
@@ -2982,7 +3578,7 @@ export class TurboRenderController {
       return true;
     } finally {
       this.ignoreMutationsUntil = this.win.performance.now() + 128;
-      this.syncParkedGroups(this.collectArchiveState().archiveGroups);
+      this.syncParkedGroups(this.collectArchiveState());
       if (shouldRestoreScrollAfterAction) {
         this.restoreExactScrollTop(scrollTarget, previousScrollTop);
       }
@@ -3214,18 +3810,28 @@ export class TurboRenderController {
   private findHostMoreMenuAction(menu: ParentNode, action: EntryMoreMenuAction): HTMLElement | null {
     const exactSelectors =
       action === 'branch'
-        ? ['button[data-testid="branch-in-new-chat-turn-action-button"]']
+        ? [
+            'button[data-testid="branch-in-new-chat-turn-action-button"]',
+            '[role="menuitem"][data-testid="branch-in-new-chat-turn-action-button"]',
+            '[data-testid="branch-in-new-chat-turn-action-button"]',
+          ]
         : action === 'stop-read-aloud'
           ? [
               '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
               '[role="menuitem"][aria-label="停止"]',
               'button[data-testid="voice-stop-turn-action-button"]',
               'button[data-testid="stop-read-aloud-turn-action-button"]',
+              'div[data-testid="voice-play-turn-action-button"]',
+              'div[data-testid="stop-read-aloud-turn-action-button"]',
             ]
           : [
-              'button[data-testid="voice-play-turn-action-button"]',
-              'button[data-testid="read-aloud-turn-action-button"]',
-            ];
+            'button[data-testid="voice-play-turn-action-button"]',
+            'button[data-testid="read-aloud-turn-action-button"]',
+            '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
+            '[role="menuitem"][data-testid="read-aloud-turn-action-button"]',
+            'div[data-testid="voice-play-turn-action-button"]',
+            'div[data-testid="read-aloud-turn-action-button"]',
+          ];
     const exactMatch = exactSelectors
       .map((selector) => menu.querySelector<HTMLElement>(selector))
       .find((candidate): candidate is HTMLElement => candidate != null && !isTurboRenderUiNode(candidate));
@@ -3303,6 +3909,10 @@ export class TurboRenderController {
   }
 
   private dispatchHumanClick(target: HTMLElement): void {
+    if (this.dispatchReactLikeClick(target)) {
+      return;
+    }
+
     const rect = target.getBoundingClientRect();
     const centerX = rect.x + rect.width / 2;
     const centerY = rect.y + rect.height / 2;
@@ -3319,17 +3929,17 @@ export class TurboRenderController {
         pointerType: 'mouse',
         isPrimary: true,
       } as PointerEventInit;
-      if (typeof this.win.PointerEvent === 'function') {
-        target.dispatchEvent(new this.win.PointerEvent(type, eventInit));
+      if (typeof PointerEvent === 'function') {
+        target.dispatchEvent(new PointerEvent(type, eventInit));
         return;
       }
-      target.dispatchEvent(new this.win.MouseEvent(type, eventInit));
+      target.dispatchEvent(new MouseEvent(type, eventInit));
     };
 
     dispatchPointer('pointerover', 0);
     dispatchPointer('pointerenter', 0);
     target.dispatchEvent(
-      new this.win.MouseEvent('mouseover', {
+      new MouseEvent('mouseover', {
         bubbles: true,
         cancelable: true,
         clientX: centerX,
@@ -3339,7 +3949,7 @@ export class TurboRenderController {
       }),
     );
     target.dispatchEvent(
-      new this.win.MouseEvent('mouseenter', {
+      new MouseEvent('mouseenter', {
         bubbles: true,
         cancelable: true,
         clientX: centerX,
@@ -3350,7 +3960,7 @@ export class TurboRenderController {
     );
     dispatchPointer('pointerdown', 1);
     target.dispatchEvent(
-      new this.win.MouseEvent('mousedown', {
+      new MouseEvent('mousedown', {
         bubbles: true,
         cancelable: true,
         clientX: centerX,
@@ -3361,7 +3971,7 @@ export class TurboRenderController {
     );
     dispatchPointer('pointerup', 0);
     target.dispatchEvent(
-      new this.win.MouseEvent('mouseup', {
+      new MouseEvent('mouseup', {
         bubbles: true,
         cancelable: true,
         clientX: centerX,
@@ -3371,7 +3981,7 @@ export class TurboRenderController {
       }),
     );
     target.dispatchEvent(
-      new this.win.MouseEvent('click', {
+      new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
         clientX: centerX,
@@ -3380,6 +3990,134 @@ export class TurboRenderController {
         buttons: 0,
       }),
     );
+  }
+
+  private dispatchReactLikeClick(target: HTMLElement): boolean {
+    const reactProps = this.getReactProps(target);
+    if (reactProps == null) {
+      return false;
+    }
+
+    const rect = target.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+
+    const createEvent = (buttons: number) => {
+      const clientX = rect.x + rect.width / 2;
+      const clientY = rect.y + rect.height / 2;
+      let defaultPrevented = false;
+      const event = {
+        isTrusted: true,
+        get defaultPrevented(): boolean {
+          return defaultPrevented;
+        },
+        button: 0,
+        buttons,
+        clientX,
+        clientY,
+        ctrlKey: false,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        pointerType: 'mouse',
+        detail: 1,
+        target,
+        currentTarget: target,
+        nativeEvent: undefined as unknown,
+        preventDefault(): void {
+          defaultPrevented = true;
+        },
+        stopPropagation(): void {
+          // No-op for the synthetic host bridge.
+        },
+      } as {
+        isTrusted: boolean;
+        defaultPrevented: boolean;
+        button: number;
+        buttons: number;
+        clientX: number;
+        clientY: number;
+        ctrlKey: boolean;
+        metaKey: boolean;
+        altKey: boolean;
+        shiftKey: boolean;
+        pointerType: string;
+        detail: number;
+        target: EventTarget | null;
+        currentTarget: EventTarget | null;
+        nativeEvent: unknown;
+        preventDefault(): void;
+        stopPropagation(): void;
+      };
+      event.nativeEvent = {
+        isTrusted: true,
+        button: event.button,
+        buttons: event.buttons,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        pointerType: event.pointerType,
+        detail: event.detail,
+        target,
+        currentTarget: target,
+        get defaultPrevented(): boolean {
+          return defaultPrevented;
+        },
+        preventDefault(): void {
+          defaultPrevented = true;
+        },
+        stopPropagation(): void {
+          // No-op for the synthetic host bridge.
+        },
+      } as unknown;
+      return event;
+    };
+
+    const invoke = (name: string, event: ReturnType<typeof createEvent>): boolean => {
+      const handler = reactProps[name];
+      if (typeof handler !== 'function') {
+        return false;
+      }
+
+      try {
+        handler(event);
+      } catch {
+        // Fall through to the DOM event bridge below when React props misbehave.
+      }
+      return true;
+    };
+
+    const pointerMoveEvent = createEvent(1);
+    const pointerDownEvent = createEvent(1);
+    const pointerUpEvent = createEvent(0);
+    const clickEvent = createEvent(0);
+    let invoked = false;
+    invoked = invoke('onPointerMove', pointerMoveEvent) || invoked;
+    invoked = invoke('onPointerDown', pointerDownEvent) || invoked;
+    invoked = invoke('onPointerUp', pointerUpEvent) || invoked;
+    invoked = invoke('onClick', clickEvent) || invoked;
+
+    return invoked;
+  }
+
+  private getReactProps(target: HTMLElement): Record<string, unknown> | null {
+    const propsKey = Reflect.ownKeys(target).find(
+      (key): key is string => typeof key === 'string' && key.startsWith('__reactProps'),
+    );
+    if (propsKey == null) {
+      return null;
+    }
+
+    const props = (target as unknown as Record<string, unknown>)[propsKey];
+    if (props == null || typeof props !== 'object') {
+      return null;
+    }
+
+    return props as Record<string, unknown>;
   }
 
   private refreshRuntimeStatusFromCurrentMetrics(archiveState = this.collectArchiveState()): void {
@@ -3407,35 +4145,96 @@ export class TurboRenderController {
 
   private flushArchiveUiSync(): void {
     const archiveState = this.collectArchiveState();
+    this.syncArchivePageCache(archiveState);
     this.refreshRuntimeStatusFromCurrentMetrics(archiveState);
     this.updateStatusBar(archiveState);
 
     const pending = this.pendingArchiveToggle;
     this.pendingArchiveToggle = null;
-    if (pending == null || pending.scrollTarget == null) {
+    if (pending != null && pending.scrollTarget != null) {
+      const anchorGetter = () =>
+        this.statusBar?.getBatchCardHeaderAnchor(pending.groupId) ??
+        this.statusBar?.getBatchCardActionButton(pending.groupId) ??
+        this.statusBar?.getBatchCardAnchor(pending.groupId) ??
+        pending.anchor ??
+        null;
+      this.restoreScrollAnchor(
+        pending.scrollTarget,
+        anchorGetter,
+        pending.previousScrollTop,
+        pending.previousAnchorTop,
+        { doublePass: true, targetAnchorTop: pending.targetAnchorTop },
+      );
+
+      if (pending.wasExpanded) {
+        requestAnimationFrameCompat(this.win, () => {
+          const button = this.statusBar?.getBatchCardActionButton(pending.groupId) ?? null;
+          button?.focus({ preventScroll: true });
+        });
+      }
+    }
+
+    this.flushPendingArchiveSearchJump(archiveState);
+  }
+
+  private flushPendingArchiveSearchJump(archiveState: ArchiveUiState): void {
+    const pending = this.pendingArchiveSearchJump;
+    if (pending == null) {
       return;
     }
 
-    const anchorGetter = () =>
-      this.statusBar?.getBatchCardHeaderAnchor(pending.groupId) ??
-      this.statusBar?.getBatchCardActionButton(pending.groupId) ??
-      this.statusBar?.getBatchCardAnchor(pending.groupId) ??
-      pending.anchor ??
-      null;
-    this.restoreScrollAnchor(
-      pending.scrollTarget,
-      anchorGetter,
-      pending.previousScrollTop,
-      pending.previousAnchorTop,
-      { doublePass: true, targetAnchorTop: pending.targetAnchorTop },
-    );
+    if (archiveState.currentArchivePageIndex !== pending.pageIndex) {
+      if (pending.attemptCount >= 6) {
+        this.pendingArchiveSearchJump = null;
+        return;
+      }
 
-    if (pending.wasExpanded) {
-      requestAnimationFrameCompat(this.win, () => {
-        const button = this.statusBar?.getBatchCardActionButton(pending.groupId) ?? null;
-        button?.focus({ preventScroll: true });
+      this.pendingArchiveSearchJump = {
+        ...pending,
+        attemptCount: pending.attemptCount + 1,
+      };
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    const matchingGroup = this.findArchiveGroupContainingPair(archiveState.currentPageGroups, pending.pairIndex);
+    if (matchingGroup == null) {
+      this.pendingArchiveSearchJump = null;
+      return;
+    }
+
+    if (!this.expandedArchiveBatchIds.has(matchingGroup.id)) {
+      this.expandedArchiveBatchIds.add(matchingGroup.id);
+      this.pendingArchiveSearchJump = {
+        ...pending,
+        attemptCount: pending.attemptCount + 1,
+      };
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    const pairAnchor = this.statusBar?.getBatchCardPairAnchor(matchingGroup.id, pending.pairIndex) ?? null;
+    if (pairAnchor == null) {
+      if (pending.attemptCount >= 6) {
+        this.pendingArchiveSearchJump = null;
+        return;
+      }
+
+      this.pendingArchiveSearchJump = {
+        ...pending,
+        attemptCount: pending.attemptCount + 1,
+      };
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    if (typeof pairAnchor.scrollIntoView === 'function') {
+      pairAnchor.scrollIntoView({
+        block: 'center',
+        inline: 'nearest',
       });
     }
+    this.pendingArchiveSearchJump = null;
   }
 
   private getBatchHeaderScrollTop(): number {
@@ -3547,6 +4346,99 @@ export class TurboRenderController {
       this.restoreAllParking(0);
     }
 
+    // Priority 1: Check for fixture replay mode first (origin fixture replay)
+    const fixtureData = getFixtureData(this.doc);
+    if (fixtureData?.conversation != null) {
+      console.log(`[TurboRender] Fixture replay mode detected: ${fixtureData.fixtureId}`);
+      // Use fixture data to build turns, bypassing normal DOM scanning
+      const fixtureTurns = buildTurnsFromFixture(fixtureData.conversation, this.doc);
+      console.log(`[TurboRender] Built ${fixtureTurns.length} turns from fixture`);
+      if (fixtureTurns.length > 0) {
+        // Check version compatibility
+        const compatibilityWarning = checkFixtureCompatibility(fixtureData.version);
+        if (compatibilityWarning != null) {
+          console.warn(`[TurboRender] Fixture compatibility warning: ${compatibilityWarning}`);
+        }
+        // Build InitialTrimSession from fixture turns
+        const now = Date.now();
+        const initialTrimSession: InitialTrimSession = {
+          chatId: `chat:${fixtureData.conversationId}`,
+          routeKind: 'chat',
+          routeId: fixtureData.conversationId,
+          conversationId: fixtureData.conversationId,
+          applied: true,
+          reason: 'fixture-replay',
+          mode: 'compatibility',
+          totalMappingNodes: fixtureTurns.length,
+          totalVisibleTurns: fixtureTurns.length,
+          activeBranchLength: fixtureTurns.length,
+          hotVisibleTurns: 0,
+          coldVisibleTurns: fixtureTurns.length,
+          initialHotPairs: 0,
+          hotPairCount: 0,
+          archivedPairCount: Math.floor(fixtureTurns.length / 2),
+          initialHotTurns: 0,
+          hotStartIndex: 0,
+          hotTurnCount: 0,
+          archivedTurnCount: fixtureTurns.length,
+          activeNodeId: null,
+          turns: fixtureTurns.map((turn, index) => ({
+            id: turn.id,
+            index,
+            role: turn.role,
+            isStreaming: turn.isStreaming,
+            parked: true,
+            messageId: turn.messageId,
+            parts: [],
+            renderKind: 'markdown-text',
+            contentType: null,
+            snapshotHtml: null,
+            structuredDetails: null,
+            hiddenFromConversation: false,
+            createTime: now / 1000,
+          })),
+          coldTurns: [],
+          capturedAt: now,
+        };
+        this.setInitialTrimSession(initialTrimSession);
+        this.turnContainer = null;
+        // Find a suitable mount target in the DOM
+        // Try main content area first, then look for specific ChatGPT containers
+        const main = this.doc.querySelector('main');
+        const article = this.doc.querySelector('article');
+        const firstSection = this.doc.querySelector('section');
+        const mountTarget = main ?? article ?? firstSection ?? this.doc.body;
+        this.historyMountTarget = mountTarget;
+        console.log(`[TurboRender] Debug: mountTarget set to ${mountTarget?.tagName ?? 'null'}, main=${!!main}, article=${!!article}, section=${!!firstSection}`);
+        this.active = !this.paused && this.settings.enabled;
+        this.setObservedMutationRoot(
+          this.historyMountTarget.parentElement ?? this.historyMountTarget ?? this.doc.body,
+          'archive-only-root',
+        );
+        this.setScrollTarget(this.doc.scrollingElement as HTMLElement | null);
+        this.updateBatchSearchState();
+        // For fixture mode: force hotPairCount to 0 to ensure all turns become archive groups
+        const totalPairs = this.managedHistory.getTotalPairs();
+        const archiveState = this.collectArchiveStateForFixture(totalPairs);
+        console.log(`[TurboRender] Archive groups: ${archiveState.archiveGroups.length}, totalPairs: ${totalPairs}`);
+        this.runtimeStatus = this.buildStatus({
+          supported: true,
+          reason: null,
+          totalTurns: this.managedHistory.getTotalTurns(),
+          totalPairs: totalPairs,
+          finalizedTurns: this.managedHistory.getTotalTurns(),
+          liveDescendantCount: 0,
+          visibleRange: null,
+        }, archiveState);
+        console.log(`[TurboRender] Debug: statusBar=${this.statusBar != null}, mountTarget=${this.historyMountTarget?.tagName}, active=${this.active}`);
+        this.updateStatusBar(archiveState);
+        this.primeConversationMetadataIfNeeded(archiveState);
+        console.log(`[TurboRender] Loaded ${fixtureTurns.length} turns from fixture ${fixtureData.fixtureId}`);
+        return;
+      }
+    }
+
+    // Priority 2: Normal DOM scanning for live ChatGPT pages
     const snapshot = scanChatPage(this.doc);
     const totalTurnsBeforeScan = this.managedHistory.getTotalTurns();
     const totalPairsBeforeScan = this.managedHistory.getTotalPairs();
@@ -3659,7 +4551,8 @@ export class TurboRenderController {
 
     this.idleHandle = requestIdleCallbackCompat(this.win, () => {
       this.idleHandle = null;
-      this.syncParkedGroups(archiveGroups);
+      this.syncParkedGroups(archiveState);
+      this.syncArchivePageCache(archiveState);
       this.updateBatchSearchState();
       const idleArchiveState = this.collectArchiveState(this.managedHistory.getTotalPairs());
       const idleLiveDescendantCount = this.resolveLiveDescendantCount(
@@ -3680,19 +4573,27 @@ export class TurboRenderController {
     });
   }
 
-  private syncParkedGroups(archiveGroups: ManagedHistoryGroup[]): void {
-    const liveArchiveGroups = archiveGroups.filter((group) => group.entries.some((entry) => entry.liveTurnId != null));
+  private syncParkedGroups(archiveState: ArchiveUiState): void {
+    const liveArchiveGroups = archiveState.archiveGroups.filter((group) => group.entries.some((entry) => entry.liveTurnId != null));
     const expectedIds = toSet(liveArchiveGroups.map((group) => group.id));
+    const totalPairs = this.managedHistory.getTotalPairs();
 
     for (const summary of this.parkingLot.getSummaries()) {
+      const parkedGroup = this.parkingLot.getGroup(summary.id);
       if (expectedIds.has(summary.id)) {
+        if (parkedGroup != null) {
+          const sourceGroup = liveArchiveGroups.find((group) => group.id === summary.id) ?? null;
+          const expectedPageIndex = sourceGroup != null ? this.getArchivePageIndexForGroup(sourceGroup, totalPairs) : null;
+          if (parkedGroup.archivePageIndex !== expectedPageIndex) {
+            parkedGroup.archivePageIndex = expectedPageIndex;
+          }
+        }
         continue;
       }
 
-      const group = this.parkingLot.getGroup(summary.id);
       this.ignoreMutationsUntil = this.win.performance.now() + 64;
       this.parkingLot.restoreGroup(summary.id);
-      for (const turnId of group?.turnIds ?? []) {
+      for (const turnId of parkedGroup?.turnIds ?? []) {
         const record = this.records.get(turnId);
         if (record != null) {
           record.parked = false;
@@ -3701,7 +4602,14 @@ export class TurboRenderController {
     }
 
     for (const group of liveArchiveGroups) {
-      if (this.parkingLot.has(group.id) || group.entries.length === 0) {
+      if (group.entries.length === 0) {
+        continue;
+      }
+
+      const expectedPageIndex = this.getArchivePageIndexForGroup(group, totalPairs);
+      const parkedArchiveGroup = this.parkingLot.getGroup(group.id);
+      if (parkedArchiveGroup != null) {
+        parkedArchiveGroup.archivePageIndex = expectedPageIndex;
         continue;
       }
 
@@ -3751,6 +4659,7 @@ export class TurboRenderController {
         pairStartIndex: group.pairStartIndex,
         pairEndIndex: group.pairEndIndex,
         pairCount: group.pairCount,
+        archivePageIndex: expectedPageIndex,
       });
 
       if (parkedGroup == null) {
@@ -3765,6 +4674,43 @@ export class TurboRenderController {
     this.managedHistory.setLiveStartIndex(
       this.managedHistory.getFirstVisibleLiveTurnIndex(this.parkingLot.getParkedTurnIds()),
     );
+  }
+
+  private getResidentArchivePageIndexes(archiveState: ArchiveUiState): Set<number> {
+    const residentPageIndexes = new Set<number>();
+    if (archiveState.archivePageCount <= 0) {
+      return residentPageIndexes;
+    }
+
+    if (archiveState.currentArchivePageIndex == null) {
+      residentPageIndexes.add(archiveState.archivePageCount - 1);
+      return residentPageIndexes;
+    }
+
+    const start = Math.max(0, archiveState.currentArchivePageIndex - 1);
+    const end = Math.min(archiveState.archivePageCount - 1, archiveState.currentArchivePageIndex + 1);
+    for (let index = start; index <= end; index += 1) {
+      residentPageIndexes.add(index);
+    }
+
+    return residentPageIndexes;
+  }
+
+  private syncArchivePageCache(archiveState: ArchiveUiState): void {
+    const residentPageIndexes = this.getResidentArchivePageIndexes(archiveState);
+
+    for (const summary of this.parkingLot.getSummaries()) {
+      const pageIndex = summary.archivePageIndex;
+      if (pageIndex == null) {
+        continue;
+      }
+
+      if (residentPageIndexes.has(pageIndex)) {
+        this.parkingLot.rehydrateGroup(summary.id);
+      } else {
+        this.parkingLot.serializeGroup(summary.id);
+      }
+    }
   }
 
   private reconcileTurns(liveTurnNodes: HTMLElement[], stopButtonVisible: boolean): TurnRecord[] {
@@ -3934,28 +4880,65 @@ export class TurboRenderController {
   }
 
   private collectArchiveState(totalPairs = this.managedHistory.getTotalPairs()): ArchiveUiState {
-    const archiveGroups = this.managedHistory.getArchiveGroups(
-      this.getHotPairCount(totalPairs),
-      this.getBatchPairCount(),
-      this.searchQuery,
-      this.expandedArchiveBatchIds,
-    );
+    const hotPairCount = this.getHotPairCount(totalPairs);
+    this.pruneExpandedArchiveBatches(totalPairs);
+    const archivePageCount = this.managedHistory.getArchivedPageCount(ARCHIVE_PAGE_PAIR_COUNT, hotPairCount);
+    const currentArchivePageIndex = this.resolveArchivePageIndex(totalPairs);
+    const currentArchivePageMeta =
+      currentArchivePageIndex != null
+        ? this.managedHistory.getArchivedPageMeta(currentArchivePageIndex, ARCHIVE_PAGE_PAIR_COUNT, hotPairCount)
+        : null;
+    const archiveGroups = this.getAllArchiveGroups(totalPairs, hotPairCount);
+    const currentPageGroups = this.getCurrentPageArchiveGroups(totalPairs, currentArchivePageIndex);
     return {
+      archivePageCount,
+      currentArchivePageIndex,
+      currentArchivePageMeta,
+      isRecentView: currentArchivePageIndex == null,
       archiveGroups,
-      collapsedBatchCount: archiveGroups.filter((group) => !group.expanded).length,
-      expandedBatchCount: archiveGroups.filter((group) => group.expanded).length,
+      currentPageGroups,
+      collapsedBatchCount: currentPageGroups.filter((group) => !group.expanded).length,
+      expandedBatchCount: currentPageGroups.filter((group) => group.expanded).length,
+    };
+  }
+
+  /**
+   * Special version for fixture mode: forces all pairs to be archived (hotPairCount=0)
+   * so that archive groups are created and UI becomes visible.
+   */
+  private collectArchiveStateForFixture(totalPairs: number): ArchiveUiState {
+    const hotPairCount = 0;
+    this.pruneExpandedArchiveBatches(totalPairs);
+    const archivePageCount = this.managedHistory.getArchivedPageCount(ARCHIVE_PAGE_PAIR_COUNT, hotPairCount);
+    const currentArchivePageIndex =
+      this.archivePager.currentPageIndex ?? (archivePageCount > 0 ? archivePageCount - 1 : null);
+    const currentArchivePageMeta =
+      currentArchivePageIndex != null
+        ? this.managedHistory.getArchivedPageMeta(currentArchivePageIndex, ARCHIVE_PAGE_PAIR_COUNT, hotPairCount)
+        : null;
+    const archiveGroups = this.getAllArchiveGroups(totalPairs, hotPairCount);
+    const currentPageGroups = this.getCurrentPageArchiveGroups(totalPairs, currentArchivePageIndex);
+    return {
+      archivePageCount,
+      currentArchivePageIndex,
+      currentArchivePageMeta,
+      isRecentView: currentArchivePageIndex == null,
+      archiveGroups,
+      currentPageGroups,
+      collapsedBatchCount: currentPageGroups.filter((group) => !group.expanded).length,
+      expandedBatchCount: currentPageGroups.filter((group) => group.expanded).length,
     };
   }
 
   private buildStatus(
     input: {
-    supported: boolean;
-    reason: string | null;
-    totalTurns: number;
-    totalPairs: number;
-    finalizedTurns: number;
-    liveDescendantCount: number;
-    visibleRange: IndexRange | null;
+      supported: boolean;
+      reason: string | null;
+      totalTurns: number;
+      totalPairs: number;
+      finalizedTurns: number;
+      liveDescendantCount: number;
+      visibleRange: IndexRange | null;
     },
     archiveState = this.collectArchiveState(input.totalPairs),
   ): TabRuntimeStatus {
@@ -3981,14 +4964,18 @@ export class TurboRenderController {
       finalizedTurns: input.finalizedTurns,
       handledTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
       historyPanelOpen: false,
+      archivePageCount: archiveState.archivePageCount,
+      currentArchivePageIndex: archiveState.currentArchivePageIndex,
       archivedTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
-      expandedArchiveGroups: archiveState.expandedBatchCount,
+      expandedArchiveGroups: archiveState.currentPageGroups.filter((group) => group.expanded).length,
       historyAnchorMode: 'hidden',
-      slotBatchCount: archiveState.archiveGroups.length,
-      collapsedBatchCount: archiveState.collapsedBatchCount,
-      expandedBatchCount: archiveState.expandedBatchCount,
+      slotBatchCount: archiveState.currentPageGroups.length,
+      collapsedBatchCount: archiveState.currentPageGroups.filter((group) => !group.expanded).length,
+      expandedBatchCount: archiveState.currentPageGroups.filter((group) => group.expanded).length,
       parkedTurns: this.parkingLot.getTotalParkedTurns(),
       parkedGroups: this.parkingLot.getSummaries().length,
+      residentParkedGroups: this.parkingLot.getResidentGroupCount(),
+      serializedParkedGroups: this.parkingLot.getSerializedGroupCount(),
       liveDescendantCount: input.liveDescendantCount,
       visibleRange: input.visibleRange,
       observedRootKind: this.observedRootKind,
@@ -4055,7 +5042,8 @@ export class TurboRenderController {
       return;
     }
 
-    const entryActionAvailability = this.buildEntryActionAvailability(archiveState.archiveGroups);
+    const currentPageGroups = archiveState.currentPageGroups;
+    const entryActionAvailability = this.buildEntryActionAvailability(currentPageGroups);
     if (this.entryActionMenu == null && this.readAloudMenuSelection != null) {
       this.entryActionMenu = this.readAloudMenuSelection;
     }
@@ -4064,16 +5052,25 @@ export class TurboRenderController {
       this.historyMountTarget ?? this.turnContainer,
       {
         conversationId: this.getConversationIdForReadAloud(),
-        archiveGroups: archiveState.archiveGroups,
-        collapsedBatchCount: archiveState.collapsedBatchCount,
-        expandedBatchCount: archiveState.expandedBatchCount,
-        searchQuery: this.searchQuery,
+        archivePageCount: archiveState.archivePageCount,
+        currentArchivePageIndex: archiveState.currentArchivePageIndex,
+        currentArchivePageMeta: archiveState.currentArchivePageMeta,
+        isRecentView: archiveState.isRecentView,
+        archiveGroups: currentPageGroups,
+        archiveSearchOpen: this.archiveSearchOpen,
+        archiveSearchQuery: this.archiveSearchQuery,
+        archiveSearchResults: this.archiveSearchResults,
+        activeArchiveSearchPageIndex: this.activeArchiveSearchPageIndex,
+        activeArchiveSearchPairIndex: this.activeArchiveSearchPairIndex,
+        collapsedBatchCount: currentPageGroups.filter((group) => !group.expanded).length,
+        expandedBatchCount: currentPageGroups.filter((group) => group.expanded).length,
         entryActionAvailability,
-        entryActionSelection: this.buildEntryActionSelectionMap(archiveState.archiveGroups),
+        entryActionSelection: this.buildEntryActionSelectionMap(currentPageGroups),
         entryActionTemplates: this.buildEntryActionTemplateMap(),
-        entryHostMessageIds: this.buildEntryHostMessageIdMap(archiveState.archiveGroups),
+        entryHostMessageIds: this.buildEntryHostMessageIdMap(currentPageGroups),
         entryActionMenu: this.entryActionMenu,
         entryActionSpeakingEntryKey: this.entryActionSpeakingEntryKey,
+        entryActionCopiedEntryKey: this.entryActionCopiedEntryKey,
         showShareActions: this.isShareActionsDebugEnabled(),
         preferHostMorePopover: this.shouldPreferHostMorePopover(),
       },
@@ -4091,6 +5088,12 @@ export class TurboRenderController {
         continue;
       }
       for (const entry of group.entries) {
+        if (isSupplementalHistoryEntry(entry)) {
+          const entryKey = getArchiveEntrySelectionKey(entry);
+          delete selections[entryKey];
+          this.entryActionSelectionByEntryId.delete(entryKey);
+          continue;
+        }
         if (entry.role !== 'assistant') {
           continue;
         }
@@ -4141,6 +5144,9 @@ export class TurboRenderController {
         continue;
       }
       for (const entry of group.entries) {
+        if (isSupplementalHistoryEntry(entry)) {
+          continue;
+        }
         if (entry.role !== 'assistant' && entry.role !== 'user') {
           continue;
         }
@@ -4177,12 +5183,28 @@ export class TurboRenderController {
       for (const entry of group.entries) {
         const entryKey = getArchiveEntrySelectionKey(entry);
         activeEntryIds.add(entryKey);
+        if (isSupplementalHistoryEntry(entry)) {
+          availability[entryKey] = {
+            copy: 'unavailable',
+            like: 'unavailable',
+            dislike: 'unavailable',
+            share: 'unavailable',
+            more: 'unavailable',
+          };
+          continue;
+        }
+        const assistantActionBinding = (action: ArchiveEntryAction): EntryActionAvailability['copy'] =>
+          entry.role === 'assistant' && this.resolveHostArchiveActionBinding(group.id, entry, action) != null
+            ? 'host-bound'
+            : 'unavailable';
+        const copyMode: EntryActionAvailability['copy'] =
+          this.resolveHostArchiveActionBinding(group.id, entry, 'copy') != null ? 'host-bound' : 'local-fallback';
         availability[entryKey] = {
-          copy: true,
-          like: entry.role === 'assistant',
-          dislike: entry.role === 'assistant',
-          share: entry.role === 'assistant',
-          more: entry.role === 'assistant',
+          copy: copyMode,
+          like: assistantActionBinding('like'),
+          dislike: assistantActionBinding('dislike'),
+          share: assistantActionBinding('share'),
+          more: entry.role === 'assistant' ? 'local-fallback' : 'unavailable',
         };
       }
     }
@@ -4194,6 +5216,98 @@ export class TurboRenderController {
     }
 
     return availability;
+  }
+
+  private resetArchiveSearchState(): void {
+    this.archiveSearchOpen = false;
+    this.archiveSearchQuery = '';
+    this.archiveSearchResults = [];
+    this.clearArchiveSearchSelection();
+  }
+
+  private clearArchiveSearchSelection(): void {
+    this.activeArchiveSearchPageIndex = null;
+    this.activeArchiveSearchPairIndex = null;
+    this.pendingArchiveSearchJump = null;
+  }
+
+  private clearPageLocalArchiveUiState(options: {
+    clearSearchSelection?: boolean;
+  } = {}): void {
+    const { clearSearchSelection = true } = options;
+    this.expandedArchiveBatchIds.clear();
+    this.entryActionSelectionByEntryId.clear();
+    this.entryHostMessageIdCache.clear();
+    this.entryActionMenu = null;
+    this.readAloudMenuSelection = null;
+    this.restoreAnchoredHostMenuStyle();
+    this.clearPendingHostMoreActionRestore();
+    this.clearReadAloudPlayback({ updateStatusBar: false });
+    if (clearSearchSelection) {
+      this.clearArchiveSearchSelection();
+    }
+  }
+
+  private toggleArchiveSearch(): void {
+    this.archiveSearchOpen = !this.archiveSearchOpen;
+    if (!this.archiveSearchOpen) {
+      this.pendingArchiveSearchJump = null;
+    }
+    this.scheduleArchiveUiSync();
+  }
+
+  private setArchiveSearchQuery(query: string): void {
+    this.archiveSearchOpen = true;
+    this.archiveSearchQuery = query;
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private clearArchiveSearch(): void {
+    this.archiveSearchQuery = '';
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private openArchiveSearchResult(result: ArchivePageMatch): void {
+    const pageCount = this.getArchivePageCount();
+    if (pageCount <= 0) {
+      this.archivePager.goToRecent();
+      this.clearPageLocalArchiveUiState({ clearSearchSelection: false });
+      this.updateBatchSearchState();
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    const pageIndex = Math.max(0, Math.min(result.pageIndex, pageCount - 1));
+    this.archiveSearchOpen = true;
+    this.activeArchiveSearchPageIndex = pageIndex;
+    this.activeArchiveSearchPairIndex = result.firstMatchPairIndex;
+    this.pendingArchiveSearchJump = {
+      pageIndex,
+      pairIndex: result.firstMatchPairIndex,
+      attemptCount: 0,
+    };
+
+    this.archivePager.goToPage(pageIndex, pageCount);
+    this.clearPageLocalArchiveUiState({ clearSearchSelection: false });
+    const matchingGroup = this.findArchiveGroupContainingPair(
+      this.getArchiveGroupsForPage(pageIndex, this.managedHistory.getTotalPairs(), new Set()),
+      result.firstMatchPairIndex,
+    );
+    if (matchingGroup != null) {
+      this.expandedArchiveBatchIds.add(matchingGroup.id);
+    }
+
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private findArchiveGroupContainingPair(
+    groups: ReadonlyArray<ManagedHistoryGroup>,
+    pairIndex: number,
+  ): ManagedHistoryGroup | null {
+    return groups.find((group) => group.pairStartIndex <= pairIndex && pairIndex <= group.pairEndIndex) ?? null;
   }
 
   private getRecordForEntry(entry: ManagedHistoryEntry): TurnRecord | null {
@@ -4211,21 +5325,44 @@ export class TurboRenderController {
     return null;
   }
 
-  private updateBatchSearchState(): void {
-    this.pruneExpandedArchiveBatches();
+  private updateBatchSearchState(totalPairs = this.managedHistory.getTotalPairs()): void {
+    this.pruneExpandedArchiveBatches(totalPairs);
+    const normalizedQuery = this.archiveSearchQuery.trim();
+    if (normalizedQuery.length === 0) {
+      this.archiveSearchResults = [];
+      this.clearArchiveSearchSelection();
+      return;
+    }
+
+    this.archiveSearchResults = this.managedHistory.searchArchivedPages(
+      normalizedQuery,
+      ARCHIVE_PAGE_PAIR_COUNT,
+      this.getHotPairCount(totalPairs),
+    );
+
+    if (this.activeArchiveSearchPageIndex == null) {
+      return;
+    }
+
+    const activeResult =
+      this.archiveSearchResults.find((result) => result.pageIndex === this.activeArchiveSearchPageIndex) ?? null;
+    if (activeResult == null) {
+      this.clearArchiveSearchSelection();
+      return;
+    }
+
+    this.activeArchiveSearchPairIndex = activeResult.firstMatchPairIndex;
+    if (this.pendingArchiveSearchJump != null) {
+      this.pendingArchiveSearchJump = {
+        ...this.pendingArchiveSearchJump,
+        pairIndex: activeResult.firstMatchPairIndex,
+      };
+    }
   }
 
-  private pruneExpandedArchiveBatches(): void {
-    const validIds = toSet(
-      this.managedHistory
-        .getArchiveGroups(
-          this.getHotPairCount(this.managedHistory.getTotalPairs()),
-          this.getBatchPairCount(),
-          this.searchQuery,
-          this.expandedArchiveBatchIds,
-        )
-        .map((group) => group.id),
-    );
+  private pruneExpandedArchiveBatches(totalPairs = this.managedHistory.getTotalPairs()): void {
+    const pageIndex = this.resolveArchivePageIndex(totalPairs);
+    const validIds = toSet(this.getArchiveGroupsForPage(pageIndex, totalPairs, new Set()).map((group) => group.id));
     for (const groupId of [...this.expandedArchiveBatchIds]) {
       if (!validIds.has(groupId)) {
         this.expandedArchiveBatchIds.delete(groupId);
@@ -4240,6 +5377,153 @@ export class TurboRenderController {
 
   private getBatchPairCount(): number {
     return Math.max(1, this.settings.batchPairCount);
+  }
+
+  private getArchivePageCount(totalPairs = this.managedHistory.getTotalPairs()): number {
+    return this.managedHistory.getArchivedPageCount(ARCHIVE_PAGE_PAIR_COUNT, this.getHotPairCount(totalPairs));
+  }
+
+  private resolveArchivePageIndex(totalPairs = this.managedHistory.getTotalPairs()): number | null {
+    const pageCount = this.getArchivePageCount(totalPairs);
+    if (pageCount <= 0) {
+      this.archivePager.goToRecent();
+      return null;
+    }
+
+    const currentPageIndex = this.archivePager.currentPageIndex;
+    if (currentPageIndex == null) {
+      return null;
+    }
+
+    const normalizedPageIndex = Math.max(0, Math.min(currentPageIndex, pageCount - 1));
+    if (normalizedPageIndex !== currentPageIndex) {
+      this.archivePager.goToPage(normalizedPageIndex, pageCount);
+    }
+
+    return normalizedPageIndex;
+  }
+
+  private getArchivePageIndexForGroup(
+    group: ManagedHistoryGroup,
+    totalPairs = this.managedHistory.getTotalPairs(),
+  ): number | null {
+    const pageCount = this.getArchivePageCount(totalPairs);
+    if (pageCount <= 0) {
+      return null;
+    }
+
+    const pageIndex = Math.trunc(group.pairStartIndex / ARCHIVE_PAGE_PAIR_COUNT);
+    if (!Number.isFinite(pageIndex)) {
+      return null;
+    }
+
+    return Math.max(0, Math.min(pageIndex, pageCount - 1));
+  }
+
+  private getAllArchiveGroups(
+    totalPairs = this.managedHistory.getTotalPairs(),
+    hotPairCount = this.getHotPairCount(totalPairs),
+    expandedBatchIds: ReadonlySet<string> = this.expandedArchiveBatchIds,
+  ): ManagedHistoryGroup[] {
+    return this.managedHistory.getArchiveGroups(hotPairCount, this.getBatchPairCount(), '', expandedBatchIds);
+  }
+
+  private getCurrentPageArchiveGroups(
+    totalPairs = this.managedHistory.getTotalPairs(),
+    currentArchivePageIndex = this.resolveArchivePageIndex(totalPairs),
+    expandedBatchIds: ReadonlySet<string> = this.expandedArchiveBatchIds,
+  ): ManagedHistoryGroup[] {
+    return this.getArchiveGroupsForPage(currentArchivePageIndex, totalPairs, expandedBatchIds);
+  }
+
+  private getArchiveGroupsForPage(
+    pageIndex: number | null,
+    totalPairs = this.managedHistory.getTotalPairs(),
+    expandedBatchIds: ReadonlySet<string> = this.expandedArchiveBatchIds,
+  ): ManagedHistoryGroup[] {
+    if (pageIndex == null) {
+      return [];
+    }
+
+    return this.managedHistory.getArchiveGroupsForPage(
+      pageIndex,
+      ARCHIVE_PAGE_PAIR_COUNT,
+      this.getHotPairCount(totalPairs),
+      this.getBatchPairCount(),
+      this.archiveSearchQuery,
+      expandedBatchIds,
+    );
+  }
+
+  private expandNewestCollapsedArchiveGroup(totalPairs = this.managedHistory.getTotalPairs()): void {
+    const pageIndex = this.archivePager.currentPageIndex;
+    if (pageIndex == null) {
+      return;
+    }
+
+    const pageGroups = this.getArchiveGroupsForPage(pageIndex, totalPairs, new Set());
+    const newestCollapsedGroup = [...pageGroups].reverse().find((group) => !group.expanded);
+    if (newestCollapsedGroup != null) {
+      this.expandedArchiveBatchIds.add(newestCollapsedGroup.id);
+    }
+  }
+
+  private openNewestArchivePage(): void {
+    const pageCount = this.getArchivePageCount();
+    if (pageCount <= 0) {
+      this.archivePager.goToRecent();
+      this.clearPageLocalArchiveUiState();
+      this.updateBatchSearchState();
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    this.archivePager.openNewest(pageCount);
+    this.clearPageLocalArchiveUiState();
+    this.expandNewestCollapsedArchiveGroup();
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private goOlderArchivePage(): void {
+    const pageCount = this.getArchivePageCount();
+    if (pageCount <= 0) {
+      this.archivePager.goToRecent();
+      this.clearPageLocalArchiveUiState();
+      this.updateBatchSearchState();
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    this.archivePager.goOlder(pageCount);
+    this.clearPageLocalArchiveUiState();
+    this.expandNewestCollapsedArchiveGroup();
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private goNewerArchivePage(): void {
+    const pageCount = this.getArchivePageCount();
+    if (pageCount <= 0) {
+      this.archivePager.goToRecent();
+      this.clearPageLocalArchiveUiState();
+      this.updateBatchSearchState();
+      this.scheduleArchiveUiSync();
+      return;
+    }
+
+    this.archivePager.goNewer(pageCount);
+    this.clearPageLocalArchiveUiState();
+    this.expandNewestCollapsedArchiveGroup();
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
+  }
+
+  private goToRecentArchiveView(): void {
+    this.archivePager.goToRecent();
+    this.clearPageLocalArchiveUiState();
+    this.updateBatchSearchState();
+    this.scheduleArchiveUiSync();
   }
 
   private highlightTranscriptTurn(node: HTMLElement): void {

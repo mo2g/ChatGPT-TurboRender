@@ -160,7 +160,7 @@ TurboRender 只在归档区内部做本地搜索。
 
 开发和手工验证都通过仓库提供的受控 Chrome 实例进行，而不是在 DevTools MCP 浏览器里手工加载 unpacked 扩展。
 
-- 使用 `pnpm debug:mcp-chrome -- https://chatgpt.com/c/<chat-id>` 或 `pnpm debug:mcp-chrome -- https://chatgpt.com/share/<share-id>`
+- 使用 `pnpm debug:mcp-chrome -- https://chatgpt.com/c/<chat-id>`
 - 启动器优先选择 `Google Chrome for Testing` 或兼容的 Chromium 二进制
 - unpacked 扩展会从 `.output/chrome-mv3` 预加载
 - 浏览器使用独立 profile 和 remote debugging 端口，MCP 会话才能稳定重新连接
@@ -179,12 +179,12 @@ TurboRender 通过限制 live subtree 大小，同时保留 ChatGPT 原生的阅
 ## 测试策略
 
 - 单元测试覆盖路由身份、payload 裁剪、固定槽位分批和后台消息处理
-- 集成测试使用本地 transcript fixture 验证归档渲染、恢复行为和 soft-fold 降级
-- 真实页面验证通过受控 Chrome 完成，重点检查 `/c/...` 和 `/share/...`
+- 受控 Chrome + `pnpm test:e2e` 在默认登录态长会话 `https://chatgpt.com/c/ceb4ea77-5357-49fb-b35c-607b533846f1` 上是当前主宿主兼容性验证路径；`--use-active-tab` 只是显式便捷模式，`pnpm test:e2e:live` 继续保留为同一套 live runner 的别名
+- 集成测试和历史本地 fixture 脚本继续保留，用于归档渲染、恢复行为和 soft-fold 降级等定向补充覆盖，但不再作为宿主真相来源
 
 ## 后续方向
 
 - 收集更多 ChatGPT DOM 变体
 - 继续改进流式生成识别和保护区判断
 - 如果真实 `/c/...` 的打字 trace 仍然有压力，再进一步收紧热区观察范围
-- 在扩大恢复模型之前，继续用 share 页和长会话做回归验证
+- 在扩大恢复模型之前，继续用长会话做回归验证

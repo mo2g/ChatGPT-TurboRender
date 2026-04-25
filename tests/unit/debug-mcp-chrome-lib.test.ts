@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildChromeArgs,
-  buildLaunchCommand,
-  classifyBrowserBinary,
-  formatUnsupportedChromeMessage,
-  getAppBundlePath,
-  supportsCommandLineExtensionLoad,
-} from '../../scripts/debug-mcp-chrome-lib.mjs';
+// @ts-expect-error The shared ESM helper is exercised directly in these tests and does not ship TypeScript declarations.
+import { buildChromeArgs, buildLaunchCommand, classifyBrowserBinary, formatUnsupportedChromeMessage, getAppBundlePath, supportsCommandLineExtensionLoad } from '../../scripts/debug-mcp-chrome-lib.mjs';
 
 describe('controlled Chrome launcher helpers', () => {
   it('detects app bundles from macOS browser binaries', () => {
@@ -53,6 +47,8 @@ describe('controlled Chrome launcher helpers', () => {
     ).toEqual([
       '--disable-crashpad-for-testing',
       '--disable-features=DisableLoadExtensionCommandLineSwitch',
+      '--use-mock-keychain',
+      '--password-store=basic',
       '--remote-debugging-port=9222',
       '--user-data-dir=/tmp/profile',
       '--disable-extensions-except=/tmp/ext',
@@ -63,7 +59,7 @@ describe('controlled Chrome launcher helpers', () => {
     ]);
   });
 
-  it('uses open -na for macOS app bundles so launch flags reach a fresh instance', () => {
+  it('launches app bundle binaries directly so env overrides are preserved', () => {
     const launch = buildLaunchCommand({
       platform: 'darwin',
       binaryPath: '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -71,18 +67,15 @@ describe('controlled Chrome launcher helpers', () => {
     });
 
     expect(launch).toEqual({
-      command: 'open',
+      command: '/Applications/Chromium.app/Contents/MacOS/Chromium',
       args: [
-        '-na',
-        '/Applications/Chromium.app',
-        '--args',
         '--remote-debugging-port=9222',
         'https://chatgpt.com/',
       ],
     });
   });
 
-  it('uses open -na for repo-managed Playwright browsers as well', () => {
+  it('launches repo-managed Playwright browser binaries directly', () => {
     const launch = buildLaunchCommand({
       platform: 'darwin',
       binaryPath:
@@ -91,11 +84,9 @@ describe('controlled Chrome launcher helpers', () => {
     });
 
     expect(launch).toEqual({
-      command: 'open',
+      command:
+        '/Users/mo/Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
       args: [
-        '-na',
-        '/Users/mo/Library/Caches/ms-playwright/chromium-1208/chrome-mac-arm64/Google Chrome for Testing.app',
-        '--args',
         '--remote-debugging-port=9222',
         'https://chatgpt.com/',
       ],

@@ -45,8 +45,8 @@ function resolveExtensionNamespace(): MaybeExtensionNamespace | null {
 
 function getStorageNamespace():
   | {
-      local: unknown;
-      onChanged: unknown;
+      local?: unknown;
+      onChanged?: unknown;
     }
   | null {
   const extension = resolveExtensionNamespace();
@@ -59,7 +59,7 @@ function getStorageNamespace():
     return null;
   }
 
-  return storage;
+  return storage as { local?: unknown; onChanged?: unknown };
 }
 
 export function getStorageLocalArea(): ExtensionStorageArea | null {
@@ -68,7 +68,8 @@ export function getStorageLocalArea(): ExtensionStorageArea | null {
     return null;
   }
 
-  return safeAccess(() => storage.local as ExtensionStorageArea | undefined);
+  const local = safeAccess(() => storage.local as ExtensionStorageArea | undefined);
+  return local ?? null;
 }
 
 export function getStorageChangedEvent<Handler>(): ExtensionEvent<Handler> | null {
@@ -77,7 +78,8 @@ export function getStorageChangedEvent<Handler>(): ExtensionEvent<Handler> | nul
     return null;
   }
 
-  return safeAccess(() => storage.onChanged as ExtensionEvent<Handler> | undefined);
+  const onChanged = safeAccess(() => storage.onChanged as ExtensionEvent<Handler> | undefined);
+  return onChanged ?? null;
 }
 
 export function getRuntimeMessageEvent<Handler>(): ExtensionEvent<Handler> | null {

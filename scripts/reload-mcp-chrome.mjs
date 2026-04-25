@@ -4,8 +4,33 @@ import { chromium } from '@playwright/test';
 
 import { waitForRemoteDebugEndpoint } from './debug-mcp-chrome-lib.mjs';
 import { collectReloadableChatgptPageUrls } from './reload-mcp-chrome-lib.mjs';
+import { hasTurboRenderInjection, waitForInspection } from './check-mcp-chrome-lib.mjs';
 
 const debugPort = process.env.CHROME_DEBUG_PORT ?? '9222';
+
+async function reloadChatgptPage(page) {
+  const targetUrl = page.url();
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[TurboRender] failed to refresh ${targetUrl} on attempt ${attempt}: ${message}`);
+    }
+
+    const inspection = await waitForInspection(page, hasTurboRenderInjection, 12_000, 500);
+    if (inspection != null && hasTurboRenderInjection(inspection)) {
+      return true;
+    }
+
+    await new Promise((resolve) => {
+      globalThis.setTimeout(resolve, 1_500);
+    });
+  }
+
+  return false;
+}
 
 function printHelp() {
   console.log(`ChatGPT TurboRender controlled Chrome reloader
@@ -126,16 +151,19 @@ async function main() {
     }
   }
 
+  let readyPages = 0;
   for (const page of reloadablePages) {
-    try {
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 30_000 });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[TurboRender] failed to refresh ${page.url()}: ${message}`);
+    if (await reloadChatgptPage(page)) {
+      readyPages += 1;
+      continue;
     }
+
+    console.warn(`[TurboRender] ${page.url()} did not expose TurboRender markers after reload.`);
   }
 
-  console.log(`[TurboRender] refreshed ${reloadablePages.length} ChatGPT tab(s) without closing the browser.`);
+  console.log(
+    `[TurboRender] refreshed ${reloadablePages.length} ChatGPT tab(s) without closing the browser (${readyPages} ready).`,
+  );
   process.exit(0);
 }
 

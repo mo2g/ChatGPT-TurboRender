@@ -1,3 +1,5 @@
+import { defineContentScript } from 'wxt/utils/define-content-script';
+import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import { BUILD_SIGNATURE, DEFAULT_SETTINGS } from '../../lib/shared/constants';
 import { isRuntimeMessage } from '../../lib/shared/messages';
 import { isTurboRenderBridgeMessage, postBridgeMessage, toPageConfig } from '../../lib/shared/runtime-bridge';
@@ -75,14 +77,14 @@ function registerRuntimeMessageListener(
     : (message: unknown) => handler(message);
 
   try {
-    api.addListener(listener);
+    api.addListener(listener as (...args: unknown[]) => unknown);
   } catch {
     return false;
   }
 
   bag.add(() => {
     try {
-      api.removeListener(listener);
+      api.removeListener(listener as (...args: unknown[]) => unknown);
     } catch {
       // Ignore teardown failures when the content-script context is already invalid.
     }
@@ -91,7 +93,7 @@ function registerRuntimeMessageListener(
   return true;
 }
 
-function whenDocumentReady(callback: () => void, ctx?: { addEventListener?: (...args: unknown[]) => void; isInvalid?: boolean }): void {
+function whenDocumentReady(callback: () => void, ctx?: ContentScriptContext): void {
   if (document.readyState === 'interactive' || document.readyState === 'complete') {
     if (ctx?.isInvalid) {
       return;
@@ -168,10 +170,10 @@ function getRuntimeExtensionId(): string | null {
   return null;
 }
 
-export default defineContentScript({
+const contentScript = defineContentScript({
   matches: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   runAt: 'document_start',
-  async main(ctx) {
+  async main(ctx: ContentScriptContext) {
     const html = document.documentElement;
     if (html != null) {
       html.dataset.turborenderBuild = BUILD_SIGNATURE;
@@ -353,13 +355,14 @@ export default defineContentScript({
         return;
       }
 
-      if (typeof chrome?.runtime?.reload === 'function') {
-        chrome.runtime.reload();
+      const maybeChrome = (globalThis as { chrome?: { runtime?: { reload?: () => void } } }).chrome;
+      if (typeof maybeChrome?.runtime?.reload === 'function') {
+        maybeChrome.runtime.reload();
       }
     };
 
-    ctx.addEventListener(window, 'message', handlePageMessage);
-    ctx.addEventListener(window, 'message', handleExtensionReloadRequest);
+    ctx.addEventListener(window, 'message', handlePageMessage as EventListener);
+    ctx.addEventListener(window, 'message', handleExtensionReloadRequest as EventListener);
     syncPageConfig(settings);
     requestSessionReplay(lastChatId);
 
@@ -402,10 +405,10 @@ export default defineContentScript({
       }
       if (settingsChanged) {
         syncPageConfig(settings);
-        controller?.setSettings(settings);
+        (controller as TurboRenderController | null)?.setSettings(settings);
       }
       if (chatIdAtLoad === lastChatId) {
-        controller?.setPaused(paused);
+        (controller as TurboRenderController | null)?.setPaused(paused);
       }
     })();
 
@@ -492,3 +495,5 @@ export default defineContentScript({
     }, 500);
   },
 });
+
+export default contentScript;

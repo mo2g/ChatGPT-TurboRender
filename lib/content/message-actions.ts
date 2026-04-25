@@ -1,9 +1,11 @@
 import type { ManagedHistoryEntry } from '../shared/types';
+import { UI_CLASS_NAMES } from '../shared/constants';
 
 export type ArchiveEntryAction = 'copy' | 'like' | 'dislike' | 'share' | 'more';
 export type EntryActionLane = 'user' | 'assistant';
 export type EntryMoreMenuAction = 'branch' | 'read-aloud' | 'stop-read-aloud';
-export type EntryActionAvailability = Record<ArchiveEntryAction, boolean>;
+export type EntryActionAvailabilityMode = 'host-bound' | 'local-fallback' | 'unavailable';
+export type EntryActionAvailability = Record<ArchiveEntryAction, EntryActionAvailabilityMode>;
 export type EntryActionAvailabilityMap = Record<string, EntryActionAvailability>;
 export type EntryActionSelection = 'like' | 'dislike';
 export type EntryActionSelectionMap = Record<string, EntryActionSelection>;
@@ -30,10 +32,19 @@ export interface EntryActionRequest {
   selectedAction?: EntryActionSelection | null;
 }
 
+export interface ClipboardCopyPayload {
+  text: string;
+  html?: string | null;
+}
+
 export const ENTRY_ACTION_LANE: Record<EntryActionLane, ArchiveEntryAction[]> = {
   user: ['copy'],
   assistant: ['copy', 'like', 'dislike', 'share', 'more'],
 };
+
+export function isEntryActionEnabled(mode: EntryActionAvailabilityMode): boolean {
+  return mode !== 'unavailable';
+}
 
 const ACTION_LABEL_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
   copy: [/^copy\b/i, /\bcopy\b/i, /复制/],
@@ -60,6 +71,7 @@ const ACTION_TESTID_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
   share: [/^share-turn-action-button$/i],
   more: [/^more-turn-action-button$/i],
 };
+const ACTION_CANDIDATE_SELECTOR = 'button, [role="button"], a[role="button"], a';
 
 function getCandidateLabel(node: HTMLElement): string {
   return [
@@ -98,11 +110,171 @@ function resolveActionFromCandidate(candidate: HTMLElement): ArchiveEntryAction 
   return null;
 }
 
+function getCandidateElements(root: ParentNode): HTMLElement[] {
+  const candidates = [...root.querySelectorAll<HTMLElement>(ACTION_CANDIDATE_SELECTOR)];
+  if (root instanceof HTMLElement && root.matches(ACTION_CANDIDATE_SELECTOR)) {
+    candidates.unshift(root);
+  }
+  return candidates;
+}
+
+function isMessageBodyControl(candidate: HTMLElement): boolean {
+  return candidate.closest('pre, code, .markdown, [data-message-action-bar="false"]') != null;
+}
+
+function findHostActionButtonInScope(
+  root: ParentNode,
+  action: ArchiveEntryAction,
+  options: { rejectMessageBodyControls?: boolean } = {},
+): HTMLElement | null {
+  const candidates = getCandidateElements(root);
+  for (const candidate of candidates) {
+    if (options.rejectMessageBodyControls === true && isMessageBodyControl(candidate)) {
+      continue;
+    }
+
+    const testId = candidate.getAttribute('data-testid');
+    if (testId != null && ACTION_TESTID_PATTERNS[action].some((pattern) => pattern.test(testId))) {
+      return candidate;
+    }
+
+    const label = getCandidateLabel(candidate);
+    if (ACTION_LABEL_PATTERNS[action].some((pattern) => pattern.test(label))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function getActionButtonCount(scope: HTMLElement): number {
+  return getCandidateElements(scope).filter((candidate) => resolveActionFromCandidate(candidate) != null).length;
+}
+
+function getElementDepth(element: HTMLElement): number {
+  let depth = 0;
+  for (let current = element.parentElement; current != null; current = current.parentElement) {
+    depth += 1;
+  }
+  return depth;
+}
+
+function isCompleteHostActionScope(scope: HTMLElement, lane: EntryActionLane): boolean {
+  if (isMessageBodyControl(scope)) {
+    return false;
+  }
+
+  return ENTRY_ACTION_LANE[lane].every(
+    (action) => findHostActionButtonInScope(scope, action, { rejectMessageBodyControls: true }) != null,
+  );
+}
+
+function findHostActionTemplateScope(root: ParentNode, lane: EntryActionLane): HTMLElement | null {
+  const scopes = new Set<HTMLElement>();
+  const rootElement = root instanceof HTMLElement ? root : null;
+
+  if (rootElement != null && isCompleteHostActionScope(rootElement, lane)) {
+    scopes.add(rootElement);
+  }
+
+  for (const group of root.querySelectorAll<HTMLElement>('[role="group"]')) {
+    if (isCompleteHostActionScope(group, lane)) {
+      scopes.add(group);
+    }
+  }
+
+  for (const candidate of getCandidateElements(root)) {
+    if (resolveActionFromCandidate(candidate) == null || isMessageBodyControl(candidate)) {
+      continue;
+    }
+
+    for (let current = candidate.parentElement; current != null; current = current.parentElement) {
+      if (rootElement != null && current !== rootElement && !rootElement.contains(current)) {
+        break;
+      }
+      if (isCompleteHostActionScope(current, lane)) {
+        scopes.add(current);
+        break;
+      }
+      if (current === rootElement) {
+        break;
+      }
+    }
+  }
+
+  return [...scopes]
+    .sort((left, right) => {
+      const countDelta = getActionButtonCount(left) - getActionButtonCount(right);
+      if (countDelta !== 0) {
+        return countDelta;
+      }
+      return getElementDepth(right) - getElementDepth(left);
+    })[0] ?? null;
+}
+
 function sanitizeTemplateButton(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('[id]').forEach((element) => {
     element.removeAttribute('id');
   });
   root.removeAttribute('id');
+
+  for (const element of [root, ...root.querySelectorAll<HTMLElement>('*')]) {
+    element.removeAttribute('hidden');
+    element.removeAttribute('inert');
+    element.removeAttribute('aria-hidden');
+    element.style.removeProperty('opacity');
+    element.style.removeProperty('visibility');
+    element.style.removeProperty('pointer-events');
+    element.style.removeProperty('display');
+    element.style.removeProperty('mask-image');
+    element.style.removeProperty('mask-size');
+    element.style.removeProperty('mask-position');
+    element.style.removeProperty('-webkit-mask-image');
+    element.style.removeProperty('-webkit-mask-size');
+    element.style.removeProperty('-webkit-mask-position');
+    if (element.getAttribute('style')?.trim() === '') {
+      element.removeAttribute('style');
+    }
+
+    const className = element.className;
+    if (typeof className !== 'string' || className.trim().length === 0) {
+      continue;
+    }
+
+    element.className = className
+      .trim()
+      .split(/\s+/)
+      .filter((token) => isSafeTemplateActionClassToken(token))
+      .join(' ');
+  }
+}
+
+function isSafeTemplateActionClassToken(token: string): boolean {
+  const baseToken = token.split(':').pop() ?? token;
+  if (
+    token.includes('group-hover') ||
+    token.includes('group-focus') ||
+    token.includes('focus-within') ||
+    token.includes('has-data-') ||
+    token.includes('[mask') ||
+    token.includes('mask-') ||
+    token.includes('motion-safe') ||
+    token.includes('motion-reduce')
+  ) {
+    return false;
+  }
+
+  if (
+    baseToken === 'hidden' ||
+    baseToken === 'invisible' ||
+    baseToken === 'sr-only' ||
+    baseToken === 'pointer-events-none' ||
+    baseToken === 'opacity-0' ||
+    baseToken === 'scale-0'
+  ) {
+    return false;
+  }
+
+  return !/^(?:opacity|pointer-events|visible|invisible|scale)-/.test(baseToken);
 }
 
 function sanitizeHostActionWrapperClassName(className: string): string | null {
@@ -115,8 +287,23 @@ function sanitizeHostActionWrapperClassName(className: string): string | null {
   }
 
   const blockedFragments = [
+    'absolute',
+    'relative',
+    'fixed',
+    'sticky',
+    'inset-',
+    'top-',
+    'bottom-',
+    'left-',
+    'right-',
+    'start-',
+    'end-',
+    'translate-',
+    'z-',
     'pointer-events',
     'opacity',
+    '[mask',
+    'mask-',
     'group-hover',
     'group-focus',
     'focus-within',
@@ -128,8 +315,41 @@ function sanitizeHostActionWrapperClassName(className: string): string | null {
     'has-data-',
   ];
 
-  const safeTokens = tokens.filter((token) => !blockedFragments.some((fragment) => token.includes(fragment)));
+  const safeTokens = tokens.filter((token) => {
+    const baseToken = token.split(':').pop() ?? token;
+    if (
+      baseToken === 'absolute' ||
+      baseToken === 'relative' ||
+      baseToken === 'fixed' ||
+      baseToken === 'sticky'
+    ) {
+      return false;
+    }
+    if (
+      /^(?:-)?(?:inset|top|bottom|left|right|start|end|translate|z)-/.test(baseToken) ||
+      /^(?:-)?(?:inset|top|bottom|left|right|start|end|translate|z)$/.test(baseToken)
+    ) {
+      return false;
+    }
+
+    return !blockedFragments.some((fragment) => token.includes(fragment));
+  });
   if (safeTokens.length === 0) {
+    return null;
+  }
+
+  const hasLayoutToken = safeTokens.some((token) => {
+    const baseToken = token.split(':').pop() ?? token;
+    return (
+      baseToken === 'flex' ||
+      baseToken === 'inline-flex' ||
+      baseToken === 'grid' ||
+      baseToken === 'inline-grid' ||
+      baseToken === 'flow-root' ||
+      baseToken === 'contents'
+    );
+  });
+  if (!hasLayoutToken) {
     return null;
   }
 
@@ -172,37 +392,43 @@ function resolveHostActionTemplateWrapperMetadata(copyButton: HTMLElement): {
   const normalizedClassName =
     typeof className === 'string' ? sanitizeHostActionWrapperClassName(className) : null;
 
+  const slotHint = resolveHostActionTemplateSlotHint(copyButton);
   return {
-    wrapperClassName: normalizedClassName ?? undefined,
-    wrapperRole: wrapperRole.length > 0 ? wrapperRole : undefined,
-    slotHint: resolveHostActionTemplateSlotHint(copyButton),
+    ...(normalizedClassName != null ? { wrapperClassName: normalizedClassName } : {}),
+    ...(wrapperRole.length > 0 ? { wrapperRole } : {}),
+    ...(slotHint != null ? { slotHint } : {}),
   };
 }
 
 export function findHostActionButton(root: ParentNode, action: ArchiveEntryAction): HTMLElement | null {
-  const candidates = root.querySelectorAll<HTMLElement>('button, [role="button"], a[role="button"], a');
-  for (const candidate of candidates) {
-    const testId = candidate.getAttribute('data-testid');
-    if (testId != null && ACTION_TESTID_PATTERNS[action].some((pattern) => pattern.test(testId))) {
-      return candidate;
+  const lanePriority: EntryActionLane[] = action === 'copy' ? ['assistant', 'user'] : ['assistant'];
+  for (const lane of lanePriority) {
+    const scope = findHostActionTemplateScope(root, lane);
+    if (scope == null) {
+      continue;
     }
 
-    const label = getCandidateLabel(candidate);
-    if (ACTION_LABEL_PATTERNS[action].some((pattern) => pattern.test(label))) {
-      return candidate;
+    const scopedButton = findHostActionButtonInScope(scope, action, { rejectMessageBodyControls: true });
+    if (scopedButton != null) {
+      return scopedButton;
     }
   }
-  return null;
+
+  return findHostActionButtonInScope(root, action);
 }
 
 export function captureHostActionTemplate(
   root: ParentNode,
   lane: EntryActionLane,
 ): HostActionTemplateSnapshot | null {
+  const actionScope = findHostActionTemplateScope(root, lane);
+  const searchRoot = actionScope ?? root;
   const htmlParts: string[] = [];
   let copyButton: HTMLElement | null = null;
   for (const action of ENTRY_ACTION_LANE[lane]) {
-    const button = findHostActionButton(root, action);
+    const button = findHostActionButtonInScope(searchRoot, action, {
+      rejectMessageBodyControls: actionScope != null,
+    });
     if (!(button instanceof HTMLElement)) {
       return null;
     }
@@ -267,11 +493,144 @@ export function isHostActionButtonAvailable(root: ParentNode, action: ArchiveEnt
   return button.getAttribute('aria-disabled') !== 'true';
 }
 
-export async function copyTextToClipboard(doc: Document, text: string): Promise<boolean> {
+function escapeClipboardHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function textToClipboardHtml(text: string): string {
+  return text
+    .split(/\n{2,}/)
+    .map((block) => {
+      const html = escapeClipboardHtml(block).replace(/\n/g, '<br>');
+      return html.length > 0 ? `<p>${html}</p>` : '';
+    })
+    .filter((block) => block.length > 0)
+    .join('');
+}
+
+function sanitizeClipboardHtml(root: HTMLElement): string | null {
+  const clone = root.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('script, style, template, noscript').forEach((node) => node.remove());
+  clone.querySelectorAll<HTMLElement>(
+    [
+      `.${UI_CLASS_NAMES.historyEntryActions}`,
+      `.${UI_CLASS_NAMES.historyEntryActionMenu}`,
+      '[data-turbo-render-action]',
+      '[data-turbo-render-menu-action]',
+      '[data-turbo-render-entry-menu="true"]',
+    ].join(','),
+  ).forEach((node) => node.remove());
+  clone.querySelectorAll<HTMLElement>('[contenteditable]').forEach((node) => {
+    node.removeAttribute('contenteditable');
+  });
+
+  const content =
+    clone.querySelector<HTMLElement>('.markdown') ??
+    clone.querySelector<HTMLElement>('.user-message-bubble-color > div') ??
+    clone;
+  const html = content.innerHTML.trim();
+  return html.length > 0 ? `<div>${html}</div>` : null;
+}
+
+export function createArchiveClipboardPayload(
+  doc: Document,
+  entry: ManagedHistoryEntry,
+  renderedBody?: HTMLElement | null,
+): ClipboardCopyPayload {
+  const text = resolveArchiveCopyText(entry);
+  const html = renderedBody != null
+    ? sanitizeClipboardHtml(renderedBody)
+    : textToClipboardHtml(text);
+  return { text, html };
+}
+
+async function copyRichPayloadWithClipboardApi(
+  doc: Document,
+  payload: ClipboardCopyPayload,
+): Promise<boolean> {
+  const clipboard = doc.defaultView?.navigator?.clipboard;
+  const ClipboardItemCtor = doc.defaultView?.ClipboardItem;
+  if (
+    clipboard?.write == null ||
+    ClipboardItemCtor == null ||
+    payload.html == null ||
+    payload.html.trim().length === 0
+  ) {
+    return false;
+  }
+
+  try {
+    const item = new ClipboardItemCtor({
+      'text/plain': new Blob([payload.text], { type: 'text/plain' }),
+      'text/html': new Blob([payload.html], { type: 'text/html' }),
+    });
+    await clipboard.write([item]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyRichPayloadWithExecCommand(doc: Document, payload: ClipboardCopyPayload): boolean {
+  if (payload.html == null || payload.html.trim().length === 0) {
+    return false;
+  }
+
+  const container = doc.createElement('div');
+  container.setAttribute('aria-hidden', 'true');
+  container.style.position = 'fixed';
+  container.style.top = '-9999px';
+  container.style.left = '-9999px';
+  container.style.opacity = '0';
+  container.contentEditable = 'true';
+  container.innerHTML = payload.html;
+
+  const parent = doc.body ?? doc.documentElement;
+  parent.append(container);
+
+  const selection = doc.defaultView?.getSelection();
+  if (selection == null) {
+    container.remove();
+    return false;
+  }
+
+  const range = doc.createRange();
+  range.selectNodeContents(container);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  try {
+    return Boolean(doc.execCommand?.('copy') ?? false);
+  } catch {
+    return false;
+  } finally {
+    selection.removeAllRanges();
+    container.remove();
+  }
+}
+
+export async function copyTextToClipboard(
+  doc: Document,
+  input: string | ClipboardCopyPayload,
+): Promise<boolean> {
+  const payload: ClipboardCopyPayload =
+    typeof input === 'string' ? { text: input, html: textToClipboardHtml(input) } : input;
+  if (await copyRichPayloadWithClipboardApi(doc, payload)) {
+    return true;
+  }
+
+  if (copyRichPayloadWithExecCommand(doc, payload)) {
+    return true;
+  }
+
   const clipboard = doc.defaultView?.navigator?.clipboard;
   if (clipboard?.writeText != null) {
     try {
-      await clipboard.writeText(text);
+      await clipboard.writeText(payload.text);
       return true;
     } catch {
       // Fall through to execCommand.
@@ -279,7 +638,7 @@ export async function copyTextToClipboard(doc: Document, text: string): Promise<
   }
 
   const textarea = doc.createElement('textarea');
-  textarea.value = text;
+  textarea.value = payload.text;
   textarea.readOnly = true;
   textarea.setAttribute('aria-hidden', 'true');
   textarea.style.position = 'fixed';

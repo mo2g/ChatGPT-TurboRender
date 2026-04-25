@@ -2,6 +2,7 @@ export type TurnRole = 'user' | 'assistant' | 'system' | 'tool' | 'unknown';
 export type ConversationRouteKind = 'chat' | 'share' | 'home' | 'unknown';
 
 export type ParkingMode = 'hard' | 'soft';
+export type ParkingState = 'resident' | 'serialized';
 export type TurboRenderMode = 'performance' | 'compatibility';
 export type ColdRestoreMode = 'placeholder' | 'readOnly';
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN';
@@ -9,6 +10,14 @@ export type ManagedHistorySource = 'initial-trim' | 'parked-group';
 export type HistoryAnchorMode = 'host-share' | 'safe-top' | 'hidden';
 export type ManagedHistoryRenderKind = 'host-snapshot' | 'markdown-text' | 'structured-message';
 export type BatchSource = 'initial-trim' | 'parked-dom' | 'mixed';
+export type ArchivePageSource = BatchSource;
+
+export interface ManagedHistoryCitation {
+  marker: string;
+  url: string | null;
+  title: string | null;
+  source: string | null;
+}
 
 export interface Settings {
   enabled: boolean;
@@ -53,27 +62,32 @@ export interface IndexRange {
 export interface ParkedGroup {
   id: string;
   mode: ParkingMode;
+  parkingState: ParkingState;
   startIndex: number;
   endIndex: number;
   turnIds: string[];
   messageIds: Array<string | null>;
   nodes: HTMLElement[];
+  serializedNodesHtml: string[] | null;
   parent: HTMLElement;
   anchor: Comment;
   pairStartIndex: number;
   pairEndIndex: number;
   pairCount: number;
+  archivePageIndex: number | null;
 }
 
 export interface ParkedGroupSummary {
   id: string;
   mode: ParkingMode;
+  parkingState: ParkingState;
   startIndex: number;
   endIndex: number;
   count: number;
   pairStartIndex: number;
   pairEndIndex: number;
   pairCount: number;
+  archivePageIndex: number | null;
   matchCount: number;
 }
 
@@ -87,6 +101,7 @@ export interface CachedConversationTurn {
   structuredDetails: string | null;
   hiddenFromConversation: boolean;
   createTime: number | null;
+  citations?: ManagedHistoryCitation[];
 }
 
 export interface ManagedHistoryEntry {
@@ -106,6 +121,8 @@ export interface ManagedHistoryEntry {
   snapshotHtml: string | null;
   structuredDetails: string | null;
   hiddenFromConversation: boolean;
+  createTime?: number | null;
+  citations?: ManagedHistoryCitation[];
 }
 
 export interface ManagedHistoryMatch {
@@ -139,6 +156,27 @@ export interface ManagedHistoryGroup {
   assistantPreview: string;
   matchCount: number;
   parkedGroupId: string | null;
+}
+
+export interface ArchivePageMeta {
+  id: string;
+  pageIndex: number;
+  pageCount: number;
+  pagePairCount: number;
+  pairStartIndex: number;
+  pairEndIndex: number;
+  pairCount: number;
+  source: ArchivePageSource;
+}
+
+export interface ArchivePage extends ArchivePageMeta {
+  entries: ManagedHistoryEntry[];
+}
+
+export interface ArchivePageMatch extends ArchivePageMeta {
+  matchCount: number;
+  excerpt: string;
+  firstMatchPairIndex: number;
 }
 
 export interface ResolvedConversationRoute {
@@ -193,6 +231,8 @@ export interface TabRuntimeStatus {
   finalizedTurns: number;
   handledTurnsTotal: number;
   historyPanelOpen: boolean;
+  archivePageCount: number;
+  currentArchivePageIndex: number | null;
   archivedTurnsTotal: number;
   expandedArchiveGroups: number;
   historyAnchorMode: HistoryAnchorMode;
@@ -210,6 +250,8 @@ export interface TabRuntimeStatus {
   contentScriptInstanceId: string;
   contentScriptStartedAt: number;
   buildSignature: string;
+  residentParkedGroups?: number;
+  serializedParkedGroups?: number;
 }
 
 export interface TabStatusResponse {

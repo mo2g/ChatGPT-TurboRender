@@ -12,6 +12,7 @@ export interface ParkRequest {
   pairStartIndex: number;
   pairEndIndex: number;
   pairCount: number;
+  archivePageIndex: number | null;
 }
 
 function resolveParkedNodeMessageId(node: HTMLElement): string | null {
@@ -37,6 +38,13 @@ function resolveParkedNodeMessageId(node: HTMLElement): string | null {
   }
 
   return null;
+}
+
+function createNodeFromHtml(ownerDocument: Document, html: string): HTMLElement | null {
+  const template = ownerDocument.createElement('template');
+  template.innerHTML = html;
+  const element = template.content.firstElementChild;
+  return element instanceof HTMLElement ? element : null;
 }
 
 export class ParkingLot {
@@ -70,16 +78,19 @@ export class ParkingLot {
     const group: ParkedGroup = {
       id: request.id,
       mode: request.mode,
+      parkingState: 'resident',
       startIndex: request.startIndex,
       endIndex: request.endIndex,
       turnIds: [...request.turnIds],
       messageIds: request.nodes.map((node) => resolveParkedNodeMessageId(node)),
       nodes: [...request.nodes],
+      serializedNodesHtml: null,
       parent: request.parent,
       anchor,
       pairStartIndex: request.pairStartIndex,
       pairEndIndex: request.pairEndIndex,
       pairCount: request.pairCount,
+      archivePageIndex: request.archivePageIndex,
     };
 
     this.groups.set(group.id, group);
@@ -87,6 +98,57 @@ export class ParkingLot {
       this.parkedTurnIds.add(turnId);
     }
     return group;
+  }
+
+  serializeGroup(id: string): boolean {
+    const group = this.groups.get(id);
+    if (group == null || group.mode !== 'hard') {
+      return false;
+    }
+
+    if (group.nodes.length === 0) {
+      group.parkingState = 'serialized';
+      return true;
+    }
+
+    group.serializedNodesHtml = group.nodes.map((node) => node.outerHTML);
+    group.nodes = [];
+    group.parkingState = 'serialized';
+    return true;
+  }
+
+  rehydrateGroup(id: string): boolean {
+    const group = this.groups.get(id);
+    if (group == null || group.mode !== 'hard') {
+      return false;
+    }
+
+    if (group.nodes.length > 0) {
+      group.parkingState = 'resident';
+      return true;
+    }
+
+    if (group.serializedNodesHtml == null) {
+      return false;
+    }
+
+    const ownerDocument = group.parent.ownerDocument;
+    const nodes = group.serializedNodesHtml.map((html) => createNodeFromHtml(ownerDocument, html));
+    if (nodes.some((node) => node == null)) {
+      return false;
+    }
+
+    group.nodes = nodes.filter((node): node is HTMLElement => node != null);
+    group.parkingState = 'resident';
+    return true;
+  }
+
+  getResidentGroupCount(): number {
+    return [...this.groups.values()].filter((group) => group.parkingState === 'resident').length;
+  }
+
+  getSerializedGroupCount(): number {
+    return [...this.groups.values()].filter((group) => group.parkingState === 'serialized').length;
   }
 
   restoreGroup(id: string, fallbackBefore?: Node | null): boolean {
@@ -99,8 +161,15 @@ export class ParkingLot {
     const reference = group.anchor.isConnected ? group.anchor : fallbackBefore ?? null;
 
     if (group.mode === 'hard') {
+      if (!this.rehydrateGroup(id)) {
+        return false;
+      }
+      const residentGroup = this.groups.get(id);
+      if (residentGroup == null) {
+        return false;
+      }
       const fragment = parent.ownerDocument.createDocumentFragment();
-      for (const node of group.nodes) {
+      for (const node of residentGroup.nodes) {
         fragment.appendChild(node);
       }
       parent.insertBefore(fragment, reference);
@@ -157,13 +226,24 @@ export class ParkingLot {
       .map((group) => ({
         id: group.id,
         mode: group.mode,
+        parkingState: group.parkingState,
         startIndex: group.startIndex,
         endIndex: group.endIndex,
         count: group.turnIds.length,
         pairStartIndex: group.pairStartIndex,
         pairEndIndex: group.pairEndIndex,
         pairCount: group.pairCount,
+        archivePageIndex: group.archivePageIndex,
+        matchCount: 0,
       }));
+  }
+
+  getSummariesForPage(pageIndex: number): ParkedGroupSummary[] {
+    return this.getSummaries().filter((summary) => summary.archivePageIndex === pageIndex);
+  }
+
+  getParkedGroupCountForPage(pageIndex: number): number {
+    return this.getSummariesForPage(pageIndex).length;
   }
 
   getTotalParkedTurns(): number {

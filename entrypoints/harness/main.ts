@@ -37,9 +37,16 @@ let streaming = true;
 let controller: TurboRenderController | null = null;
 
 function boot(turnCount: number): void {
+  if (app == null) {
+    return;
+  }
   controller?.stop();
   mountTranscriptFixture(document, { turnCount, streaming });
-  document.body.insertBefore(app, document.body.firstChild);
+  if (document.body.firstChild != null) {
+    document.body.insertBefore(app, document.body.firstChild);
+  } else {
+    document.body.appendChild(app);
+  }
   controller = new TurboRenderController({
     settings: {
       ...DEFAULT_SETTINGS,
@@ -57,6 +64,9 @@ function boot(turnCount: number): void {
 }
 
 function refreshStatus(): void {
+  if (statusEl == null) {
+    return;
+  }
   if (controller == null) {
     statusEl.textContent = 'Controller offline.';
     return;

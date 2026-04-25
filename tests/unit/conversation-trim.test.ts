@@ -232,6 +232,56 @@ describe('conversation trim', () => {
     expect(result.session?.turns[0]?.structuredDetails).toBeNull();
   });
 
+  it('preserves citation metadata for archived fallback rendering', () => {
+    const payload = buildPayload();
+    const marker = '\uE200cite\uE202turn117839search2\uE201';
+    const text = `OrbStack cache ${marker} works.`;
+    payload.mapping!['assistant1']!.message = {
+      id: 'assistant1',
+      author: { role: 'assistant', name: null, metadata: {} },
+      create_time: 3,
+      update_time: null,
+      content: {
+        content_type: 'text',
+        parts: [text],
+      },
+      status: 'finished_successfully',
+      metadata: {
+        citations: [
+          {
+            start_ix: text.indexOf(marker),
+            end_ix: text.indexOf(marker) + marker.length,
+            metadata: {
+              title: 'OrbStack docs',
+              url: 'https://docs.orbstack.dev/docker/',
+              source: 'web',
+            },
+          },
+        ],
+      },
+    };
+
+    const result = trimConversationPayload(payload, {
+      chatId: 'chat:abc',
+      routeKind: 'chat',
+      routeId: 'abc',
+      conversationId: 'abc',
+      mode: 'performance',
+      initialHotPairs: 2,
+      minVisibleTurns: 4,
+    });
+
+    const assistantTurn = result.session?.turns.find((turn) => turn.id === 'assistant1');
+    expect(assistantTurn?.citations).toEqual([
+      {
+        marker: 'turn117839search2',
+        url: 'https://docs.orbstack.dev/docker/',
+        title: 'OrbStack docs',
+        source: 'web',
+      },
+    ]);
+  });
+
   it('extracts share conversation payloads from react-router loader data', () => {
     const payload = buildPayload();
     const extracted = extractShareConversationPayload({

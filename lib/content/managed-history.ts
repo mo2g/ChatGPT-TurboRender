@@ -6,6 +6,9 @@ import {
   type InteractionPair,
 } from '../shared/interaction-pairs';
 import type {
+  ArchivePage,
+  ArchivePageMatch,
+  ArchivePageMeta,
   BatchSource,
   InitialTrimSession,
   ManagedHistoryEntry,
@@ -134,11 +137,11 @@ export function resolvePreferredMessageId(...candidates: Array<string | null | u
 }
 
 function countBatchMatches(batch: InteractionBatch<ManagedHistoryEntry>, query: string): number {
-  if (query.length === 0) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) {
     return 0;
   }
 
-  const normalizedQuery = query.toLowerCase();
   return batch.pairs.filter((pair) => pair.searchText.toLowerCase().includes(normalizedQuery)).length;
 }
 
@@ -153,6 +156,35 @@ function deriveBatchSource(entries: ManagedHistoryEntry[]): BatchSource {
     return 'initial-trim';
   }
   return 'parked-dom';
+}
+
+function summarizePreviewText(text: string, maxLength = 72): string {
+  const normalized = normalizeText(text);
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function pickVisiblePreview(entries: ManagedHistoryEntry[], roles: TurnRole[]): string {
+  for (const entry of entries) {
+    if (isSupplementalHistoryEntry(entry) || !roles.includes(entry.role)) {
+      continue;
+    }
+
+    const cleaned = summarizePreviewText(stripLeadingRolePrefix(entry.text));
+    if (cleaned.length > 0) {
+      return cleaned;
+    }
+
+    const fallback = summarizePreviewText(entry.text);
+    if (fallback.length > 0) {
+      return fallback;
+    }
+  }
+
+  return '';
 }
 
 function toManagedGroup(
@@ -177,8 +209,8 @@ function toManagedGroup(
     collapsed: !expanded,
     expanded,
     entries: batch.entries,
-    userPreview: batch.userPreview,
-    assistantPreview: batch.assistantPreview,
+    userPreview: pickVisiblePreview(batch.entries, ['user']) || batch.userPreview,
+    assistantPreview: pickVisiblePreview(batch.entries, ['assistant', 'tool', 'system']) || batch.assistantPreview,
     matchCount: countBatchMatches(batch, query),
     parkedGroupId: batch.entries.some((entry) => entry.liveTurnId != null) ? batch.id : null,
   };
@@ -213,6 +245,8 @@ function createEntry(input: {
   snapshotHtml?: string | null;
   structuredDetails?: string | null;
   hiddenFromConversation?: boolean;
+  createTime?: number | null;
+  citations?: ManagedHistoryEntry['citations'];
   turnId?: string | null;
   liveTurnId?: string | null;
   messageId?: string | null;
@@ -241,7 +275,15 @@ function createEntry(input: {
     snapshotHtml: input.snapshotHtml ?? null,
     structuredDetails: input.structuredDetails ?? null,
     hiddenFromConversation: input.hiddenFromConversation ?? false,
+    createTime: input.createTime ?? null,
+    citations: [...(input.citations ?? [])],
   };
+}
+
+export function isSupplementalHistoryEntry(
+  entry: Pick<ManagedHistoryEntry, 'renderKind' | 'hiddenFromConversation'>,
+): boolean {
+  return entry.hiddenFromConversation || entry.renderKind === 'structured-message';
 }
 
 export class ManagedHistoryStore {
@@ -292,6 +334,8 @@ export class ManagedHistoryStore {
         snapshotHtml: turn.snapshotHtml,
         structuredDetails: turn.structuredDetails,
         hiddenFromConversation: turn.hiddenFromConversation,
+        createTime: turn.createTime,
+        citations: turn.citations,
       }),
     );
     this.liveTurnRevisionCache.clear();
@@ -325,8 +369,17 @@ export class ManagedHistoryStore {
     }
 
     const nextLiveTurnIds = new Set<string>();
-    records.forEach((record, offset) => {
-      const absoluteIndex = this.liveStartIndex + offset;
+    let turnIndex = this.liveStartIndex;
+    for (const record of records) {
+      while (turnIndex < this.turns.length && isSupplementalHistoryEntry(this.turns[turnIndex]!)) {
+        turnIndex += 1;
+      }
+
+      if (turnIndex >= this.turns.length) {
+        break;
+      }
+
+      const absoluteIndex = turnIndex;
       const existing = this.turns[absoluteIndex];
       const recordRevision = record.contentRevision?.trim() ?? '';
       const previousRevision = this.liveTurnRevisionCache.get(record.id) ?? '';
@@ -359,6 +412,8 @@ export class ManagedHistoryStore {
         snapshotHtml: snapshotHtml ?? existing?.snapshotHtml ?? null,
         structuredDetails: existing?.structuredDetails ?? null,
         hiddenFromConversation: existing?.hiddenFromConversation ?? false,
+        createTime: existing?.createTime ?? null,
+        citations: existing?.citations,
       });
 
       if (absoluteIndex < this.turns.length) {
@@ -372,19 +427,13 @@ export class ManagedHistoryStore {
       } else {
         this.liveTurnRevisionCache.delete(record.id);
       }
-    });
+      turnIndex += 1;
+    }
 
     for (const turnId of [...this.liveTurnRevisionCache.keys()]) {
       if (!nextLiveTurnIds.has(turnId)) {
         this.liveTurnRevisionCache.delete(turnId);
       }
-    }
-
-    for (let index = this.liveStartIndex + records.length; index < this.turns.length; index += 1) {
-      this.turns[index] = {
-        ...this.turns[index]!,
-        liveTurnId: null,
-      };
     }
 
     for (let index = 0; index < this.turns.length; index += 1) {
@@ -418,6 +467,134 @@ export class ManagedHistoryStore {
     return Math.max(0, this.getTotalPairs() - Math.max(0, hotPairCount));
   }
 
+  getArchivedPageCount(pagePairCount: number, hotPairCount: number): number {
+    const normalizedPagePairCount = Math.max(0, Math.trunc(pagePairCount));
+    if (normalizedPagePairCount === 0) {
+      return 0;
+    }
+
+    const archivedPairCount = this.getArchivedPairCount(hotPairCount);
+    return Math.ceil(archivedPairCount / normalizedPagePairCount);
+  }
+
+  getArchivedPairsWindow(
+    pageIndex: number,
+    pagePairCount: number,
+    hotPairCount: number,
+  ): InteractionPair<ManagedHistoryEntry>[] {
+    const normalizedPagePairCount = Math.max(0, Math.trunc(pagePairCount));
+    if (normalizedPagePairCount === 0) {
+      return [];
+    }
+
+    const pageCount = this.getArchivedPageCount(normalizedPagePairCount, hotPairCount);
+    const normalizedPageIndex = Math.trunc(pageIndex);
+    if (normalizedPageIndex < 0 || normalizedPageIndex >= pageCount) {
+      return [];
+    }
+
+    const archivedPairs = this.getArchivedPairs(hotPairCount);
+    const start = normalizedPageIndex * normalizedPagePairCount;
+    return archivedPairs.slice(start, start + normalizedPagePairCount);
+  }
+
+  getArchivedPageMeta(
+    pageIndex: number,
+    pagePairCount: number,
+    hotPairCount: number,
+  ): ArchivePageMeta | null {
+    const normalizedPagePairCount = Math.max(0, Math.trunc(pagePairCount));
+    if (normalizedPagePairCount === 0) {
+      return null;
+    }
+
+    const pageCount = this.getArchivedPageCount(normalizedPagePairCount, hotPairCount);
+    const normalizedPageIndex = Math.trunc(pageIndex);
+    if (pageCount === 0 || normalizedPageIndex < 0 || normalizedPageIndex >= pageCount) {
+      return null;
+    }
+
+    const pagePairs = this.getArchivedPairsWindow(normalizedPageIndex, normalizedPagePairCount, hotPairCount);
+    const firstPair = pagePairs[0];
+    const lastPair = pagePairs.at(-1);
+    if (firstPair == null || lastPair == null) {
+      return null;
+    }
+
+    return {
+      id: `archive-page-${normalizedPageIndex}`,
+      pageIndex: normalizedPageIndex,
+      pageCount,
+      pagePairCount: normalizedPagePairCount,
+      pairStartIndex: firstPair.pairIndex,
+      pairEndIndex: lastPair.pairIndex,
+      pairCount: pagePairs.length,
+      source: deriveBatchSource(pagePairs.flatMap((pair) => pair.entries)),
+    };
+  }
+
+  getArchivedPage(
+    pageIndex: number,
+    pagePairCount: number,
+    hotPairCount: number,
+  ): ArchivePage | null {
+    const meta = this.getArchivedPageMeta(pageIndex, pagePairCount, hotPairCount);
+    if (meta == null) {
+      return null;
+    }
+
+    return {
+      ...meta,
+      entries: this.getArchivedPairsWindow(meta.pageIndex, meta.pagePairCount, hotPairCount).flatMap(
+        (pair) => pair.entries,
+      ),
+    };
+  }
+
+  findPageIndexByTurnId(
+    turnId: string,
+    pagePairCount: number,
+    hotPairCount: number,
+  ): number | null {
+    const normalizedTurnId = turnId.trim();
+    if (normalizedTurnId.length === 0) {
+      return null;
+    }
+
+    const pageCount = this.getArchivedPageCount(pagePairCount, hotPairCount);
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const pagePairs = this.getArchivedPairsWindow(pageIndex, pagePairCount, hotPairCount);
+      if (
+        pagePairs.some((pair) =>
+          pair.entries.some(
+            (entry) => entry.turnId === normalizedTurnId || entry.liveTurnId === normalizedTurnId,
+          ),
+        )
+      ) {
+        return pageIndex;
+      }
+    }
+
+    return null;
+  }
+
+  findPageIndexByQueryMatch(query: string, pagePairCount: number, hotPairCount: number): number | null {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (normalizedQuery.length === 0) {
+      return null;
+    }
+
+    const pageCount = this.getArchivedPageCount(pagePairCount, hotPairCount);
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const pagePairs = this.getArchivedPairsWindow(pageIndex, pagePairCount, hotPairCount);
+      if (pagePairs.some((pair) => pair.searchText.toLowerCase().includes(normalizedQuery))) {
+        return pageIndex;
+      }
+    }
+
+    return null;
+  }
+
   getArchiveSlotCount(hotPairCount: number, batchPairCount: number): number {
     return this.buildArchiveBatches(hotPairCount, batchPairCount).length;
   }
@@ -429,6 +606,20 @@ export class ManagedHistoryStore {
     expandedBatchIds: ReadonlySet<string>,
   ): ManagedHistoryGroup[] {
     return this.buildArchiveBatches(hotPairCount, batchPairCount).map((batch) =>
+      toManagedGroup(batch, query, expandedBatchIds.has(batch.id)),
+    );
+  }
+
+  getArchiveGroupsForPage(
+    pageIndex: number,
+    pagePairCount: number,
+    hotPairCount: number,
+    batchPairCount: number,
+    query: string,
+    expandedBatchIds: ReadonlySet<string>,
+  ): ManagedHistoryGroup[] {
+    const pagePairs = this.getArchivedPairsWindow(pageIndex, pagePairCount, hotPairCount);
+    return buildInteractionBatches(pagePairs, batchPairCount, 'archive').map((batch) =>
       toManagedGroup(batch, query, expandedBatchIds.has(batch.id)),
     );
   }
@@ -497,6 +688,57 @@ export class ManagedHistoryStore {
       .filter((match): match is ManagedHistoryMatch => match != null);
   }
 
+  searchArchivedPages(
+    query: string,
+    pagePairCount: number,
+    hotPairCount: number,
+  ): ArchivePageMatch[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (normalizedQuery.length === 0) {
+      return [];
+    }
+
+    const pageCount = this.getArchivedPageCount(pagePairCount, hotPairCount);
+    const matches: ArchivePageMatch[] = [];
+
+    for (let pageIndex = pageCount - 1; pageIndex >= 0; pageIndex -= 1) {
+      const page = this.getArchivedPage(pageIndex, pagePairCount, hotPairCount);
+      if (page == null) {
+        continue;
+      }
+
+      const pagePairs = this.getArchivedPairsWindow(pageIndex, pagePairCount, hotPairCount);
+      let matchCount = 0;
+      let firstMatchPairIndex = -1;
+      let excerpt = '';
+
+      for (const pair of pagePairs) {
+        if (!pair.searchText.toLowerCase().includes(normalizedQuery)) {
+          continue;
+        }
+
+        matchCount += 1;
+        if (firstMatchPairIndex < 0) {
+          firstMatchPairIndex = pair.pairIndex;
+          excerpt = createExcerpt(pair.searchText, normalizedQuery);
+        }
+      }
+
+      if (matchCount === 0 || firstMatchPairIndex < 0) {
+        continue;
+      }
+
+      matches.push({
+        ...page,
+        matchCount,
+        excerpt,
+        firstMatchPairIndex,
+      });
+    }
+
+    return matches;
+  }
+
   getPairIndexForTurnIndex(turnIndex: number): number | null {
     for (const pair of this.buildPairs()) {
       if (pair.startTurnIndex <= turnIndex && turnIndex <= pair.endTurnIndex) {
@@ -517,6 +759,7 @@ export class ManagedHistoryStore {
     snapshotHtml?: string | null;
     structuredDetails?: string | null;
     hiddenFromConversation?: boolean;
+    citations?: ManagedHistoryEntry['citations'];
     turnId?: string | null;
     liveTurnId?: string | null;
     source?: ManagedHistoryEntry['source'];

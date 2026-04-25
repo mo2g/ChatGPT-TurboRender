@@ -14,7 +14,10 @@
   "include": [
     "entrypoints",
     "lib",
+    "scripts/**/*.d.ts",
+    "scripts/**/*.d.mts",
     "tests",
+    "types",
     "playwright.config.ts",
     "vitest.config.ts",
     "wxt.config.ts"
