@@ -103,10 +103,12 @@ function parseArgs(argv) {
     throw new Error(`Invalid debug port: ${debugPort}`);
   }
 
+  const preferredTarget = parseExactChatTargetUrl(preferredUrl);
   return {
     help: false,
     debugPort: parsedPort,
-    preferredUrl: parseExactChatTargetUrl(preferredUrl).url,
+    preferredUrl: preferredTarget.url,
+    preferredRouteKind: preferredTarget.routeKind,
   };
 }
 
@@ -201,8 +203,25 @@ async function main() {
     }
 
     const pageUrl = page.url();
+    const context = browser.contexts()[0];
+    if (context == null) {
+      console.error('[TurboRender] Controlled Chrome did not expose a default browser context.');
+      process.exitCode = 1;
+      return;
+    }
+
+    let tabStatus = null;
     let inspection =
       (await waitForInspection(page, hasTurboRenderInjection, 15_000, 500)) ?? (await inspectChatgptPage(page));
+    if (!hasTurboRenderInjection(inspection)) {
+      try {
+        tabStatus = await requestTargetRuntimeStatus(context, profileDir, options.preferredUrl);
+        inspection =
+          (await waitForInspection(page, hasTurboRenderInjection, 5_000, 250)) ?? (await inspectChatgptPage(page));
+      } catch {
+        // Fall through to the existing marker error with the best inspection data we have.
+      }
+    }
     if (inspection.routeKind === 'chat' && !hasArchiveAccess(inspection)) {
       inspection = (await waitForInspection(page, hasArchiveAccess, 15_000, 500)) ?? inspection;
     }
@@ -232,22 +251,19 @@ async function main() {
       return;
     }
 
-    let tabStatus = null;
-    try {
-      const context = browser.contexts()[0];
-      if (context == null) {
-        throw new Error('Controlled Chrome did not expose a default browser context.');
+    if (tabStatus == null) {
+      try {
+        tabStatus = await requestTargetRuntimeStatus(context, profileDir, options.preferredUrl);
+      } catch (error) {
+        console.error(
+          error instanceof Error
+            ? `[TurboRender] Could not query extension runtime status: ${error.message}`
+            : '[TurboRender] Could not query extension runtime status.',
+        );
+        console.error('[TurboRender] Try `pnpm build` and `pnpm reload:mcp-chrome`, then refresh the target tab.');
+        process.exitCode = 1;
+        return;
       }
-      tabStatus = await requestTargetRuntimeStatus(context, profileDir, options.preferredUrl);
-    } catch (error) {
-      console.error(
-        error instanceof Error
-          ? `[TurboRender] Could not query extension runtime status: ${error.message}`
-          : '[TurboRender] Could not query extension runtime status.',
-      );
-      console.error('[TurboRender] Try `pnpm build` and `pnpm reload:mcp-chrome`, then refresh the target tab.');
-      process.exitCode = 1;
-      return;
     }
 
     const runtime = tabStatus?.runtime ?? null;
@@ -258,8 +274,10 @@ async function main() {
       return;
     }
 
-    if (runtime.routeKind !== 'chat') {
-      console.error(`[TurboRender] Extension runtime resolved route kind ${runtime.routeKind}, expected chat.`);
+    if (runtime.routeKind !== options.preferredRouteKind) {
+      console.error(
+        `[TurboRender] Extension runtime resolved route kind ${runtime.routeKind}, expected ${options.preferredRouteKind}.`,
+      );
       process.exitCode = 1;
       return;
     }

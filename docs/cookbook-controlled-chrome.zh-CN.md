@@ -230,38 +230,9 @@ pnpm check:mcp-chrome
 - 验收时优先看目标页面上的 DOM 标记，而不是只看 `chrome://extensions`。
 - 如果你要做可分享的调试 cookbook，应该把“怎么启动”和“怎么验收”写在同一份文档里。
 
-## 历史：抓取离线真实页 Fixture
+## 已移除的离线 Fixture 流程
 
-这条受控浏览器链路仍可用于维护离线 ChatGPT fixture bundle，但这已经是历史/补充路径，不再是主开发流程，假宿主浏览器回放也已退出 E2E。
-
-1. 先启动受控浏览器并登录：
-
-```bash
-pnpm debug:mcp-chrome -- https://chatgpt.com/
-```
-
-2. 录制本机 fixture bundle：
-
-```bash
-pnpm legacy:fixtures:capture
-```
-
-`pnpm legacy:fixtures:capture` 会先连接到已登录的受控 Chrome，把该浏览器的 profile 克隆到一个临时录制 profile，再在这个临时浏览器里完成抓取。录制期间请保持源浏览器运行且保持登录状态。
-
-3. 如果你想把 bundle 放到机器上的其他目录：
-
-```bash
-TURBO_RENDER_FIXTURE_ROOT=/absolute/path pnpm legacy:fixtures:capture
-```
-
-4. 之后只做剩余的历史维护检查：
-
-```bash
-pnpm legacy:fixtures:check
-pnpm legacy:fixtures:diagnose <fixture-id>
-```
-
-fixture 默认落在 `tests/fixtures-local/chatgpt`，该目录会被 gitignore，只服务本机开发/测试。旧的浏览器回放 spec 已删除，因此这些 bundle 不再被当作宿主兼容性证据。
+旧的离线 fixture 捕获和假宿主回放工具已经从当前有效仓库中移除。真实宿主验证请继续使用上面的受控 Chrome 流程。
 
 ## 最终建议
 

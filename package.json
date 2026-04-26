@@ -24,10 +24,6 @@
     "test": "pnpm test:unit",
     "test:all": "node ./scripts/run-all-tests.mjs",
     "test:unit": "vitest run",
-    "legacy:fixtures:capture": "node ./scripts/capture-chatgpt-fixtures.mjs",
-    "legacy:fixtures:check": "node ./scripts/check-chatgpt-fixtures.mjs",
-    "legacy:fixtures:diagnose": "node ./scripts/diagnose-fixture.mjs",
-    "legacy:fixtures:update-id": "node ./scripts/update-fixture-id.mjs",
     "test:e2e": "node ./scripts/run-live-test.mjs",
     "test:e2e:live": "node ./scripts/run-live-test.mjs",
     "postinstall": "wxt prepare"

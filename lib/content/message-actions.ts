@@ -17,6 +17,7 @@ export interface EntryActionMenuSelection {
 
 export interface HostActionTemplateSnapshot {
   html: string;
+  iconHtmlByAction?: Partial<Record<ArchiveEntryAction, string>>;
   edgeInsetPx?: number;
   wrapperClassName?: string;
   wrapperRole?: string;
@@ -424,35 +425,44 @@ export function captureHostActionTemplate(
   const actionScope = findHostActionTemplateScope(root, lane);
   const searchRoot = actionScope ?? root;
   const htmlParts: string[] = [];
+  const iconHtmlByAction: Partial<Record<ArchiveEntryAction, string>> = {};
   let copyButton: HTMLElement | null = null;
   for (const action of ENTRY_ACTION_LANE[lane]) {
     const button = findHostActionButtonInScope(searchRoot, action, {
       rejectMessageBodyControls: actionScope != null,
     });
     if (!(button instanceof HTMLElement)) {
-      return null;
+      continue;
     }
 
     const clone = button.cloneNode(true);
     if (!(clone instanceof HTMLElement)) {
-      return null;
+      continue;
     }
 
     sanitizeTemplateButton(clone);
+    const iconHtml = clone.innerHTML.trim();
+    if (iconHtml.length > 0) {
+      iconHtmlByAction[action] = iconHtml;
+    }
     htmlParts.push(clone.outerHTML);
     if (action === 'copy') {
       copyButton = button;
     }
   }
 
-  if (htmlParts.length !== ENTRY_ACTION_LANE[lane].length) {
+  const hasCompleteTemplate = htmlParts.length === ENTRY_ACTION_LANE[lane].length;
+  if (!hasCompleteTemplate && Object.keys(iconHtmlByAction).length === 0) {
     return null;
   }
 
   const edgeInsetPx = resolveHostActionEdgeInset(root, lane, copyButton);
   const template: HostActionTemplateSnapshot = {
-    html: htmlParts.join(''),
+    html: hasCompleteTemplate ? htmlParts.join('') : '',
   };
+  if (Object.keys(iconHtmlByAction).length > 0) {
+    template.iconHtmlByAction = iconHtmlByAction;
+  }
   if (edgeInsetPx != null) {
     template.edgeInsetPx = edgeInsetPx;
   }
@@ -661,7 +671,8 @@ export async function copyTextToClipboard(
 }
 
 export function resolveArchiveCopyText(entry: ManagedHistoryEntry): string {
-  return entry.text.length > 0 ? entry.text : entry.parts.join('\n\n');
+  const partsText = entry.parts.join('\n\n').trim();
+  return partsText.length > 0 ? partsText : entry.text;
 }
 
 export function getArchiveEntrySelectionKey(entry: ManagedHistoryEntry): string {

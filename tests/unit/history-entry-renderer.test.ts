@@ -168,4 +168,19 @@ describe('history-entry-renderer', () => {
     expect(unclosedFence.textContent).toContain('```bash');
     expect(unclosedFence.textContent).toContain('echo "missing close"');
   });
+
+  it('keeps nested shorter fences inside longer markdown code fences', () => {
+    const body = renderManagedHistoryEntryBody(
+      document,
+      createMarkdownEntry(['````md\n```bash\nip6tables -L\n```\n````']),
+      createTranslator('en'),
+      'Assistant',
+      false,
+    );
+
+    const code = body.querySelector('code[data-language="md"]');
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe('```bash\nip6tables -L\n```');
+    expect(body.querySelectorAll('.turbo-render-code-block')).toHaveLength(1);
+  });
 });

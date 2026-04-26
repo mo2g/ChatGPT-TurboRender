@@ -2,7 +2,7 @@ import { getRouteIdFromRuntimeId } from '../../lib/shared/chat-id';
 import type { ConversationRouteKind } from '../../lib/shared/types';
 import { parseExactChatTargetUrl } from '../../scripts/live-targets-lib.mjs';
 
-export type LiveRouteKind = Extract<ConversationRouteKind, 'chat'>;
+export type LiveRouteKind = Extract<ConversationRouteKind, 'chat' | 'share'>;
 
 export interface LiveTestInputs {
   chatUrl: string | null;

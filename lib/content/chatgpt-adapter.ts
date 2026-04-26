@@ -52,19 +52,23 @@ function getParentGroups(nodes: HTMLElement[]): HTMLElement[][] {
 }
 
 function resolveCandidates(main: HTMLElement): HTMLElement[] {
-  const primaryMatches = PRIMARY_TURN_SELECTORS.flatMap((selector) =>
-    Array.from(main.querySelectorAll<HTMLElement>(selector)),
-  );
-
-  const uniquePrimary = getOutermostCandidates([...new Set(primaryMatches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
-  if (uniquePrimary.length > 0) {
-    return uniquePrimary;
+  for (const selector of PRIMARY_TURN_SELECTORS) {
+    const matches = Array.from(main.querySelectorAll<HTMLElement>(selector));
+    const uniqueMatches = getOutermostCandidates([...new Set(matches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
+    if (uniqueMatches.length > 0) {
+      return uniqueMatches;
+    }
   }
 
-  const fallbackMatches = FALLBACK_TURN_SELECTORS.flatMap((selector) =>
-    Array.from(main.querySelectorAll<HTMLElement>(selector)),
-  );
-  return getOutermostCandidates([...new Set(fallbackMatches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
+  for (const selector of FALLBACK_TURN_SELECTORS) {
+    const matches = Array.from(main.querySelectorAll<HTMLElement>(selector));
+    const uniqueMatches = getOutermostCandidates([...new Set(matches)].filter((candidate) => !isTurboRenderUiNode(candidate)));
+    if (uniqueMatches.length > 0) {
+      return uniqueMatches;
+    }
+  }
+
+  return [];
 }
 
 function isScrollable(node: HTMLElement): boolean {
@@ -104,6 +108,10 @@ function resolveHistoryMountTarget(main: HTMLElement, candidates: HTMLElement[])
 
   if (explicitScroller?.firstElementChild instanceof HTMLElement) {
     return explicitScroller.firstElementChild;
+  }
+
+  if (main.firstElementChild instanceof HTMLElement) {
+    return main.firstElementChild;
   }
 
   return explicitScroller ?? main;
@@ -259,121 +267,4 @@ export function scanChatPage(doc: Document = document): AdapterSnapshot {
     descendantCount: countDescendants(turnContainer),
     stopButtonVisible: doc.querySelector('button[data-testid="stop-button"]') != null,
   };
-}
-
-/**
- * Build TurnRecord array from conversation fixture data.
- * This is used in fixture replay mode when DOM scanning returns no turns.
- */
-export function buildTurnsFromFixture(
-  conversation: Record<string, unknown>,
-  doc: Document = document,
-): { id: string; index: number; role: TurnRole; isStreaming: boolean; parked: boolean; node: null; messageId: string | null }[] {
-  const mapping = conversation.mapping as Record<string, { message?: { author?: { role?: string }; id?: string }; id?: string }> | undefined;
-  if (mapping == null) {
-    return [];
-  }
-
-  const turns: { id: string; index: number; role: TurnRole; isStreaming: boolean; parked: boolean; node: null; messageId: string | null }[] = [];
-  let index = 0;
-
-  // Build turn list from mapping, filtering out system messages
-  for (const entry of Object.values(mapping)) {
-    const message = entry?.message;
-    if (message == null) continue;
-
-    const role = message.author?.role;
-    if (role === 'system') continue;
-
-    const messageId = message.id ?? entry.id ?? `turn-${index}`;
-    const turnRole: TurnRole = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'unknown';
-
-    turns.push({
-      id: messageId,
-      index,
-      role: turnRole,
-      isStreaming: false,
-      parked: false,
-      node: null,
-      messageId,
-    });
-    index++;
-  }
-
-  return turns;
-}
-
-/**
- * Fixture version info structure (matches capture script).
- */
-export interface FixtureVersionInfo {
-  extensionVersion: string;
-  adapterVersion: number;
-  formatVersion: number;
-  capturedAt: string;
-}
-
-/**
- * Fixture data structure from turbo-render-fixture-data script tag.
- */
-export interface FixtureData {
-  mode: string;
-  fixtureId: string;
-  conversationId: string;
-  conversation?: Record<string, unknown>;
-  version?: FixtureVersionInfo;
-}
-
-/**
- * Current adapter version - bump when DOM adapter logic changes.
- * This should match the adapterVersion in capture script's getFixtureBuildVersion().
- */
-export const CURRENT_ADAPTER_VERSION = 1;
-
-/**
- * Minimum supported format version.
- */
-export const MIN_SUPPORTED_FORMAT_VERSION = 1;
-
-/**
- * Check if fixture version is compatible with current extension.
- * Returns null if compatible, or a warning message if not.
- */
-export function checkFixtureCompatibility(versionInfo?: FixtureVersionInfo): string | null {
-  if (versionInfo == null) {
-    // Legacy fixture without version info - may work but warn
-    return 'Fixture missing version info - may be incompatible with current extension';
-  }
-
-  if (versionInfo.formatVersion < MIN_SUPPORTED_FORMAT_VERSION) {
-    return `Fixture format v${versionInfo.formatVersion} is too old (minimum: v${MIN_SUPPORTED_FORMAT_VERSION})`;
-  }
-
-  if (versionInfo.adapterVersion !== CURRENT_ADAPTER_VERSION) {
-    // Different adapter version may still work, but warn
-    return `Fixture adapter v${versionInfo.adapterVersion} differs from current v${CURRENT_ADAPTER_VERSION} - some features may not work`;
-  }
-
-  return null; // Compatible
-}
-
-/**
- * Detect if current page is in fixture replay mode.
- */
-export function getFixtureData(doc: Document = document): FixtureData | null {
-  const marker = doc.getElementById('turbo-render-fixture-data');
-  if (marker == null) {
-    return null;
-  }
-
-  try {
-    const data = JSON.parse(marker.textContent ?? '{}') as FixtureData;
-    if (data.mode === 'origin-fixture-replay') {
-      return data;
-    }
-  } catch {
-    // Invalid JSON, ignore
-  }
-
-  return null;
 }

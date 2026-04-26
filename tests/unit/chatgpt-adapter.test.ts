@@ -40,6 +40,16 @@ describe('chatgpt adapter', () => {
     expect(anchor.shareButton).toBeNull();
   });
 
+  it('uses the first main child as the archive-only mount target', () => {
+    document.body.innerHTML = '<main><section><p>No turns rendered yet.</p></section></main>';
+
+    const snapshot = scanChatPage(document);
+
+    expect(snapshot.supported).toBe(false);
+    expect(snapshot.reason).toBe('no-turns');
+    expect(snapshot.historyMountTarget).toBe(document.querySelector('section'));
+  });
+
   it('ignores TurboRender UI roots when scanning for turns', () => {
     document.body.innerHTML = `
       <main>

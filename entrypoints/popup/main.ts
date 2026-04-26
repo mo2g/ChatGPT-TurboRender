@@ -127,6 +127,10 @@ function getStatusCopy(status: TabStatusResponse, t: Translator): string {
     return t('statusNoSupportedTab');
   }
 
+  if (runtime.archiveOnly) {
+    return `${getRuntimeLabel(runtime, t)} • ${runtime.chatId}`;
+  }
+
   if (!runtime.supported) {
     return `${getRuntimeLabel(runtime, t)} • ${getUnsupportedReasonLabel(runtime.reason, t)}`;
   }
@@ -147,6 +151,10 @@ function getRuntimeDetail(status: TabStatusResponse, t: Translator): string {
     }
 
     return t('statusPopupUnsupportedLead');
+  }
+
+  if (runtime.archiveOnly) {
+    return t('statusShelfMonitoring');
   }
 
   if (!runtime.supported) {
@@ -192,6 +200,10 @@ function getPopupState(status: TabStatusResponse): PopupState {
     return 'unsupported-web';
   }
 
+  if (runtime.archiveOnly) {
+    return runtime.paused ? 'paused' : runtime.active ? 'active' : 'monitoring';
+  }
+
   if (!runtime.supported) {
     return 'unsupported-runtime';
   }
@@ -221,7 +233,7 @@ function isUnsupportedPopupState(popupState: string): boolean {
 }
 
 function shouldRenderInlineDetails(status: TabStatusResponse): boolean {
-  return status.runtime != null && status.runtime.supported;
+  return status.runtime != null && (status.runtime.supported || status.runtime.archiveOnly);
 }
 
 function formatStartedAt(timestamp: number): string {
@@ -253,7 +265,7 @@ function renderStatusActions(
   popupState: PopupState,
 ): string {
   const runtime = status.runtime;
-  const canToggle = runtime != null && runtime.supported;
+  const canToggle = runtime != null && (runtime.supported || runtime.archiveOnly);
 
   if (!canToggle) {
     const retryButton = `<button data-variant="primary" id="refresh-status">${escapeHtml(t('statusPopupRetry'))}</button>`;
@@ -270,7 +282,7 @@ function renderStatusActions(
 
   return `
     <button data-variant="primary" id="refresh-status">${escapeHtml(t('actionRefreshStatus'))}</button>
-    <button id="toggle-chat-mode" ${runtime == null || !runtime.supported ? 'disabled' : ''}>
+    <button id="toggle-chat-mode" ${runtime == null || (!runtime.supported && !runtime.archiveOnly) ? 'disabled' : ''}>
       ${escapeHtml(status.paused ? t('actionTurboRenderThisChat') : t('actionRestoreThisChat'))}
     </button>
   `;
@@ -279,7 +291,7 @@ function renderStatusActions(
 function renderCurrentTabGrid(status: TabStatusResponse, t: Translator): string {
   const runtime = status.runtime;
 
-  if (runtime == null || !runtime.supported) {
+  if (runtime == null || (!runtime.supported && !runtime.archiveOnly)) {
     return '';
   }
 

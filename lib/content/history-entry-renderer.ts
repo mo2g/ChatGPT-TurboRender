@@ -214,8 +214,35 @@ function appendInlineMarkdown(
   }
 }
 
+interface CodeFenceInfo {
+  marker: '`' | '~';
+  length: number;
+  language: string;
+}
+
+function parseCodeFenceLine(line: string): CodeFenceInfo | null {
+  const match = line.trimStart().match(/^(`{3,}|~{3,})(.*)$/);
+  if (match == null) {
+    return null;
+  }
+
+  const fence = match[1] ?? '';
+  return {
+    marker: fence[0] === '~' ? '~' : '`',
+    length: fence.length,
+    language: (match[2] ?? '').trim(),
+  };
+}
+
+function isClosingCodeFenceLine(line: string, opener: CodeFenceInfo): boolean {
+  const trimmed = line.trim();
+  const pattern = opener.marker === '`' ? /^(`{3,})\s*$/ : /^(~{3,})\s*$/;
+  const match = trimmed.match(pattern);
+  return (match?.[1]?.length ?? 0) >= opener.length;
+}
+
 function isCodeFenceLine(line: string): boolean {
-  return line.trimStart().startsWith('```');
+  return parseCodeFenceLine(line) != null;
 }
 
 function renderParagraph(
@@ -505,17 +532,18 @@ function renderMarkdownText(
       continue;
     }
 
-    if (isCodeFenceLine(line)) {
-      const language = line.trimStart().slice(3).trim();
+    const codeFence = parseCodeFenceLine(line);
+    if (codeFence != null) {
+      const language = codeFence.language;
       const codeLines: string[] = [];
       const rawBlockLines = [line];
       cursor += 1;
-      while (cursor < lines.length && !isCodeFenceLine(lines[cursor]!.trimEnd())) {
+      while (cursor < lines.length && !isClosingCodeFenceLine(lines[cursor]!.trimEnd(), codeFence)) {
         codeLines.push(lines[cursor]!);
         rawBlockLines.push(lines[cursor]!);
         cursor += 1;
       }
-      if (cursor < lines.length && isCodeFenceLine(lines[cursor]!.trimEnd())) {
+      if (cursor < lines.length && isClosingCodeFenceLine(lines[cursor]!.trimEnd(), codeFence)) {
         rawBlockLines.push(lines[cursor]!.trimEnd());
         cursor += 1;
         renderCodeBlock(doc, parent, language, codeLines);

@@ -81,10 +81,6 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
     initialTrimEnabled: candidate?.initialTrimEnabled ?? DEFAULT_SETTINGS.initialTrimEnabled,
     initialHotTurns: initialHotPairs * 2,
     liveHotTurns: liveHotPairs * 2,
-    coldRestoreMode:
-      candidate?.coldRestoreMode === 'readOnly' || candidate?.coldRestoreMode === 'placeholder'
-        ? candidate.coldRestoreMode
-        : DEFAULT_SETTINGS.coldRestoreMode,
     softFallback: candidate?.softFallback ?? DEFAULT_SETTINGS.softFallback,
     frameSpikeThresholdMs: clampNumber(
       candidate?.frameSpikeThresholdMs,

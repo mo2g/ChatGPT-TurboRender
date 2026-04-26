@@ -2,7 +2,7 @@
 
 This document describes the current implementation of TurboRender: a hot transcript that stays inside ChatGPT's native flow, and an extension-controlled archive region that keeps older history out of the live subtree.
 
-[中文版本](./architecture.zh-CN.md)
+[中文版本](./architecture.zh-CN.md) | [Refactor Design and Pitfalls](./refactor-design-and-pitfalls.zh-CN.md) | [Archive Action Reuse Map](./action-reuse-map.zh-CN.md)
 
 ## Problem model
 

@@ -140,7 +140,6 @@ function areSettingsEquivalent(left: Settings, right: Settings): boolean {
     left.initialTrimEnabled === right.initialTrimEnabled &&
     left.initialHotTurns === right.initialHotTurns &&
     left.liveHotTurns === right.liveHotTurns &&
-    left.coldRestoreMode === right.coldRestoreMode &&
     left.softFallback === right.softFallback &&
     left.frameSpikeThresholdMs === right.frameSpikeThresholdMs &&
     left.frameSpikeCount === right.frameSpikeCount &&
@@ -170,23 +169,25 @@ function getRuntimeExtensionId(): string | null {
   return null;
 }
 
+function writeRuntimeMarkers(): void {
+  const html = document.documentElement;
+  html.dataset.turborenderBuild = BUILD_SIGNATURE;
+  document.body?.setAttribute('data-turborender-build', BUILD_SIGNATURE);
+
+  const extensionId = getRuntimeExtensionId();
+  if (extensionId == null) {
+    return;
+  }
+
+  html.dataset.turboRenderExtensionId = extensionId;
+  document.body?.setAttribute('data-turbo-render-extension-id', extensionId);
+}
+
 const contentScript = defineContentScript({
   matches: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   runAt: 'document_start',
   async main(ctx: ContentScriptContext) {
-    const html = document.documentElement;
-    if (html != null) {
-      html.dataset.turborenderBuild = BUILD_SIGNATURE;
-    }
-    const extensionId = getRuntimeExtensionId();
-    if (extensionId != null) {
-      if (html != null) {
-        html.dataset.turboRenderExtensionId = extensionId;
-      }
-      if (document.body != null) {
-        document.body.dataset.turboRenderExtensionId = extensionId;
-      }
-    }
+    writeRuntimeMarkers();
     console.info(`[TurboRender] content-script build ${BUILD_SIGNATURE}`);
 
     const contentScriptStartedAt = Date.now();
@@ -384,6 +385,7 @@ const contentScript = defineContentScript({
     };
 
     whenDocumentReady(() => {
+      writeRuntimeMarkers();
       ensureController();
     }, ctx);
 
@@ -422,6 +424,8 @@ const contentScript = defineContentScript({
 
       switch (message.type) {
         case 'GET_RUNTIME_STATUS':
+          (controller as (TurboRenderController & { refreshForRuntimeStatusRequest?: () => void }) | null)
+            ?.refreshForRuntimeStatusRequest?.();
           return controller?.getStatus() ?? null;
         case 'GET_TAB_STATUS':
           return undefined;

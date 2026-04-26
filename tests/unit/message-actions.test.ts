@@ -85,6 +85,25 @@ describe('message actions', () => {
     expect(holder.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]')).not.toBeNull();
   });
 
+  it('keeps per-action host icon snapshots when the full action row is incomplete', () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="turn-host-actions">
+          <button data-testid="copy-turn-action-button" aria-label="Copy"><svg data-icon="host-copy"></svg></button>
+          <button data-testid="good-response-turn-action-button" aria-label="Like"><svg data-icon="host-like"></svg></button>
+        </div>
+      </main>
+    `;
+
+    const template = captureHostActionTemplate(document.body, 'assistant');
+    expect(template).not.toBeNull();
+    expect(template?.html).toBe('');
+    expect(template?.iconHtmlByAction?.copy).toContain('host-copy');
+    expect(template?.iconHtmlByAction?.like).toContain('host-like');
+    expect(template?.iconHtmlByAction?.share).toBeUndefined();
+    expect(instantiateHostActionTemplate(document, template!)).toBeNull();
+  });
+
   it('captures the turn action row instead of markdown code-block controls', () => {
     document.body.innerHTML = `
       <main>
@@ -279,6 +298,28 @@ describe('message actions', () => {
     };
 
     expect(resolveArchiveCopyText(entry)).toBe('First paragraph\n\nSecond paragraph');
+  });
+
+  it('preserves original parts formatting for archive copy text', () => {
+    const entry = {
+      id: 'history-entry',
+      source: 'parked-group',
+      role: 'assistant',
+      turnIndex: 0,
+      pairIndex: 0,
+      turnId: null,
+      liveTurnId: null,
+      groupId: null,
+      parts: ['Intro\n\n```bash\nip6tables -L\n```', '- keep list spacing'],
+      text: 'Intro ip6tables -L - keep list spacing',
+      renderKind: 'markdown-text',
+      contentType: null,
+      snapshotHtml: null,
+      structuredDetails: null,
+      hiddenFromConversation: false,
+    };
+
+    expect(resolveArchiveCopyText(entry)).toBe('Intro\n\n```bash\nip6tables -L\n```\n\n- keep list spacing');
   });
 
   it('writes rich clipboard payloads with text/html when supported', async () => {

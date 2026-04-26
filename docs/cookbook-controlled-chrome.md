@@ -230,38 +230,9 @@ Recovery:
 - Verify the page itself, not just the extension manager.
 - Put the launch recipe and the verification recipe in the same cookbook.
 
-## Legacy: Capturing Offline Real-Page Fixtures
+## Removed Offline Fixture Flow
 
-This flow can still be used to maintain offline ChatGPT fixture bundles, but that path is now historical and supplemental rather than the primary development workflow. Fake-host browser replay specs are no longer part of E2E.
-
-1. Launch a controlled browser and sign in:
-
-```bash
-pnpm debug:mcp-chrome -- https://chatgpt.com/
-```
-
-2. Capture the local-only fixture bundle:
-
-```bash
-pnpm legacy:fixtures:capture
-```
-
-`pnpm legacy:fixtures:capture` will connect to the logged-in controlled Chrome, clone that browser profile into a temporary capture profile, and record the fixture from there. Keep the source browser running and signed in while capture is in progress.
-
-3. Optionally move the bundle somewhere else on your machine:
-
-```bash
-TURBO_RENDER_FIXTURE_ROOT=/absolute/path pnpm legacy:fixtures:capture
-```
-
-4. Validate the bundle with the remaining legacy maintenance commands:
-
-```bash
-pnpm legacy:fixtures:check
-pnpm legacy:fixtures:diagnose <fixture-id>
-```
-
-The captured files live under `tests/fixtures-local/chatgpt` by default, are gitignored, and are only for local development/testing. The old browser replay specs have been removed, so these bundles are no longer treated as host-compatibility evidence.
+The old offline fixture capture and fake-host replay tooling has been removed from the active repository. Use the controlled Chrome flow above for live validation against the real ChatGPT host.
 
 ## Final Rule of Thumb
 

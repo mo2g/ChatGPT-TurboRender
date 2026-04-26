@@ -4,7 +4,6 @@ export type ConversationRouteKind = 'chat' | 'share' | 'home' | 'unknown';
 export type ParkingMode = 'hard' | 'soft';
 export type ParkingState = 'resident' | 'serialized';
 export type TurboRenderMode = 'performance' | 'compatibility';
-export type ColdRestoreMode = 'placeholder' | 'readOnly';
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN';
 export type ManagedHistorySource = 'initial-trim' | 'parked-group';
 export type HistoryAnchorMode = 'host-share' | 'safe-top' | 'hidden';
@@ -36,7 +35,6 @@ export interface Settings {
   initialTrimEnabled: boolean;
   initialHotTurns: number;
   liveHotTurns: number;
-  coldRestoreMode: ColdRestoreMode;
   softFallback: boolean;
   frameSpikeThresholdMs: number;
   frameSpikeCount: number;

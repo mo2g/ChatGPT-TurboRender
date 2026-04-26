@@ -2,140 +2,26 @@ import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_SETTINGS, UI_CLASS_NAMES } from '../../lib/shared/constants';
-import { getChatIdFromPathname } from '../../lib/shared/chat-id';
 import { TurboRenderController } from '../../lib/content/turbo-render-controller';
 import { StatusBar } from '../../lib/content/status-bar';
 import { installConversationBootstrap } from '../../lib/main-world/conversation-bootstrap';
 import type { ArchiveEntryAction } from '../../lib/content/message-actions';
-import type { InitialTrimSession, ManagedHistoryEntry } from '../../lib/shared/types';
+import type { ManagedHistoryEntry } from '../../lib/shared/types';
 import { mountGroupedTranscriptFixture, mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
-
-async function flush(): Promise<void> {
-  for (let index = 0; index < 4; index += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  }
-}
-
-type ArchiveBoundaryAction =
-  | 'open-archive-newest'
-  | 'go-archive-older'
-  | 'go-archive-newer'
-  | 'go-archive-recent';
-
-async function clickArchiveBoundaryAction(action: ArchiveBoundaryAction): Promise<void> {
-  const button = document.querySelector<HTMLButtonElement>(`[data-turbo-render-action="${action}"]`);
-  expect(button).not.toBeNull();
-  button?.click();
-  await flush();
-}
-
-async function openNewestArchivePage(): Promise<void> {
-  await clickArchiveBoundaryAction('open-archive-newest');
-}
-
-async function goOlderArchivePage(): Promise<void> {
-  await clickArchiveBoundaryAction('go-archive-older');
-}
-
-async function goNewerArchivePage(): Promise<void> {
-  await clickArchiveBoundaryAction('go-archive-newer');
-}
-
-async function goToRecentArchiveView(): Promise<void> {
-  await clickArchiveBoundaryAction('go-archive-recent');
-}
-
-async function toggleArchiveSearch(): Promise<void> {
-  const button = document.querySelector<HTMLButtonElement>('[data-turbo-render-action="toggle-archive-search"]');
-  expect(button).not.toBeNull();
-  button?.click();
-  await flush();
-}
-
-function getArchiveSearchInput(): HTMLInputElement | null {
-  return document.querySelector<HTMLInputElement>('[data-turbo-render-action="archive-search-input"]');
-}
-
-async function setArchiveSearchQuery(query: string): Promise<void> {
-  const input = getArchiveSearchInput();
-  expect(input).not.toBeNull();
-  input!.value = query;
-  input!.dispatchEvent(new Event('input', { bubbles: true }));
-  await flush();
-}
-
-async function clearArchiveSearch(): Promise<void> {
-  const button = document.querySelector<HTMLButtonElement>('[data-turbo-render-action="clear-archive-search"]');
-  expect(button).not.toBeNull();
-  button?.click();
-  await flush();
-}
-
-async function clickArchiveSearchResult(index = 0): Promise<void> {
-  const buttons = document.querySelectorAll<HTMLButtonElement>('[data-turbo-render-action="open-archive-search-result"]');
-  const button = buttons[index] ?? null;
-  expect(button).not.toBeNull();
-  button?.click();
-  await flush();
-}
-
-function createSessionTurn(
-  index: number,
-  override: Partial<{
-    role: 'user' | 'assistant' | 'system' | 'tool';
-    parts: string[];
-    renderKind: 'markdown-text' | 'host-snapshot' | 'structured-message';
-    contentType: string | null;
-    snapshotHtml: string | null;
-    structuredDetails: string | null;
-    hiddenFromConversation: boolean;
-  }> = {},
-) {
-  return {
-    id: `session-turn-${index}`,
-    role: override.role ?? (index % 2 === 0 ? 'user' as const : 'assistant' as const),
-    parts: override.parts ?? [`Turn ${index + 1} archived content.`],
-    renderKind: override.renderKind ?? 'markdown-text',
-    contentType: override.contentType ?? 'text',
-    snapshotHtml: override.snapshotHtml ?? null,
-    structuredDetails: override.structuredDetails ?? null,
-    hiddenFromConversation: override.hiddenFromConversation ?? false,
-    createTime: index,
-  };
-}
-
-function createInitialTrimSession(totalTurns: number, hotStartIndex: number): InitialTrimSession {
-  const turns = Array.from({ length: totalTurns }, (_, index) => createSessionTurn(index));
-  const totalPairs = Math.ceil(totalTurns / 2);
-  const hotTurnCount = totalTurns - hotStartIndex;
-  const hotPairCount = Math.ceil(hotTurnCount / 2);
-
-  return {
-    chatId: getChatIdFromPathname(document.location.pathname),
-    routeKind: document.location.pathname.includes('/share/') ? 'share' : 'chat',
-    routeId: document.location.pathname.split('/').filter(Boolean).at(-1) ?? null,
-    conversationId: 'conversation-inline-batches',
-    applied: true,
-    reason: 'trimmed',
-    mode: 'performance',
-    totalMappingNodes: totalTurns + 12,
-    totalVisibleTurns: totalTurns,
-    activeBranchLength: totalTurns,
-    hotVisibleTurns: hotTurnCount,
-    coldVisibleTurns: hotStartIndex,
-    initialHotPairs: hotPairCount,
-    hotPairCount,
-    archivedPairCount: totalPairs - hotPairCount,
-    initialHotTurns: hotPairCount * 2,
-    hotStartIndex,
-    hotTurnCount,
-    archivedTurnCount: hotStartIndex,
-    activeNodeId: `session-turn-${totalTurns - 1}`,
-    turns,
-    coldTurns: turns.slice(0, hotStartIndex),
-    capturedAt: Date.now(),
-  };
-}
+import {
+  clearArchiveSearch,
+  clickArchiveSearchResult,
+  createInitialTrimSession,
+  createSessionTurn,
+  flush,
+  getArchiveSearchInput,
+  goNewerArchivePage,
+  goOlderArchivePage,
+  goToRecentArchiveView,
+  openNewestArchivePage,
+  setArchiveSearchQuery,
+  toggleArchiveSearch,
+} from './controller-test-helpers';
 
 describe('TurboRenderController', () => {
   const activeControllers: TurboRenderController[] = [];
@@ -261,8 +147,6 @@ describe('TurboRenderController', () => {
     expect(inlineRoot?.querySelector(`.${UI_CLASS_NAMES.inlineHistoryBoundary}`)).not.toBeNull();
     expect(inlineRoot?.querySelector('[data-turbo-render-batch-anchor="true"]')).toBeNull();
     expect(inlineRoot?.nextElementSibling).toBe(fixture.transcript);
-    expect(document.querySelector(`.${UI_CLASS_NAMES.historyTrigger}`)).toBeNull();
-    expect(document.querySelector(`.${UI_CLASS_NAMES.archiveRoot}`)).toBeNull();
 
     const status = controller.getStatus();
     expect(status.archivedTurnsTotal).toBe(14);
@@ -459,6 +343,65 @@ describe('TurboRenderController', () => {
     expect(controller.getStatus().expandedBatchCount).toBeGreaterThan(0);
     expect(fixture.transcript.querySelectorAll('[data-testid^="conversation-turn-"]')).toHaveLength(10);
     expect(document.querySelectorAll('[data-turbo-render-group-id]')).toHaveLength(0);
+  });
+
+  it('uses captured host icons for fallback archive action buttons when a full host row is unavailable', async () => {
+    mountTranscriptFixture(document, { turnCount: 20, streaming: false });
+    document
+      .querySelectorAll<HTMLElement>(
+        '[data-message-author-role="assistant"] button[data-testid="share-turn-action-button"], [data-message-author-role="assistant"] button[data-testid="more-turn-action-button"]',
+      )
+      .forEach((button) => button.remove());
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 10,
+        minDescendants: 100,
+        keepRecentPairs: 5,
+        liveHotPairs: 5,
+        batchPairCount: 5,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+
+    const session = createInitialTrimSession(20, 10);
+    for (const [index, turn] of session.turns.entries()) {
+      turn.parts = [`Turn ${index + 1} primary content.`];
+    }
+    session.coldTurns = session.turns.slice(0, session.archivedTurnCount);
+    controller.setInitialTrimSession(session);
+    controller.start();
+    await flush();
+    await flush();
+
+    const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
+    await openNewestArchivePage();
+    inlineRoot?.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+    await flush();
+    await flush();
+
+    const firstEntry = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`);
+    const assistantActions = firstEntry?.querySelector<HTMLElement>(
+      `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+    );
+    expect(assistantActions).not.toBeNull();
+    expect(assistantActions?.dataset.template).toBe('fallback');
+
+    const copyButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="copy-turn-action-button"]');
+    const likeButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="good-response-turn-action-button"]');
+    const dislikeButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="bad-response-turn-action-button"]');
+    const shareButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="share-turn-action-button"]');
+    const moreButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]');
+    expect(copyButton?.dataset.turboRenderIconTemplate).toBe('host');
+    expect(likeButton?.dataset.turboRenderIconTemplate).toBe('host');
+    expect(dislikeButton?.dataset.turboRenderIconTemplate).toBe('host');
+    expect(shareButton?.dataset.turboRenderIconTemplate).toBe('local');
+    expect(moreButton?.dataset.turboRenderIconTemplate).toBe('local');
+    expect(copyButton?.querySelector<SVGSVGElement>('svg')?.style.width).toBe('16px');
   });
 
   it('switches between archive pages and returns to the recent view', async () => {
@@ -1375,7 +1318,126 @@ describe('TurboRenderController', () => {
     }
   }, 30_000);
 
-  it('keeps archived More clicks on the TurboRender menu even when host popovers are available', async () => {
+  it('falls back to the official message feedback endpoint when archived actions have no host button', async () => {
+    const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    history.replaceState({}, '', '/c/chat-123');
+    document.body.innerHTML = '<main><section><p>Hydrating conversation shell.</p></section></main>';
+
+    const session = createInitialTrimSession(12, 8);
+    const payload = {
+      current_node: session.turns.at(-1)?.id ?? null,
+      mapping: Object.fromEntries(
+        session.turns.map((turn, index) => [
+          turn.id,
+          {
+            id: turn.id,
+            parent: index > 0 ? session.turns[index - 1]?.id ?? null : null,
+            children: index + 1 < session.turns.length ? [session.turns[index + 1]!.id] : [],
+            message: {
+              id: turn.id,
+              author: { role: turn.role },
+              content: { content_type: 'text', parts: turn.parts },
+              create_time: index,
+            },
+          },
+        ]),
+      ),
+    };
+    (window as Window & { __turboRenderConversationPayloadCache?: Record<string, unknown> })
+      .__turboRenderConversationPayloadCache = {
+        'chat-123': payload,
+        'conversation-inline-batches': payload,
+      };
+
+    const feedbackBodies: unknown[] = [];
+    const originalFetch = window.fetch;
+    window.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/auth/session')) {
+        return new Response(
+          JSON.stringify({
+            accessToken: 'test-access-token',
+            expires: new Date(Date.now() + 60_000).toISOString(),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.includes('/backend-api/conversation/chat-123') || url.includes('/backend-api/conversation/conversation-inline-batches')) {
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/backend-api/conversation/message_feedback')) {
+        feedbackBodies.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+
+    const controller = new TurboRenderController({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        language: 'en',
+        minFinalizedBlocks: 1,
+        minDescendants: 1,
+        keepRecentPairs: 2,
+        liveHotPairs: 2,
+        batchPairCount: 2,
+      },
+      paused: false,
+      mountUi: true,
+    });
+    activeControllers.push(controller);
+    controller.setInitialTrimSession(session);
+
+    try {
+      controller.start();
+      await flush();
+      await openNewestArchivePage();
+      document.querySelector<HTMLButtonElement>(`.${UI_CLASS_NAMES.inlineBatchAction}`)?.click();
+      await flush();
+      await flush();
+
+      const likeButton = document.querySelector<HTMLButtonElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"] button[data-testid="good-response-turn-action-button"]`,
+      );
+      expect(likeButton).not.toBeNull();
+      expect(likeButton?.disabled).toBe(false);
+
+      likeButton?.click();
+      await flush();
+      await flush();
+      await flush();
+
+      expect(feedbackBodies).toEqual([
+        {
+          message_id: 'session-turn-1',
+          conversation_id: 'chat-123',
+          rating: 'thumbsUp',
+        },
+      ]);
+      const likedActions = document.querySelector<HTMLElement>(
+        `.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`,
+      );
+      const likedButton = likedActions?.querySelector<HTMLButtonElement>(
+        'button[data-testid="good-response-turn-action-button"]',
+      );
+      expect(likedButton?.getAttribute('aria-pressed')).toBe('true');
+      expect(likedButton?.querySelector('svg')?.style.filter).toBe('brightness(0)');
+      expect(likedActions?.querySelector('button[data-testid="bad-response-turn-action-button"]')).toBeNull();
+    } finally {
+      window.fetch = originalFetch;
+      controller.stop();
+      activeControllers.splice(activeControllers.indexOf(controller), 1);
+      history.replaceState({}, '', originalPath);
+    }
+  }, 30_000);
+
+  it('prefers the host More popover when host popovers are available', async () => {
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     history.replaceState({}, '', '/c/chat-123');
     mountTranscriptFixture(document, { turnCount: 20, streaming: false });
@@ -1394,6 +1456,18 @@ describe('TurboRenderController', () => {
     });
     activeControllers.push(controller);
     vi.spyOn(controller as unknown as { shouldPreferHostMorePopover(): boolean }, 'shouldPreferHostMorePopover').mockReturnValue(true);
+    const toggleHostMoreMenuSpy = vi
+      .spyOn(
+        controller as unknown as {
+          toggleHostMoreMenu(
+            groupId: string,
+            entry: ManagedHistoryEntry,
+            anchorGetter: () => HTMLElement | null,
+          ): Promise<boolean>;
+        },
+        'toggleHostMoreMenu',
+      )
+      .mockResolvedValue(true);
     controller.setInitialTrimSession(createInitialTrimSession(20, 10));
 
     try {
@@ -1416,11 +1490,8 @@ describe('TurboRenderController', () => {
       await flush();
 
       const moreMenu = inlineRoot?.querySelector<HTMLElement>('[data-turbo-render-entry-menu="true"]');
-      expect(moreMenu).not.toBeNull();
-      expect(moreMenu?.closest('[data-turbo-render-batch-anchor="true"]')).not.toBeNull();
-      expect(moreMenu?.closest(`.${UI_CLASS_NAMES.inlineBatchEntry}`)).not.toBeNull();
-      expect(moreMenu?.textContent).toContain('Read aloud');
-      expect(document.body.dataset.hostActionMoreCount).toBe('0');
+      expect(toggleHostMoreMenuSpy).toHaveBeenCalled();
+      expect(moreMenu).toBeNull();
     } finally {
       controller.stop();
       activeControllers.splice(activeControllers.indexOf(controller), 1);
@@ -1428,7 +1499,7 @@ describe('TurboRenderController', () => {
     }
   }, 30_000);
 
-  it('does not fake archived like and dislike state when host action binding fails', async () => {
+  it('does not fake archived like and dislike state when no host action or backend fallback is available', async () => {
     const originalPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     history.replaceState({}, '', '/c/chat-123');
     mountTranscriptFixture(document, { turnCount: 20, streaming: false });
@@ -1458,7 +1529,15 @@ describe('TurboRenderController', () => {
       },
       'resolveHostArchiveActionBinding',
     ).mockReturnValue(null);
-    controller.setInitialTrimSession(createInitialTrimSession(20, 10));
+    vi.spyOn(
+      controller as unknown as {
+        getConversationIdForReadAloud(): string | null;
+      },
+      'getConversationIdForReadAloud',
+    ).mockReturnValue(null);
+    const session = createInitialTrimSession(20, 10);
+    session.conversationId = null;
+    controller.setInitialTrimSession(session);
 
     try {
       controller.start();
@@ -2266,7 +2345,7 @@ describe('TurboRenderController', () => {
     }).positionVisibleHostMenuToAnchor(menu, anchor);
 
     expect(menu.style.position).toBe('fixed');
-    expect(menu.style.left).toBe('200px');
+    expect(menu.style.left).toBe('48px');
     expect(menu.style.top).toBe('72px');
     expect(menu.dataset.turboRenderHostMenuPlacement).toBe('below');
 
@@ -2317,7 +2396,7 @@ describe('TurboRenderController', () => {
     }).positionVisibleHostMenuToAnchor(menu, anchor);
 
     expect(menu.style.position).toBe('fixed');
-    expect(menu.style.left).toBe('200px');
+    expect(menu.style.left).toBe('48px');
     expect(menu.style.top).toBe('392px');
     expect(menu.dataset.turboRenderHostMenuPlacement).toBe('above');
 
@@ -2337,7 +2416,8 @@ describe('TurboRenderController', () => {
       positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void;
     }).positionVisibleHostMenuToAnchor(menu, anchor);
 
-    expect(Number.parseInt(menu.style.top, 10)).toBeLessThan(0);
+    expect(menu.style.top).toBe('8px');
+    expect(menu.dataset.turboRenderHostMenuPlacement).toBe('below');
   });
 
   it('dispatches host clicks through React handlers when host props are available', () => {
@@ -2461,6 +2541,18 @@ describe('TurboRenderController', () => {
       controller as unknown as { shouldPreferHostMorePopover: () => boolean },
       'shouldPreferHostMorePopover',
     ).mockReturnValue(true);
+    const toggleHostMoreMenuSpy = vi
+      .spyOn(
+        controller as unknown as {
+          toggleHostMoreMenu(
+            groupId: string,
+            entry: ManagedHistoryEntry,
+            anchorGetter: () => HTMLElement | null,
+          ): Promise<boolean>;
+        },
+        'toggleHostMoreMenu',
+      )
+      .mockResolvedValue(false);
 
     const inlineRoot = document.querySelector<HTMLElement>('[data-turbo-render-inline-history-root="true"]');
     await openNewestArchivePage();
@@ -2478,8 +2570,16 @@ describe('TurboRenderController', () => {
       `.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`,
     );
     expect(openHostMenuSpy).not.toHaveBeenCalled();
+    expect(toggleHostMoreMenuSpy).toHaveBeenCalledTimes(1);
     expect(fallbackMenu).not.toBeNull();
     expect(fallbackMenu?.textContent).toContain('Branch');
+
+    assistantMoreButton?.click();
+    await flush();
+    expect(toggleHostMoreMenuSpy).toHaveBeenCalledTimes(1);
+    expect(
+      inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActionMenu}[data-turbo-render-entry-menu="true"]`),
+    ).toBeNull();
   });
 
   it('copies folded assistant entries with rich clipboard data and local copied feedback', async () => {
@@ -2848,7 +2948,6 @@ describe('TurboRenderController', () => {
             initialTrimEnabled: true,
             initialHotPairs: 2,
             minFinalizedBlocks: 4,
-            coldRestoreMode: 'placeholder',
           },
         },
       }),
@@ -3391,6 +3490,9 @@ describe('TurboRenderController', () => {
 
     const assistantActions = inlineRoot?.querySelector<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryActions}[data-lane="assistant"]`);
     expect(assistantActions).not.toBeNull();
+    const shareButton = assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="share-turn-action-button"]');
+    expect(shareButton?.disabled).toBe(true);
+    expect(shareButton?.title).toContain('官方分享按钮');
     assistantActions?.querySelector<HTMLButtonElement>('button[data-testid="more-turn-action-button"]')?.click();
     await flush();
     const refreshedAssistantActions = inlineRoot?.querySelector<HTMLElement>(

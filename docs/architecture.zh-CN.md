@@ -2,7 +2,7 @@
 
 这份文档描述的是 TurboRender 当前的落地架构：把 ChatGPT 的最新对话保留在原生热区里，把更早历史移到扩展自管的归档区，从而降低长会话里的输入和滚动压力。
 
-[English version](./architecture.md)
+[English version](./architecture.md) | [重构设计与避坑指南](./refactor-design-and-pitfalls.zh-CN.md) | [归档 Action 复用边界](./action-reuse-map.zh-CN.md)
 
 ## 问题模型
 

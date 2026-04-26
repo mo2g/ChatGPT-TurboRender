@@ -221,7 +221,7 @@ pnpm test:e2e -- --use-active-tab
 * `pnpm test:e2e` 已切到主线真实页 smoke，并默认使用 `https://chatgpt.com/c/ceb4ea77-5357-49fb-b35c-607b533846f1`
 * `pnpm test:e2e:live` 保留为同一套 smoke 的显式别名
 * popup 等扩展自有界面留在宿主 E2E 之外，继续通过单元/集成测试和手工检查保障
-* `pnpm legacy:fixtures:*` 只保留历史 fixture 维护，不再提供宿主 E2E
+* 旧离线 fixture 捕获、检查和假宿主回放工具已从当前有效测试面移除
 
 因此本次需求的一个明确工作项是：
 

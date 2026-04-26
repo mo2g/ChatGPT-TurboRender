@@ -324,7 +324,7 @@ context.route('https://chatgpt.com/backend-api/synthesize*', async (route) => {
 
 ### 任务
 
-1. 实现 `legacy:fixtures:capture`
+1. 实现离线 fixture 捕获命令（历史任务，当前已移除）
 
    * 输出 `meta.json`
    * 输出 `shell.html`

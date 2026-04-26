@@ -231,6 +231,30 @@ describe('popup entrypoint', () => {
     expect(document.querySelector<HTMLButtonElement>('#toggle-chat-mode')?.textContent).toContain('TurboRender this chat');
   });
 
+  it('renders archive-only share status as active instead of unsupported', async () => {
+    await loadPopup(async () =>
+      createStatus({
+        activeTabSupportedHost: true,
+        activeTabRouteKind: 'share',
+        runtime: createRuntime({
+          supported: false,
+          reason: 'no-turns',
+          archiveOnly: true,
+          chatId: 'share:test-share',
+          routeKind: 'share',
+          active: true,
+        }),
+      }),
+    );
+
+    const hero = document.querySelector<HTMLElement>('[data-popup-state="active"]');
+    expect(hero).not.toBeNull();
+    expect(hero?.textContent).toContain('Archive-only');
+    expect(hero?.textContent).not.toContain('Unsupported on this page');
+    expect(document.querySelector('[data-popup-section="current-tab"]')).not.toBeNull();
+    expect(document.querySelector('[data-popup-section="settings"]')).not.toBeNull();
+  });
+
   it('shows the recovery copy when status comes from another supported tab', async () => {
     await loadPopup(async () =>
       createStatus({

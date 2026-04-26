@@ -1,12 +1,15 @@
 import {
-  BUILD_SIGNATURE,
   DEFAULT_SETTINGS,
   TURN_ID_DATASET,
   TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_QUERY,
   TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_STORAGE_KEY,
   UI_CLASS_NAMES,
 } from '../shared/constants';
-import { getChatIdFromPathname, getRouteIdFromRuntimeId, getRouteKindFromRuntimeId } from '../shared/chat-id';
+import { getChatIdFromPathname, getRouteIdFromRuntimeId } from '../shared/chat-id';
+import {
+  resolveResidentArchivePageIndexes,
+  type ArchiveUiState,
+} from './archive-ui-state';
 import {
   createTranslator,
   getContentLanguage,
@@ -15,7 +18,6 @@ import {
 } from '../shared/i18n';
 import type {
   ArchivePageMatch,
-  ArchivePageMeta,
   IndexRange,
   InitialTrimSession,
   ManagedHistoryEntry,
@@ -23,16 +25,11 @@ import type {
   Settings,
   TabRuntimeStatus,
   TurnRecord,
-  TurnRole,
 } from '../shared/types';
 
 import {
-  buildTurnsFromFixture,
-  checkFixtureCompatibility,
   detectTurnRole,
-  getFixtureData,
   isStreamingTurn,
-  isTurnNode,
   isTurboRenderUiNode,
   scanChatPage,
 } from './chatgpt-adapter';
@@ -45,7 +42,6 @@ import {
   findHostActionButton,
   resolveArchiveCopyText,
   type ArchiveEntryAction,
-  type EntryActionAvailability,
   type EntryActionAvailabilityMap,
   type EntryActionMenuSelection,
   type EntryActionRequest,
@@ -56,7 +52,32 @@ import {
   type HostActionTemplateSnapshot,
   type EntryMoreMenuAction,
 } from './message-actions';
+import {
+  buildEntryActionAvailabilityMap,
+  buildEntryActionTemplateMap,
+  shouldResolveEntryMetadataForGroup,
+} from './entry-action-state';
 import { shouldAutoActivate } from './layout';
+import { dispatchHumanClick as dispatchHostHumanClick } from './host-action-events';
+import {
+  doesHostActionButtonMatchEntry as doesHostActionButtonMatchArchiveEntry,
+  normalizeEntryText,
+} from './host-action-matching';
+import { HostMenuPositioning } from './host-menu-positioning';
+import {
+  findHostMessageIdForEntryInScope,
+  findParkedMessageIdForEntryInGroup,
+  findRenderedArchiveMessageIdFromActionAnchor,
+} from './host-message-id-resolver';
+import {
+  findHostMoreMenuAction as findHostMoreMenuActionInMenu,
+  readHostEntryActionSelection as readHostEntryActionSelectionFromRoots,
+} from './host-more-menu-actions';
+import { shouldRefreshForMutations as shouldRefreshForMutationBatch } from './mutation-refresh-filter';
+import { computeVisibleRangeFromTurnContainer } from './visible-range';
+import { isProtectedTurn as isProtectedTurnNode } from './protected-turn';
+import { buildRuntimeStatus } from './runtime-status-builder';
+import { waitForHostElement } from './host-action-wait';
 import {
   ManagedHistoryStore,
   extractMessageIdFromHtml,
@@ -66,9 +87,36 @@ import {
 } from './managed-history';
 import { ArchivePager } from './archive-pager';
 import { ParkingLot } from './parking-lot';
+import {
+  ReadAloudBackendClient,
+  buildReadAloudSynthesizeUrl,
+  createIncludeCredentialsRequestInit,
+  getResolvedConversationReadAloudMessageId,
+  isDebugReadAloudBackendEnabled,
+  resolveDebugConversationId,
+  resolveDebugReadAloudUrl,
+  resolveEntryHostMessageIdFromConversationPayload,
+  setReadAloudRequestContext,
+  shouldAllowLocalReadAloudFallback,
+  shouldUseBackendReadAloud,
+} from './read-aloud-backend';
+import { findHostReadAloudStopButton } from './read-aloud-host-controls';
+import { tryStreamReadAloudResponse } from './read-aloud-streaming';
 import { StatusBar } from './status-bar';
 import type { ConversationPayload } from '../shared/conversation-trim';
 import { resolveReadAloudMessageIdFromPayload } from '../shared/conversation-trim';
+import {
+  areSettingsEquivalent,
+  cancelIdleCallbackCompat,
+  computeTurnContentRevision,
+  countLiveDescendants,
+  matchesHostActionCandidate,
+  requestAnimationFrameCompat,
+  requestIdleCallbackCompat,
+  resolveMessageId,
+  resolveRealMessageId,
+  toSet,
+} from './turbo-render-controller-utils';
 
 export interface TurboRenderControllerOptions {
   document?: Document;
@@ -92,40 +140,6 @@ type HostArchiveActionBinding = {
   button: HTMLElement;
 };
 
-function requestAnimationFrameCompat(win: Window, callback: FrameRequestCallback): number {
-  return win.requestAnimationFrame?.(callback) ?? win.setTimeout(() => callback(win.performance.now()), 16);
-}
-
-function cancelAnimationFrameCompat(win: Window, handle: number): void {
-  if (win.cancelAnimationFrame != null) {
-    win.cancelAnimationFrame(handle);
-  } else {
-    win.clearTimeout(handle);
-  }
-}
-
-function requestIdleCallbackCompat(win: Window, callback: IdleRequestCallback): number {
-  return (
-    win.requestIdleCallback?.(callback, { timeout: 250 }) ??
-    win.setTimeout(
-      () =>
-        callback({
-          didTimeout: false,
-          timeRemaining: () => 0,
-        }),
-      16,
-    )
-  );
-}
-
-function cancelIdleCallbackCompat(win: Window, handle: number): void {
-  if (win.cancelIdleCallback != null) {
-    win.cancelIdleCallback(handle);
-  } else {
-    win.clearTimeout(handle);
-  }
-}
-
 const SCROLL_RESTORE_IGNORE_MS = 240;
 const READ_ALOUD_SNAPSHOT_FAILURE_MS = 120_000;
 const HOST_MENU_WAIT_TIMEOUT_MS = 1_000;
@@ -133,263 +147,7 @@ const HOST_MENU_ACTION_WAIT_TIMEOUT_MS = 2_000;
 const LARGE_CONVERSATION_TURN_THRESHOLD = 600;
 const LARGE_CONVERSATION_REFRESH_DELAY_MS = 180;
 const ARCHIVE_PAGE_PAIR_COUNT = 20;
-const DESCENDANT_COUNT_CAP = 4_000;
 const DESCENDANT_COUNT_SAMPLE_INTERVAL_MS = 1_500;
-
-function countLiveDescendants(root: ParentNode | null): number {
-  if (root == null || !('ownerDocument' in root)) {
-    return 0;
-  }
-
-  const doc = root instanceof Document ? root : root.ownerDocument;
-  if (doc == null) {
-    return 0;
-  }
-
-  const showElement = doc.defaultView?.NodeFilter?.SHOW_ELEMENT ?? 1;
-  const walker = doc.createTreeWalker(root, showElement);
-  let count = 0;
-  while (walker.nextNode()) {
-    count += 1;
-    if (count >= DESCENDANT_COUNT_CAP) {
-      return DESCENDANT_COUNT_CAP;
-    }
-  }
-  return count;
-}
-
-function toSet(values: string[]): Set<string> {
-  return new Set(values);
-}
-
-function areSettingsEquivalent(left: Settings, right: Settings): boolean {
-  return (
-    left.enabled === right.enabled &&
-    left.autoEnable === right.autoEnable &&
-    left.language === right.language &&
-    left.mode === right.mode &&
-    left.minFinalizedBlocks === right.minFinalizedBlocks &&
-    left.minDescendants === right.minDescendants &&
-    left.keepRecentPairs === right.keepRecentPairs &&
-    left.batchPairCount === right.batchPairCount &&
-    left.initialHotPairs === right.initialHotPairs &&
-    left.liveHotPairs === right.liveHotPairs &&
-    left.keepRecentTurns === right.keepRecentTurns &&
-    left.viewportBufferTurns === right.viewportBufferTurns &&
-    left.groupSize === right.groupSize &&
-    left.initialTrimEnabled === right.initialTrimEnabled &&
-    left.initialHotTurns === right.initialHotTurns &&
-    left.liveHotTurns === right.liveHotTurns &&
-    left.coldRestoreMode === right.coldRestoreMode &&
-    left.softFallback === right.softFallback &&
-    left.frameSpikeThresholdMs === right.frameSpikeThresholdMs &&
-    left.frameSpikeCount === right.frameSpikeCount &&
-    left.frameSpikeWindowMs === right.frameSpikeWindowMs
-  );
-}
-
-const HOST_ACTION_LABEL_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
-  copy: [/^copy\b/i, /\bcopy\b/i, /复制/],
-  like: [/^like\b/i, /\blike\b/i, /thumbs?\s*up/i, /upvote/i, /喜欢/, /赞/],
-  dislike: [/^dislike\b/i, /\bdislike\b/i, /thumbs?\s*down/i, /downvote/i, /不喜欢/, /踩/],
-  share: [/^share\b/i, /\bshare\b/i, /分享/],
-  more: [
-    /^more\b/i,
-    /\bmore\s+actions?\b/i,
-    /\bmore\s+options?\b/i,
-    /\boptions?\b/i,
-    /\bmenu\b/i,
-    /更多操作/,
-    /更多/,
-    /⋯/,
-    /…/,
-  ],
-};
-
-const HOST_ACTION_TESTID_PATTERNS: Record<ArchiveEntryAction, RegExp[]> = {
-  copy: [/^copy-turn-action-button$/i],
-  like: [/^good-response-turn-action-button$/i, /^like-turn-action-button$/i],
-  dislike: [/^bad-response-turn-action-button$/i, /^dislike-turn-action-button$/i],
-  share: [/^share-turn-action-button$/i],
-  more: [/^more-turn-action-button$/i],
-};
-
-interface ArchiveUiState {
-  archivePageCount: number;
-  currentArchivePageIndex: number | null;
-  currentArchivePageMeta: ArchivePageMeta | null;
-  isRecentView: boolean;
-  archiveGroups: ManagedHistoryGroup[];
-  currentPageGroups: ManagedHistoryGroup[];
-  collapsedBatchCount: number;
-  expandedBatchCount: number;
-}
-
-function findClosestTurnNode(target: Node | null): HTMLElement | null {
-  if (!(target instanceof Element)) {
-    return null;
-  }
-
-  if (isTurboRenderUiNode(target)) {
-    return null;
-  }
-
-  const candidate =
-    (isTurnNode(target) ? target : null) ??
-    target.closest<HTMLElement>('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn');
-
-  return candidate != null && !isTurboRenderUiNode(candidate) ? candidate : null;
-}
-
-function resolveMessageId(node: HTMLElement | null): string | null {
-  if (node == null || isTurboRenderUiNode(node)) {
-    return null;
-  }
-
-  const turnContainer =
-    node.closest<HTMLElement>('[data-testid^="conversation-turn-"], .conversation-turn, article') ??
-    node.parentElement;
-
-  const candidates: string[] = [];
-  const appendCandidates = (root: HTMLElement | null): void => {
-    if (root == null) {
-      return;
-    }
-
-    const direct = root.getAttribute('data-host-message-id')?.trim() ?? root.getAttribute('data-message-id')?.trim();
-    if (direct != null && direct.length > 0) {
-      candidates.push(direct);
-    }
-
-    for (const descendant of root.querySelectorAll<HTMLElement>('[data-host-message-id], [data-message-id]')) {
-      const messageId =
-        descendant.getAttribute('data-host-message-id')?.trim() ??
-        descendant.getAttribute('data-message-id')?.trim();
-      if (messageId != null && messageId.length > 0) {
-        candidates.push(messageId);
-      }
-    }
-  };
-
-  appendCandidates(node);
-  if (turnContainer != null && turnContainer !== node) {
-    appendCandidates(turnContainer);
-  }
-
-  let current = node.parentElement;
-  while (current != null) {
-    const ancestorId = current.getAttribute('data-host-message-id')?.trim() ?? current.getAttribute('data-message-id')?.trim();
-    if (ancestorId != null && ancestorId.length > 0) {
-      candidates.push(ancestorId);
-    }
-    for (const descendant of current.querySelectorAll<HTMLElement>('[data-host-message-id], [data-message-id]')) {
-      const messageId =
-        descendant.getAttribute('data-host-message-id')?.trim() ??
-        descendant.getAttribute('data-message-id')?.trim();
-      if (messageId != null && messageId.length > 0) {
-        candidates.push(messageId);
-      }
-    }
-    current = current.parentElement;
-  }
-
-  return resolvePreferredMessageId(...candidates);
-}
-
-function resolveRealMessageId(...candidates: Array<string | null | undefined>): string | null {
-  const resolved = resolvePreferredMessageId(...candidates);
-  if (resolved == null || isSyntheticMessageId(resolved)) {
-    return null;
-  }
-
-  return resolved;
-}
-
-function resolveSyntheticTurnIndex(...candidates: Array<string | null | undefined>): number | null {
-  for (const candidate of candidates) {
-    const messageId = candidate?.trim() ?? '';
-    if (messageId.length === 0 || !messageId.startsWith('turn-')) {
-      continue;
-    }
-
-    const syntheticBody = messageId.slice('turn-'.length);
-    const syntheticParts = syntheticBody.split('-');
-    if (syntheticParts.length < 3) {
-      continue;
-    }
-
-    const turnIndexText = syntheticParts.at(-2) ?? '';
-    if (!/^\d+$/.test(turnIndexText)) {
-      continue;
-    }
-
-    const turnIndex = Number.parseInt(turnIndexText, 10);
-    if (Number.isSafeInteger(turnIndex) && turnIndex >= 0) {
-      return turnIndex;
-    }
-  }
-
-  return null;
-}
-
-function getCandidateLabel(node: HTMLElement): string {
-  return [
-    node.getAttribute('aria-label'),
-    node.getAttribute('title'),
-    node.textContent,
-  ]
-    .filter((value): value is string => value != null && value.trim().length > 0)
-    .join(' ')
-    .trim();
-}
-
-function computeTurnContentRevision(
-  node: HTMLElement,
-  role: TurnRole,
-  messageId: string | null,
-  isStreaming: boolean,
-): string {
-  const hostMessageId = node.getAttribute('data-host-message-id')?.trim() ?? '';
-  const busy = node.getAttribute('aria-busy') === 'true' ? '1' : '0';
-  const childCount = node.childElementCount;
-  const firstTag = node.firstElementChild?.tagName ?? '';
-  const lastTag = node.lastElementChild?.tagName ?? '';
-  return [role, messageId ?? '', hostMessageId, busy, isStreaming ? '1' : '0', String(childCount), firstTag, lastTag]
-    .join('|');
-}
-
-function matchesHostActionCandidate(candidate: HTMLElement, action: ArchiveEntryAction): boolean {
-  const testId = candidate.getAttribute('data-testid');
-  if (testId != null && HOST_ACTION_TESTID_PATTERNS[action].some((pattern) => pattern.test(testId))) {
-    return true;
-  }
-
-  const label = getCandidateLabel(candidate);
-  return HOST_ACTION_LABEL_PATTERNS[action].some((pattern) => pattern.test(label));
-}
-
-function buildEntryTextSearchCandidates(entry: ManagedHistoryEntry): string[] {
-  const rawCandidates = [
-    resolveArchiveCopyText(entry),
-    entry.text,
-    ...entry.parts,
-  ];
-
-  const normalized = new Set<string>();
-  for (const candidate of rawCandidates) {
-    const text = candidate.replace(/\s+/g, ' ').trim();
-    if (text.length === 0) {
-      continue;
-    }
-
-    normalized.add(text);
-    normalized.add(text.slice(0, 192).trim());
-    normalized.add(text.slice(0, 128).trim());
-    normalized.add(text.slice(0, 80).trim());
-  }
-
-  return [...normalized].filter((candidate) => candidate.length > 0);
-}
 
 export class TurboRenderController {
   private readonly doc: Document;
@@ -403,6 +161,8 @@ export class TurboRenderController {
   private readonly parkingLot = new ParkingLot();
   private readonly managedHistory = new ManagedHistoryStore();
   private readonly archivePager = new ArchivePager();
+  private readonly readAloudBackend: ReadAloudBackendClient;
+  private readonly hostMenuPositioning: HostMenuPositioning;
   private mutationObserver: MutationObserver | null = null;
   private observedMutationRoot: Node | null = null;
   private observedRootKind: 'live-turn-container' | 'archive-only-root' = 'archive-only-root';
@@ -446,18 +206,11 @@ export class TurboRenderController {
   private entryActionReadAloudAbortController: AbortController | null = null;
   private entryActionCopiedEntryKey: string | null = null;
   private entryActionCopiedResetHandle: number | null = null;
-  private anchoredHostMenu: {
-    target: HTMLElement;
-    menu: HTMLElement;
-    previousInlineStyle: string | null;
-  } | null = null;
   private pendingHostMoreActionRestore: (() => void) | null = null;
   private readonly readAloudConversationPayloadCache = new Map<string, ConversationPayload>();
   private readonly readAloudConversationSnapshotPrimed = new Set<string>();
   private readonly readAloudConversationSnapshotRequests = new Map<string, Promise<void>>();
   private readonly readAloudConversationSnapshotFailures = new Map<string, number>();
-  private readAloudAccessToken: { value: string; expiresAt: number } | null = null;
-  private readAloudAccessTokenRequest: Promise<string | null> | null = null;
   private ignoreMutationsUntil = 0;
   private ignoreScrollUntil = 0;
   private archiveUiSyncHandle: number | null = null;
@@ -495,6 +248,12 @@ export class TurboRenderController {
     this.contentScriptInstanceId = options.contentScriptInstanceId ?? 'unknown-instance';
     this.contentScriptStartedAt = options.contentScriptStartedAt ?? Date.now();
     this.chatId = getChatIdFromPathname(this.doc.location?.pathname ?? '/');
+    this.readAloudBackend = new ReadAloudBackendClient(this.win);
+    this.hostMenuPositioning = new HostMenuPositioning(
+      this.doc,
+      this.win,
+      () => this.statusBar?.getTopPageChromeOffset?.() ?? 0,
+    );
     this.frameSpikeMonitor = new FrameSpikeMonitor(
       this.win,
       this.settings.frameSpikeThresholdMs,
@@ -617,6 +376,10 @@ export class TurboRenderController {
 
   getStatus(): TabRuntimeStatus {
     return this.runtimeStatus;
+  }
+
+  refreshForRuntimeStatusRequest(): void {
+    this.refreshNow();
   }
 
   setSettings(settings: Settings): void {
@@ -746,69 +509,7 @@ export class TurboRenderController {
   }
 
   private clearReadAloudAccessToken(): void {
-    this.readAloudAccessToken = null;
-    this.readAloudAccessTokenRequest = null;
-  }
-
-  private async resolveReadAloudAccessToken(): Promise<string | null> {
-    const cached = this.readAloudAccessToken;
-    if (cached != null && cached.expiresAt > Date.now()) {
-      return cached.value;
-    }
-
-    if (this.readAloudAccessTokenRequest != null) {
-      return this.readAloudAccessTokenRequest;
-    }
-
-    const request = (async () => {
-      try {
-        const sessionUrl = new URL('/api/auth/session', this.win.location.origin);
-        const response = await this.win.fetch(sessionUrl.toString(), {
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          this.clearReadAloudAccessToken();
-          return null;
-        }
-
-        const payload = (await response.json()) as {
-          accessToken?: unknown;
-          expires?: unknown;
-        };
-        const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken.trim() : '';
-        if (accessToken.length === 0) {
-          this.clearReadAloudAccessToken();
-          return null;
-        }
-
-        const expiresAt =
-          typeof payload.expires === 'string'
-            ? Math.min(Date.parse(payload.expires) - 60_000, Date.now() + 10 * 60_000)
-            : Date.now() + 10 * 60_000;
-        this.readAloudAccessToken = {
-          value: accessToken,
-          expiresAt: Number.isFinite(expiresAt) && expiresAt > Date.now() ? expiresAt : Date.now() + 60_000,
-        };
-        return accessToken;
-      } catch {
-        this.clearReadAloudAccessToken();
-        return null;
-      }
-    })();
-
-    this.readAloudAccessTokenRequest = request;
-    try {
-      return await request;
-    } finally {
-      if (this.readAloudAccessTokenRequest === request) {
-        this.readAloudAccessTokenRequest = null;
-      }
-    }
-  }
-
-  private async buildReadAloudAuthorizationHeaders(): Promise<HeadersInit | undefined> {
-    const accessToken = await this.resolveReadAloudAccessToken();
-    return accessToken == null ? undefined : { Authorization: `Bearer ${accessToken}` };
+    this.readAloudBackend.clearAccessToken();
   }
 
   private async ensureConversationSnapshotForReadAloud(conversationId: string | null): Promise<void> {
@@ -837,11 +538,9 @@ export class TurboRenderController {
           this.win.location.origin,
         );
         snapshotUrl.searchParams.set('__turbo_render_read_aloud_snapshot', '1');
-        const headers = await this.buildReadAloudAuthorizationHeaders();
-        const response = await this.win.fetch(snapshotUrl.toString(), {
-          credentials: 'include',
-          headers,
-        });
+        const headers = await this.readAloudBackend.buildAuthorizationHeaders();
+        const init = createIncludeCredentialsRequestInit(headers);
+        const response = await this.win.fetch(snapshotUrl.toString(), init);
         if (!response.ok) {
           this.readAloudConversationSnapshotFailures.set(
             normalizedConversationId,
@@ -962,17 +661,7 @@ export class TurboRenderController {
   }
 
   private getResolvedConversationReadAloudMessageId(): string | null {
-    const bodyValue = this.doc.body?.dataset.turboRenderReadAloudResolvedMessageId?.trim() ?? '';
-    if (bodyValue.length > 0) {
-      return bodyValue;
-    }
-
-    const documentValue = this.doc.documentElement.dataset.turboRenderReadAloudResolvedMessageId?.trim() ?? '';
-    if (documentValue.length > 0) {
-      return documentValue;
-    }
-
-    return null;
+    return getResolvedConversationReadAloudMessageId(this.doc);
   }
 
   restoreAll(): void {
@@ -1112,100 +801,12 @@ export class TurboRenderController {
   }
 
   private shouldRefreshForMutations(mutations: MutationRecord[]): boolean {
-    const now = this.win.performance.now();
-    if (now < this.ignoreMutationsUntil || now < this.ignoreScrollUntil || this.scrollRefreshHandle != null) {
-      return false;
-    }
-
-    const largeConversation = this.hasLargeConversation();
-    const hasStructuralTurnChange = (nodes: Node[]): boolean =>
-      nodes.some((node) => {
-        if (!(node instanceof Element) || isTurboRenderUiNode(node)) {
-          return false;
-        }
-        return (
-          findClosestTurnNode(node) != null ||
-          node.querySelector('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') != null
-        );
-      });
-
-    return mutations.some((mutation) => {
-      if (mutation.target instanceof Element && isTurboRenderUiNode(mutation.target)) {
-        return false;
-      }
-
-      if (mutation.type === 'attributes') {
-        if (!(mutation.target instanceof Element)) {
-          return false;
-        }
-        const turnRoot = findClosestTurnNode(mutation.target);
-        if (turnRoot == null) {
-          return false;
-        }
-
-        const attributeName = mutation.attributeName ?? '';
-        if (attributeName === 'aria-busy') {
-          return mutation.target === turnRoot || mutation.target.closest('[aria-busy]') === turnRoot;
-        }
-        if (attributeName === 'data-message-id' || attributeName === 'data-message-author-role') {
-          return mutation.target === turnRoot;
-        }
-        if (attributeName === 'data-testid') {
-          return (
-            mutation.target === turnRoot ||
-            mutation.target.matches('[data-testid^="conversation-turn-"], [data-testid="stop-button"]')
-          );
-        }
-        return false;
-      }
-
-      if (mutation.type !== 'childList') {
-        return false;
-      }
-
-      const targetTurn = findClosestTurnNode(mutation.target);
-      if (targetTurn != null) {
-        const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
-        const targetElement = mutation.target instanceof Element ? mutation.target : null;
-        if (
-          largeConversation &&
-          targetElement != null &&
-          targetElement !== targetTurn &&
-          !targetElement.matches('[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn') &&
-          !hasStructuralTurnChange(changedNodes)
-        ) {
-          return false;
-        }
-        if (
-          changedNodes.some((node) => {
-            if (node.nodeType === Node.TEXT_NODE) {
-              return (node.textContent?.trim().length ?? 0) > 0;
-            }
-            if (!(node instanceof Element)) {
-              return false;
-            }
-            if (isTurboRenderUiNode(node)) {
-              return false;
-            }
-            return true;
-          })
-        ) {
-          return true;
-        }
-
-        return (
-          targetElement != null &&
-          (targetElement === targetTurn ||
-            targetElement.matches('[data-testid^="conversation-turn-"], [data-message-author-role]'))
-        );
-      }
-
-      const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
-      if (largeConversation) {
-        return hasStructuralTurnChange(changedNodes);
-      }
-
-      return hasStructuralTurnChange(changedNodes);
+    return shouldRefreshForMutationBatch(mutations, {
+      now: this.win.performance.now(),
+      ignoreMutationsUntil: this.ignoreMutationsUntil,
+      ignoreScrollUntil: this.ignoreScrollUntil,
+      hasPendingScrollRefresh: this.scrollRefreshHandle != null,
+      largeConversation: this.hasLargeConversation(),
     });
   }
 
@@ -1391,31 +992,19 @@ export class TurboRenderController {
   }
 
   private shouldUseBackendReadAloud(): boolean {
-    if (this.shouldPreferHostMorePopover() && !this.isDebugReadAloudBackendEnabled()) {
-      return false;
-    }
-
-    return this.isDebugReadAloudBackendEnabled() || this.getConversationIdForReadAloud() != null;
+    return shouldUseBackendReadAloud({
+      preferHostMorePopover: this.shouldPreferHostMorePopover(),
+      debugBackendEnabled: this.isDebugReadAloudBackendEnabled(),
+      conversationId: this.getConversationIdForReadAloud(),
+    });
   }
 
   private shouldAllowLocalReadAloudFallback(): boolean {
-    const hostname = this.doc.location.hostname;
-    return (
-      !(hostname === 'chatgpt.com' ||
-      hostname.endsWith('.chatgpt.com') ||
-      hostname === 'chat.openai.com' ||
-      hostname.endsWith('.chat.openai.com'))
-    );
+    return shouldAllowLocalReadAloudFallback(this.doc.location.hostname);
   }
 
   private isDebugReadAloudBackendEnabled(): boolean {
-    return (
-      (this.win as Window & { __turboRenderDebugReadAloudBackend?: boolean }).__turboRenderDebugReadAloudBackend === true ||
-      this.doc.documentElement.getAttribute('data-turbo-render-debug-read-aloud-backend') === '1' ||
-      this.doc.body?.getAttribute('data-turbo-render-debug-read-aloud-backend') === '1' ||
-      this.doc.documentElement.dataset.turboRenderDebugReadAloudBackend === '1' ||
-      this.doc.body?.dataset.turboRenderDebugReadAloudBackend === '1'
-    );
+    return isDebugReadAloudBackendEnabled(this.win, this.doc);
   }
 
   private setReadAloudRequestContext(context: {
@@ -1428,42 +1017,7 @@ export class TurboRenderController {
     entryId: string;
     action: EntryMoreMenuAction;
   }): void {
-    const serialized = {
-      conversationId: context.conversationId ?? '',
-      entryRole: context.entryRole,
-      entryText: context.entryText,
-      entryKey: context.entryKey,
-      entryMessageId: context.entryMessageId,
-      groupId: context.groupId,
-      entryId: context.entryId,
-      action: context.action,
-    };
-    (this.win as Window & { __turboRenderReadAloudContext?: typeof serialized }).__turboRenderReadAloudContext = serialized;
-
-    const fields: Array<[string, string]> = [
-      ['turboRenderReadAloudConversationId', context.conversationId ?? ''],
-      ['turboRenderReadAloudEntryRole', context.entryRole],
-      ['turboRenderReadAloudEntryText', context.entryText],
-      ['turboRenderReadAloudEntryKey', context.entryKey],
-      ['turboRenderReadAloudEntryMessageId', context.entryMessageId],
-      ['turboRenderReadAloudResolvedMessageId', ''],
-      ['turboRenderDebugReadAloudRequestGroupId', context.groupId],
-      ['turboRenderDebugReadAloudRequestEntryId', context.entryId],
-      ['turboRenderDebugReadAloudRequestAction', context.action],
-      ['turboRenderDebugReadAloudRequestEntryKey', context.entryKey],
-      ['turboRenderDebugReadAloudRequestLane', context.entryRole],
-    ];
-
-    if (this.doc.body != null) {
-      for (const [key, value] of fields) {
-        this.doc.body.dataset[key] = value;
-      }
-    }
-    if (this.doc.documentElement != null) {
-      for (const [key, value] of fields) {
-        this.doc.documentElement.dataset[key] = value;
-      }
-    }
+    setReadAloudRequestContext(this.win, this.doc, context);
   }
 
   private shouldUseHostActionClicks(): boolean {
@@ -1496,13 +1050,9 @@ export class TurboRenderController {
   }
 
   private getConversationIdForReadAloud(): string | null {
-    const debugConversationId =
-      (this.win as Window & { __turboRenderDebugConversationId?: string }).__turboRenderDebugConversationId ??
-      this.doc.body?.dataset.turboRenderDebugConversationId ??
-      this.doc.documentElement.dataset.turboRenderDebugConversationId ??
-      null;
-    if (debugConversationId != null && debugConversationId.trim().length > 0) {
-      return debugConversationId.trim();
+    const debugConversationId = resolveDebugConversationId(this.win, this.doc);
+    if (debugConversationId != null) {
+      return debugConversationId;
     }
 
     return (
@@ -1514,15 +1064,9 @@ export class TurboRenderController {
   }
 
   private buildReadAloudUrl(entry: ManagedHistoryEntry, groupId: string | null = null): string | null {
-    const debugUrl =
-      (this.win as Window & { __turboRenderDebugReadAloudUrl?: string }).__turboRenderDebugReadAloudUrl ??
-      this.doc.documentElement.getAttribute('data-turbo-render-debug-read-aloud-url') ??
-      this.doc.body?.getAttribute('data-turbo-render-debug-read-aloud-url') ??
-      this.doc.body?.dataset.turboRenderDebugReadAloudUrl ??
-      this.doc.documentElement.dataset.turboRenderDebugReadAloudUrl ??
-      null;
-    if (debugUrl != null && debugUrl.trim().length > 0) {
-      return debugUrl.trim();
+    const debugUrl = resolveDebugReadAloudUrl(this.win, this.doc);
+    if (debugUrl != null) {
+      return debugUrl;
     }
 
     if (!this.shouldUseBackendReadAloud()) {
@@ -1570,21 +1114,11 @@ export class TurboRenderController {
       return null;
     }
 
-    const url = new URL('/backend-api/synthesize', this.win.location.origin);
-    url.searchParams.set('message_id', messageId);
-    url.searchParams.set('conversation_id', conversationId);
-    url.searchParams.set('voice', 'cove');
-    url.searchParams.set('format', 'aac');
-    return url.toString();
+    return buildReadAloudSynthesizeUrl(this.win.location.origin, conversationId, messageId);
   }
 
   private buildDirectReadAloudUrl(conversationId: string, messageId: string): string {
-    const url = new URL('/backend-api/synthesize', this.win.location.origin);
-    url.searchParams.set('message_id', messageId);
-    url.searchParams.set('conversation_id', conversationId);
-    url.searchParams.set('voice', 'cove');
-    url.searchParams.set('format', 'aac');
-    return url.toString();
+    return buildReadAloudSynthesizeUrl(this.win.location.origin, conversationId, messageId);
   }
 
   private findParkedMessageIdForEntry(groupId: string | null, entry: ManagedHistoryEntry): string | null {
@@ -1592,46 +1126,9 @@ export class TurboRenderController {
       return null;
     }
 
-    const parkedGroup = this.parkingLot.getGroup(groupId);
-    if (parkedGroup == null || parkedGroup.nodes.length === 0) {
-      return null;
-    }
-
+    const parkedGroup = this.parkingLot.getGroup(groupId) ?? null;
     const archiveGroup = this.collectArchiveState().currentPageGroups.find((group) => group.id === groupId) ?? null;
-    if (archiveGroup == null) {
-      return null;
-    }
-    const entryIndex = archiveGroup?.entries.findIndex((candidate) => candidate.id === entry.id) ?? -1;
-    if (entryIndex >= 0) {
-      const indexedMessageId = parkedGroup.messageIds[entryIndex] ?? null;
-      if (indexedMessageId != null && indexedMessageId.length > 0 && !isSyntheticMessageId(indexedMessageId)) {
-        return indexedMessageId;
-      }
-    }
-
-    for (const messageId of parkedGroup.messageIds) {
-      if (messageId != null && messageId.length > 0 && !isSyntheticMessageId(messageId)) {
-        return messageId;
-      }
-    }
-
-    const candidates: HTMLElement[] = [];
-    if (entryIndex >= 0 && entryIndex < parkedGroup.nodes.length) {
-      const indexedCandidate = parkedGroup.nodes[entryIndex];
-      if (indexedCandidate != null) {
-        candidates.push(indexedCandidate);
-      }
-    }
-
-    candidates.push(...parkedGroup.nodes);
-    for (const candidate of candidates) {
-      const messageId = resolveMessageId(candidate);
-      if (messageId != null && messageId.length > 0 && !isSyntheticMessageId(messageId)) {
-        return messageId;
-      }
-    }
-
-    return null;
+    return findParkedMessageIdForEntryInGroup(entry, parkedGroup, archiveGroup);
   }
 
   private findRenderedArchiveMessageIdForEntry(groupId: string | null, entry: ManagedHistoryEntry): string | null {
@@ -1640,53 +1137,7 @@ export class TurboRenderController {
     }
 
     const actionAnchor = this.statusBar.getEntryActionAnchor(groupId, entry.id);
-    const entryFrame =
-      actionAnchor?.closest<HTMLElement>(`.${UI_CLASS_NAMES.historyEntryFrame}`) ??
-      actionAnchor ??
-      null;
-    const entryRoot =
-      entryFrame ??
-      actionAnchor?.closest<HTMLElement>(`.${UI_CLASS_NAMES.inlineBatchEntry}`) ??
-      null;
-    if (entryRoot == null) {
-      return null;
-    }
-
-    const candidates: string[] = [];
-    const role = entry.role === 'user' || entry.role === 'assistant' ? entry.role : null;
-    if (role != null) {
-      for (const descendant of entryRoot.querySelectorAll<HTMLElement>(
-        `[data-message-author-role="${role}"][data-host-message-id], [data-message-author-role="${role}"][data-message-id]`,
-      )) {
-        const messageId =
-          descendant.getAttribute('data-host-message-id')?.trim() ??
-          descendant.getAttribute('data-message-id')?.trim();
-        if (messageId != null && messageId.length > 0) {
-          candidates.push(messageId);
-        }
-      }
-    }
-
-    const direct = entryRoot.getAttribute('data-host-message-id')?.trim() ?? entryRoot.getAttribute('data-message-id')?.trim();
-    if (direct != null && direct.length > 0) {
-      candidates.push(direct);
-    }
-
-    for (const descendant of entryRoot.querySelectorAll<HTMLElement>('[data-host-message-id], [data-message-id]')) {
-      const messageId =
-        descendant.getAttribute('data-host-message-id')?.trim() ??
-        descendant.getAttribute('data-message-id')?.trim();
-      if (messageId != null && messageId.length > 0) {
-        candidates.push(messageId);
-      }
-    }
-
-    const messageId = resolveRealMessageId(...candidates);
-    if (messageId == null || messageId.length === 0 || isSyntheticMessageId(messageId)) {
-      return null;
-    }
-
-    return messageId;
+    return findRenderedArchiveMessageIdFromActionAnchor(entry, actionAnchor);
   }
 
   private findHostMessageIdForEntry(
@@ -1694,319 +1145,25 @@ export class TurboRenderController {
     groupId: string | null = null,
     archiveGroupOverride: ManagedHistoryGroup | null = null,
   ): string | null {
-    const scope = this.doc.body ?? this.turnContainer ?? this.historyMountTarget;
-    if (scope == null) {
-      return null;
-    }
-
-    const record = this.getRecordForEntry(entry);
-    const targetIndex = record?.index ?? entry.turnIndex;
-    const normalizedEntryTexts = buildEntryTextSearchCandidates(entry).map((candidate) => this.normalizeEntryText(candidate));
-    if (normalizedEntryTexts.length === 0) {
-      return null;
-    }
-
-    const role = entry.role === 'user' || entry.role === 'assistant' ? entry.role : null;
-    const syntheticTurnIndex = resolveSyntheticTurnIndex(
-      entry.messageId,
-      entry.turnId,
-      record?.messageId,
-      record?.id,
-    );
     const archiveGroup =
       archiveGroupOverride ??
       (groupId != null
         ? this.collectArchiveState().currentPageGroups.find((candidate) => candidate.id === groupId) ?? null
         : null);
-    const archiveTurnOffset = this.initialTrimSession?.archivedTurnCount ?? 0;
-    const setHostReadAloudDebug = (debug: {
-      precisePairId?: string | null;
-      preciseTargetId?: string | null;
-      turnPairId?: string | null;
-      turnTargetId?: string | null;
-      selectedSource?: string | null;
-      selectedId?: string | null;
-    }): void => {
-      const fields: Array<[string, string | null | undefined]> = [
-        ['turboRenderDebugReadAloudHostPrecisePairId', debug.precisePairId],
-        ['turboRenderDebugReadAloudHostPreciseTargetId', debug.preciseTargetId],
-        ['turboRenderDebugReadAloudHostTurnPairId', debug.turnPairId],
-        ['turboRenderDebugReadAloudHostTurnTargetId', debug.turnTargetId],
-        ['turboRenderDebugReadAloudHostSelectedSource', debug.selectedSource],
-        ['turboRenderDebugReadAloudHostSelectedId', debug.selectedId],
-      ];
-
-      if (this.doc.body != null) {
-        for (const [key, value] of fields) {
-          this.doc.body.dataset[key] = value ?? '';
-        }
-      }
-      if (this.doc.documentElement != null) {
-        for (const [key, value] of fields) {
-          this.doc.documentElement.dataset[key] = value ?? '';
-        }
-      }
-    };
-
-    const getCandidateMessageId = (candidate: HTMLElement | null, preferDescendants = false): string | null => {
-      if (candidate == null || isTurboRenderUiNode(candidate)) {
-        return null;
-      }
-
-      const descendantMessageIds = [...candidate.querySelectorAll<HTMLElement>(
-        'div.text-message[data-message-author-role][data-host-message-id], div.text-message[data-message-author-role][data-message-id], article[data-message-author-role][data-host-message-id], article[data-message-author-role][data-message-id]',
-      )]
-        .map((descendant) =>
-          descendant.getAttribute('data-host-message-id')?.trim() ??
-          descendant.getAttribute('data-message-id')?.trim() ??
-          '',
-        )
-        .filter((messageId) => messageId.length > 0 && !isSyntheticMessageId(messageId));
-      const directMessageId = candidate.getAttribute('data-host-message-id')?.trim() ?? candidate.getAttribute('data-message-id')?.trim() ?? '';
-
-      if (preferDescendants) {
-        if (descendantMessageIds.length > 0) {
-          return descendantMessageIds[0]!;
-        }
-        if (directMessageId.length > 0 && !isSyntheticMessageId(directMessageId)) {
-          return directMessageId;
-        }
-      } else {
-        if (directMessageId.length > 0 && !isSyntheticMessageId(directMessageId)) {
-          return directMessageId;
-        }
-        if (descendantMessageIds.length > 0) {
-          return descendantMessageIds[0]!;
-        }
-      }
-
-      const resolvedMessageId = resolveMessageId(candidate);
-      if (resolvedMessageId != null && resolvedMessageId.length > 0 && !isSyntheticMessageId(resolvedMessageId)) {
-        return resolvedMessageId;
-      }
-
-      return null;
-    };
-
-    if (syntheticTurnIndex != null) {
-      const syntheticTurnOffset =
-        archiveTurnOffset + (archiveGroup != null ? archiveGroup.pairStartIndex * 2 + syntheticTurnIndex : syntheticTurnIndex);
-      const directTurnCandidates = [...scope.querySelectorAll<HTMLElement>(
-        '[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn, article',
-      )].filter((candidate) => !isTurboRenderUiNode(candidate));
-      const indexedCandidate = directTurnCandidates[syntheticTurnOffset] ?? null;
-      const indexedMessageId = getCandidateMessageId(indexedCandidate, true);
-      if (indexedMessageId != null) {
-        setHostReadAloudDebug({
-          turnTargetId: indexedMessageId,
-          selectedSource: 'turn-index',
-          selectedId: indexedMessageId,
-        });
-        return indexedMessageId;
-      }
-
-      const directTextMessageCandidates = [...scope.querySelectorAll<HTMLElement>(
-        'div.text-message[data-message-author-role][data-host-message-id], div.text-message[data-message-author-role][data-message-id]',
-      )].filter((candidate) => !isTurboRenderUiNode(candidate));
-      const indexedTextCandidate = directTextMessageCandidates[syntheticTurnOffset] ?? null;
-      const indexedTextMessageId = getCandidateMessageId(indexedTextCandidate, true);
-      if (indexedTextMessageId != null) {
-        setHostReadAloudDebug({
-          turnTargetId: indexedTextMessageId,
-          selectedSource: 'turn-index-text',
-          selectedId: indexedTextMessageId,
-        });
-        return indexedTextMessageId;
-      }
-    }
-
-    const textMessageCandidates = [...scope.querySelectorAll<HTMLElement>(
-      'div.text-message[data-message-author-role][data-host-message-id], div.text-message[data-message-author-role][data-message-id]',
-    )].filter((candidate) => !isTurboRenderUiNode(candidate));
-    const articleMessageCandidates = [...scope.querySelectorAll<HTMLElement>(
-      'article[data-message-author-role][data-host-message-id], article[data-message-author-role][data-message-id]',
-    )].filter((candidate) => !isTurboRenderUiNode(candidate));
-    const genericMessageCandidates = [...scope.querySelectorAll<HTMLElement>(
-      '[data-message-author-role][data-host-message-id], [data-message-author-role][data-message-id]',
-    )].filter((candidate) => !isTurboRenderUiNode(candidate));
-
-    const preciseCandidateGroups = [
-      textMessageCandidates,
-      articleMessageCandidates,
-      genericMessageCandidates,
-    ];
-
-    for (const candidates of preciseCandidateGroups) {
-      const roleSpecificPreciseCandidates =
-        role == null
-          ? candidates
-          : candidates.filter((candidate) => candidate.getAttribute('data-message-author-role') === role);
-
-      const precisePairCandidate = roleSpecificPreciseCandidates[entry.pairIndex] ?? null;
-      const precisePairMessageId = getCandidateMessageId(precisePairCandidate);
-      if (precisePairMessageId != null) {
-        setHostReadAloudDebug({
-          precisePairId: precisePairMessageId,
-          selectedSource: 'precise-pair',
-          selectedId: precisePairMessageId,
-        });
-        return precisePairMessageId;
-      }
-
-      const preciseIndexedCandidate = roleSpecificPreciseCandidates[targetIndex] ?? null;
-      const preciseIndexedMessageId = getCandidateMessageId(preciseIndexedCandidate);
-      if (preciseIndexedMessageId != null) {
-        setHostReadAloudDebug({
-          preciseTargetId: preciseIndexedMessageId,
-          selectedSource: 'precise-target',
-          selectedId: preciseIndexedMessageId,
-        });
-        return preciseIndexedMessageId;
-      }
-
-      for (const candidate of roleSpecificPreciseCandidates) {
-        const candidateText = this.normalizeEntryText(candidate.textContent ?? '');
-        if (candidateText.length === 0) {
-          continue;
-        }
-
-        for (const normalizedEntryText of normalizedEntryTexts) {
-          const sharedPrefix = normalizedEntryText.slice(0, 48);
-        if (
-          candidateText === normalizedEntryText ||
-          candidateText.includes(normalizedEntryText) ||
-          normalizedEntryText.includes(candidateText) ||
-          (sharedPrefix.length > 0 &&
-            (candidateText.startsWith(sharedPrefix) || normalizedEntryText.startsWith(candidateText.slice(0, 48))))
-        ) {
-          const messageId = getCandidateMessageId(candidate);
-          if (messageId != null) {
-            setHostReadAloudDebug({
-              selectedSource: 'precise-text',
-              selectedId: messageId,
-            });
-            return messageId;
-          }
-        }
-      }
-      }
-    }
-
-    const turnCandidates = [...scope.querySelectorAll<HTMLElement>(
-      '[data-testid^="conversation-turn-"], [data-message-author-role], .conversation-turn, article',
-    )].filter((candidate) => !isTurboRenderUiNode(candidate));
-
-    const roleSpecificTurnCandidates =
-      role == null
-        ? turnCandidates
-        : turnCandidates.filter((candidate) => candidate.getAttribute('data-message-author-role') === role);
-
-    const directTurnCandidate = role != null ? roleSpecificTurnCandidates[entry.pairIndex] ?? null : null;
-    const directTurnMessageId = getCandidateMessageId(directTurnCandidate, true);
-    if (directTurnMessageId != null) {
-      setHostReadAloudDebug({
-        turnPairId: directTurnMessageId,
-        selectedSource: 'turn-pair',
-        selectedId: directTurnMessageId,
-      });
-      return directTurnMessageId;
-    }
-
-    const turnIndexedCandidate = roleSpecificTurnCandidates[targetIndex] ?? null;
-    const turnIndexedMessageId = getCandidateMessageId(turnIndexedCandidate, true);
-    if (turnIndexedMessageId != null) {
-      setHostReadAloudDebug({
-        turnTargetId: turnIndexedMessageId,
-        selectedSource: 'turn-target',
-        selectedId: turnIndexedMessageId,
-      });
-      return turnIndexedMessageId;
-    }
-
-    for (const candidate of roleSpecificTurnCandidates) {
-      const candidateText = this.normalizeEntryText(candidate.textContent ?? '');
-      if (candidateText.length === 0) {
-        continue;
-      }
-
-      for (const normalizedEntryText of normalizedEntryTexts) {
-        const sharedPrefix = normalizedEntryText.slice(0, 48);
-        if (
-          candidateText === normalizedEntryText ||
-          candidateText.includes(normalizedEntryText) ||
-          normalizedEntryText.includes(candidateText) ||
-          (sharedPrefix.length > 0 &&
-            (candidateText.startsWith(sharedPrefix) || normalizedEntryText.startsWith(candidateText.slice(0, 48))))
-        ) {
-          const messageId = getCandidateMessageId(candidate, true);
-          if (messageId != null) {
-            setHostReadAloudDebug({
-              selectedSource: 'turn-text',
-              selectedId: messageId,
-            });
-            return messageId;
-          }
-        }
-      }
-    }
-
-    setHostReadAloudDebug({});
-    return null;
-  }
-
-  private normalizeEntryText(text: string): string {
-    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+    const record = this.getRecordForEntry(entry);
+    return findHostMessageIdForEntryInScope({
+      doc: this.doc,
+      scope: this.doc.body ?? this.turnContainer ?? this.historyMountTarget,
+      entry,
+      record: record == null ? null : { index: record.index, messageId: record.messageId ?? null, id: record.id },
+      archiveGroup,
+      archiveTurnOffset: this.initialTrimSession?.archivedTurnCount ?? 0,
+      normalizeEntryText,
+    });
   }
 
   private doesHostActionButtonMatchEntry(candidate: HTMLElement, entry: ManagedHistoryEntry): boolean {
-    if (isTurboRenderUiNode(candidate)) {
-      return false;
-    }
-
-    const expectedRole =
-      entry.role === 'assistant' ? 'assistant' : entry.role === 'user' ? 'user' : null;
-    const normalizedEntryTexts = buildEntryTextSearchCandidates(entry)
-      .map((value) => this.normalizeEntryText(value))
-      .filter((value) => value.length > 0);
-    if (normalizedEntryTexts.length === 0) {
-      return false;
-    }
-
-    const scopes = [
-      candidate.closest<HTMLElement>('[data-message-author-role]'),
-      candidate.closest<HTMLElement>('[data-testid^="conversation-turn-"]'),
-      candidate.closest<HTMLElement>('.agent-turn'),
-      candidate.closest<HTMLElement>('article'),
-      candidate.parentElement,
-    ].filter((value, index, values): value is HTMLElement => value != null && values.indexOf(value) === index);
-
-    for (const scope of scopes) {
-      const role = scope.getAttribute('data-message-author-role');
-      if (expectedRole != null && role != null && role !== expectedRole) {
-        continue;
-      }
-
-      const candidateText = this.normalizeEntryText(scope.textContent ?? '');
-      if (candidateText.length === 0) {
-        continue;
-      }
-
-      for (const normalizedEntryText of normalizedEntryTexts) {
-        const sharedPrefix = normalizedEntryText.slice(0, 48);
-        if (
-          candidateText === normalizedEntryText ||
-          candidateText.includes(normalizedEntryText) ||
-          normalizedEntryText.includes(candidateText) ||
-          (sharedPrefix.length > 0 &&
-            (candidateText.startsWith(sharedPrefix) ||
-              normalizedEntryText.startsWith(candidateText.slice(0, 48))))
-        ) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    return doesHostActionButtonMatchArchiveEntry(candidate, entry);
   }
 
   private ensureReadAloudAudio(): HTMLAudioElement {
@@ -2085,179 +1242,6 @@ export class TurboRenderController {
     this.entryActionSpeakingEntryKey = entryKey;
     this.entryActionReadAloudMode = 'backend';
     this.updateStatusBar(this.collectArchiveState());
-  }
-
-  private resolveReadAloudStreamMimeType(response: Response): string | null {
-    const MediaSourceCtor = (this.win as Window & { MediaSource?: typeof MediaSource }).MediaSource;
-    if (MediaSourceCtor == null || typeof MediaSourceCtor.isTypeSupported !== 'function') {
-      return null;
-    }
-
-    const responseType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
-    const candidates = [
-      responseType,
-      responseType === 'audio/aac' ? 'audio/aac' : '',
-      responseType.includes('aac') ? 'audio/mp4; codecs="mp4a.40.2"' : '',
-      responseType === 'audio/mpeg' ? 'audio/mpeg' : '',
-    ].filter((candidate): candidate is string => candidate.length > 0);
-
-    for (const candidate of [...new Set(candidates)]) {
-      if (MediaSourceCtor.isTypeSupported(candidate)) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  private waitForMediaSourceOpen(mediaSource: MediaSource): Promise<boolean> {
-    if (mediaSource.readyState === 'open') {
-      return Promise.resolve(true);
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      const timeout = this.win.setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        mediaSource.removeEventListener('sourceopen', onOpen);
-        resolve(false);
-      }, 3000);
-      const onOpen = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        this.win.clearTimeout(timeout);
-        resolve(true);
-      };
-      mediaSource.addEventListener('sourceopen', onOpen);
-    });
-  }
-
-  private appendReadAloudChunk(sourceBuffer: SourceBuffer, chunk: Uint8Array): Promise<void> {
-    if (chunk.byteLength === 0) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        sourceBuffer.removeEventListener('updateend', onUpdateEnd);
-        sourceBuffer.removeEventListener('error', onError);
-      };
-      const onUpdateEnd = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = () => {
-        cleanup();
-        reject(new Error('read aloud source buffer append failed'));
-      };
-      sourceBuffer.addEventListener('updateend', onUpdateEnd);
-      sourceBuffer.addEventListener('error', onError);
-      try {
-        const buffer = new Uint8Array(chunk.byteLength);
-        buffer.set(chunk);
-        sourceBuffer.appendBuffer(buffer.buffer);
-      } catch (error) {
-        cleanup();
-        reject(error);
-      }
-    });
-  }
-
-  private cleanupUnusedReadAloudObjectUrl(audio: HTMLAudioElement, objectUrl: string): void {
-    if (this.entryActionReadAloudObjectUrl === objectUrl) {
-      this.entryActionReadAloudObjectUrl = null;
-    }
-    audio.removeAttribute('src');
-    try {
-      audio.load();
-    } catch {
-      // Ignore load failures in detached/test contexts.
-    }
-    URL.revokeObjectURL(objectUrl);
-  }
-
-  private async tryStreamReadAloudResponse(
-    response: Response,
-    audio: HTMLAudioElement,
-    entryKey: string,
-    generation: number,
-  ): Promise<boolean> {
-    const stream = response.body;
-    const mimeType = this.resolveReadAloudStreamMimeType(response);
-    const MediaSourceCtor = (this.win as Window & { MediaSource?: typeof MediaSource }).MediaSource;
-    if (stream == null || mimeType == null || MediaSourceCtor == null) {
-      this.setReadAloudStreamingDebug('unsupported');
-      return false;
-    }
-
-    const mediaSource = new MediaSourceCtor();
-    const objectUrl = URL.createObjectURL(mediaSource);
-    this.entryActionReadAloudObjectUrl = objectUrl;
-    audio.src = objectUrl;
-    audio.load();
-
-    const opened = await this.waitForMediaSourceOpen(mediaSource);
-    if (!opened || this.entryActionReadAloudGeneration !== generation) {
-      this.cleanupUnusedReadAloudObjectUrl(audio, objectUrl);
-      return false;
-    }
-
-    let sourceBuffer: SourceBuffer;
-    try {
-      sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-    } catch {
-      this.cleanupUnusedReadAloudObjectUrl(audio, objectUrl);
-      this.setReadAloudStreamingDebug('unsupported');
-      return false;
-    }
-
-    const reader = stream.getReader();
-    let started = false;
-    this.setReadAloudStreamingDebug('1');
-    audio.dataset.turboRenderReadAloudMode = 'backend-stream';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (this.entryActionReadAloudGeneration !== generation || this.entryActionSpeakingEntryKey !== entryKey) {
-          await reader.cancel().catch(() => undefined);
-          return true;
-        }
-        if (done) {
-          break;
-        }
-        if (value == null || value.byteLength === 0) {
-          continue;
-        }
-        await this.appendReadAloudChunk(sourceBuffer, value);
-        if (!started) {
-          started = true;
-          await audio.play();
-        }
-      }
-
-      if (!started) {
-        this.clearReadAloudPlayback({ updateStatusBar: true });
-        return true;
-      }
-      if (mediaSource.readyState === 'open') {
-        mediaSource.endOfStream();
-      }
-      return true;
-    } catch {
-      if (this.entryActionReadAloudGeneration !== generation || this.entryActionSpeakingEntryKey !== entryKey) {
-        return true;
-      }
-      this.setReadAloudStreamingDebug('error');
-      this.clearReadAloudPlayback({ updateStatusBar: true });
-      return true;
-    } finally {
-      reader.releaseLock();
-    }
   }
 
   private clearReadAloudPlayback(options: {
@@ -2409,12 +1393,9 @@ export class TurboRenderController {
         this.doc.documentElement.dataset.turboRenderReadAloudBranch = 'backend';
       }
       try {
-        const headers = await this.buildReadAloudAuthorizationHeaders();
-        const response = await this.win.fetch(backendUrl, {
-          credentials: 'include',
-          headers,
-          signal: abortController.signal,
-        });
+        const headers = await this.readAloudBackend.buildAuthorizationHeaders();
+        const init = createIncludeCredentialsRequestInit(headers, abortController.signal);
+        const response = await this.win.fetch(backendUrl, init);
         if (this.doc.body != null) {
           this.doc.body.dataset.turboRenderDebugReadAloudResponseStatus = String(response.status);
         }
@@ -2428,7 +1409,30 @@ export class TurboRenderController {
           this.clearReadAloudPlayback({ updateStatusBar: true });
           return;
         }
-        if (await this.tryStreamReadAloudResponse(response, audio, entryKey, generation)) {
+        if (await tryStreamReadAloudResponse({
+          win: this.win,
+          response,
+          audio,
+          entryKey,
+          generation,
+          isCurrent: (currentEntryKey, currentGeneration) =>
+            this.entryActionReadAloudGeneration === currentGeneration &&
+            this.entryActionSpeakingEntryKey === currentEntryKey,
+          onObjectUrlCreated: (objectUrl) => {
+            this.entryActionReadAloudObjectUrl = objectUrl;
+          },
+          onObjectUrlUnused: (objectUrl) => {
+            if (this.entryActionReadAloudObjectUrl === objectUrl) {
+              this.entryActionReadAloudObjectUrl = null;
+            }
+          },
+          setStreamingDebug: (value) => {
+            this.setReadAloudStreamingDebug(value);
+          },
+          clearPlayback: () => {
+            this.clearReadAloudPlayback({ updateStatusBar: true });
+          },
+        })) {
           return;
         }
         this.setReadAloudStreamingDebug('0');
@@ -2549,7 +1553,23 @@ export class TurboRenderController {
     const scrollTarget = this.scrollTarget ?? ((this.doc.scrollingElement as HTMLElement | null) ?? this.doc.body);
 
     if (request.action === 'more') {
-      this.toggleEntryActionMenu(group.id, entryKey, entry.role === 'user' ? 'user' : 'assistant');
+      const lane = entry.role === 'user' ? 'user' : 'assistant';
+      if (
+        this.entryActionMenu?.groupId === group.id &&
+        this.entryActionMenu.entryId === entryKey &&
+        this.entryActionMenu.lane === lane
+      ) {
+        this.toggleEntryActionMenu(group.id, entryKey, lane);
+        return;
+      }
+
+      if (this.shouldPreferHostMorePopover()) {
+        const hostToggled = await this.toggleHostMoreMenu(group.id, entry, actionAnchorGetter);
+        if (hostToggled) {
+          return;
+        }
+      }
+      this.toggleEntryActionMenu(group.id, entryKey, lane);
       return;
     }
 
@@ -2598,6 +1618,11 @@ export class TurboRenderController {
             this.entryActionSelectionByEntryId.set(entryKey, hostSelection.selection);
           }
           this.updateStatusBar(this.collectArchiveState());
+          this.restoreExactScrollTop(scrollTarget, previousScrollTop);
+        }
+      } else {
+        const feedbackSent = await this.sendBackendMessageFeedback(request.groupId, entry, request.action);
+        if (feedbackSent) {
           this.restoreExactScrollTop(scrollTarget, previousScrollTop);
         }
       }
@@ -2833,6 +1858,44 @@ export class TurboRenderController {
     });
   }
 
+  private async toggleHostMoreMenu(
+    groupId: string,
+    entry: ManagedHistoryEntry,
+    anchorGetter: () => HTMLElement | null,
+  ): Promise<boolean> {
+    if (!this.shouldUseHostActionClicks()) {
+      return false;
+    }
+
+    return this.runWithSuppressedEntryActionMenuDismissal(async () => {
+      this.restoreAnchoredHostMenuStyle();
+      this.clearPendingHostMoreActionRestore();
+      const previousMenus = new Set(this.getVisibleHostMenus());
+      const scrollTarget = this.scrollTarget ?? ((this.doc.scrollingElement as HTMLElement | null) ?? this.doc.body);
+      const previousScrollTop = scrollTarget?.scrollTop ?? null;
+      this.suppressEntryActionMenuToggle = true;
+      let toggled = false;
+      try {
+        toggled = await this.clickHostArchiveAction(groupId, entry, 'more', anchorGetter);
+      } finally {
+        this.suppressEntryActionMenuToggle = false;
+      }
+
+      if (!toggled) {
+        return false;
+      }
+
+      this.restoreExactScrollTop(scrollTarget, previousScrollTop);
+      const hostMenu = await this.waitForPreferredHostMenu(previousMenus, anchorGetter, HOST_MENU_WAIT_TIMEOUT_MS);
+      const anchor = anchorGetter();
+      if (hostMenu != null && anchor != null && anchor.isConnected && anchor.getClientRects().length > 0) {
+        this.positionVisibleHostMenuToAnchor(hostMenu, anchor);
+      }
+      this.clearPendingHostMoreActionRestore();
+      return true;
+    });
+  }
+
   private escapeAttributeSelectorValue(value: string): string {
     return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   }
@@ -3037,9 +2100,7 @@ export class TurboRenderController {
     this.suppressEntryActionMenuToggle = true;
     let openedMore = false;
     try {
-      openedMore = await this.clickHostArchiveAction(groupId, entry, 'more', anchorGetter, {
-        allowBroadMoreFallback: true,
-      });
+      openedMore = await this.clickHostArchiveAction(groupId, entry, 'more', anchorGetter);
     } finally {
       this.suppressEntryActionMenuToggle = false;
     }
@@ -3070,75 +2131,11 @@ export class TurboRenderController {
     anchorGetter: () => HTMLElement | null,
     timeoutMs: number,
   ): Promise<HTMLElement | null> {
-    return new Promise((resolve) => {
-      const observeRoot = this.doc.body ?? this.doc.documentElement;
-      let settled = false;
-      let timeoutHandle: number | null = null;
-      let frameHandle: number | null = null;
-      let observer: MutationObserver | null = null;
-
-      const cleanup = (): void => {
-        if (timeoutHandle != null) {
-          this.win.clearTimeout(timeoutHandle);
-          timeoutHandle = null;
-        }
-        if (frameHandle != null) {
-          cancelAnimationFrameCompat(this.win, frameHandle);
-          frameHandle = null;
-        }
-        observer?.disconnect();
-        observer = null;
-      };
-
-      const settle = (menu: HTMLElement | null): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve(menu);
-      };
-
-      const probe = (): boolean => {
-        const menu = this.findPreferredHostMenu(previousMenus, anchorGetter());
-        if (menu == null) {
-          return false;
-        }
-        settle(menu);
-        return true;
-      };
-
-      const scheduleFrameProbe = (): void => {
-        if (settled) {
-          return;
-        }
-        frameHandle = requestAnimationFrameCompat(this.win, () => {
-          frameHandle = null;
-          if (!probe()) {
-            scheduleFrameProbe();
-          }
-        });
-      };
-
-      if (observeRoot != null && typeof MutationObserver === 'function') {
-        observer = new MutationObserver(() => {
-          probe();
-        });
-        observer.observe(observeRoot, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
-        });
-      }
-
-      timeoutHandle = this.win.setTimeout(() => {
-        settle(null);
-      }, timeoutMs);
-
-      if (!probe()) {
-        scheduleFrameProbe();
-      }
+    return waitForHostElement({
+      doc: this.doc,
+      win: this.win,
+      timeoutMs,
+      probe: () => this.findPreferredHostMenu(previousMenus, anchorGetter()),
     });
   }
 
@@ -3148,76 +2145,14 @@ export class TurboRenderController {
     action: EntryMoreMenuAction,
     timeoutMs: number,
   ): Promise<HTMLElement | null> {
-    return new Promise((resolve) => {
-      const observeRoot = this.doc.body ?? this.doc.documentElement;
-      let settled = false;
-      let timeoutHandle: number | null = null;
-      let frameHandle: number | null = null;
-      let observer: MutationObserver | null = null;
-
-      const cleanup = (): void => {
-        if (timeoutHandle != null) {
-          this.win.clearTimeout(timeoutHandle);
-          timeoutHandle = null;
-        }
-        if (frameHandle != null) {
-          cancelAnimationFrameCompat(this.win, frameHandle);
-          frameHandle = null;
-        }
-        observer?.disconnect();
-        observer = null;
-      };
-
-      const settle = (target: HTMLElement | null): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve(target);
-      };
-
-      const probe = (): boolean => {
+    return waitForHostElement({
+      doc: this.doc,
+      win: this.win,
+      timeoutMs,
+      probe: () => {
         const menu = this.findPreferredHostMenu(previousMenus, anchorGetter());
-        const menuAction = menu != null ? this.findHostMoreMenuAction(menu, action) : null;
-        if (menuAction == null) {
-          return false;
-        }
-        settle(menuAction);
-        return true;
-      };
-
-      const scheduleFrameProbe = (): void => {
-        if (settled) {
-          return;
-        }
-        frameHandle = requestAnimationFrameCompat(this.win, () => {
-          frameHandle = null;
-          if (!probe()) {
-            scheduleFrameProbe();
-          }
-        });
-      };
-
-      if (observeRoot != null && typeof MutationObserver === 'function') {
-        observer = new MutationObserver(() => {
-          probe();
-        });
-        observer.observe(observeRoot, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'data-state'],
-        });
-      }
-
-      timeoutHandle = this.win.setTimeout(() => {
-        settle(null);
-      }, timeoutMs);
-
-      if (!probe()) {
-        scheduleFrameProbe();
-      }
+        return menu != null ? this.findHostMoreMenuAction(menu, action) : null;
+      },
     });
   }
 
@@ -3227,57 +2162,12 @@ export class TurboRenderController {
     }
 
     return this.runWithSuppressedEntryActionMenuDismissal(async () => {
-      const waitUntil = this.win.performance.now() + 4_000;
-      let stopButton: HTMLElement | undefined;
-      while (this.win.performance.now() < waitUntil) {
-        const exactSelectors = [
-          'button[data-testid="voice-stop-turn-action-button"]',
-          'button[data-testid="stop-read-aloud-turn-action-button"]',
-          '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
-          '[role="menuitem"][aria-label="停止"]',
-        ];
-        stopButton = exactSelectors
-          .flatMap((selector) => [...this.doc.querySelectorAll<HTMLElement>(selector)])
-          .find(
-            (candidate): candidate is HTMLElement =>
-              candidate != null &&
-              !isTurboRenderUiNode(candidate) &&
-              candidate.getClientRects().length > 0,
-          );
-
-        if (stopButton == null) {
-          const labelPatterns = [/stop reading/i, /stop read aloud/i, /停止朗读/i, /停止阅读/i];
-          stopButton = [...this.doc.querySelectorAll<HTMLElement>('button, [role="button"], [role="menuitem"], a')]
-            .find((candidate) => {
-              if (isTurboRenderUiNode(candidate)) {
-                return false;
-              }
-              if (candidate.getClientRects().length <= 0) {
-                return false;
-              }
-
-              const label = [
-                candidate.getAttribute('aria-label'),
-                candidate.getAttribute('title'),
-                candidate.textContent,
-              ]
-                .filter((value): value is string => value != null && value.trim().length > 0)
-                .join(' ')
-                .trim();
-
-              return labelPatterns.some((pattern) => pattern.test(label));
-            }) as HTMLElement | undefined;
-        }
-
-        if (stopButton != null) {
-          break;
-        }
-
-        await new Promise<void>((resolve) => {
-          requestAnimationFrameCompat(this.win, () => resolve());
-        });
-      }
-
+      const stopButton = await waitForHostElement({
+        doc: this.doc,
+        win: this.win,
+        timeoutMs: 4_000,
+        probe: () => findHostReadAloudStopButton(this.doc),
+      });
       if (stopButton == null) {
         return false;
       }
@@ -3631,100 +2521,19 @@ export class TurboRenderController {
   }
 
   private getVisibleHostMenus(): HTMLElement[] {
-    return [...this.doc.querySelectorAll<HTMLElement>('[role="menu"]')].filter((candidate) => {
-      if (isTurboRenderUiNode(candidate)) {
-        return false;
-      }
-      if (candidate.getClientRects().length <= 0) {
-        return false;
-      }
-      const style = this.win.getComputedStyle(candidate);
-      return style.display !== 'none' && style.visibility !== 'hidden';
-    });
+    return this.hostMenuPositioning.getVisibleHostMenus();
   }
 
   private findPreferredHostMenu(previousMenus: Set<HTMLElement>, anchor: HTMLElement | null): HTMLElement | null {
-    const menus = this.getVisibleHostMenus();
-    const candidatePools = [
-      menus.filter((menu) => !previousMenus.has(menu)),
-      menus,
-    ];
-
-    for (const pool of candidatePools) {
-      if (pool.length === 0) {
-        continue;
-      }
-
-      if (anchor == null) {
-        return pool[0] ?? null;
-      }
-
-      const anchorRect = anchor.getBoundingClientRect();
-      const scored = pool
-        .map((menu) => {
-          const rect = this.resolveHostMenuPositionTarget(menu).getBoundingClientRect();
-          const leftDelta = Math.abs(rect.left - anchorRect.left);
-          const verticalDelta = Math.abs(rect.bottom - anchorRect.top);
-          const score = leftDelta + verticalDelta * 2;
-          return { menu, score };
-        })
-        .sort((left, right) => left.score - right.score);
-
-      if ((scored[0]?.menu ?? null) != null) {
-        return scored[0]!.menu;
-      }
-    }
-
-    return null;
+    return this.hostMenuPositioning.findPreferredHostMenu(previousMenus, anchor);
   }
 
   private temporarilyAnchorHostActionTarget(target: HTMLElement, anchor: HTMLElement): (() => void) | null {
-    const anchorRect = anchor.getBoundingClientRect();
-    if (anchorRect.width <= 0 || anchorRect.height <= 0) {
-      return null;
-    }
-
-    const previousStyle = target.getAttribute('style');
-    target.style.setProperty('position', 'fixed', 'important');
-    target.style.setProperty('left', `${Math.round(anchorRect.left)}px`, 'important');
-    target.style.setProperty('top', `${Math.round(anchorRect.top)}px`, 'important');
-    target.style.setProperty('width', `${Math.max(1, Math.round(anchorRect.width))}px`, 'important');
-    target.style.setProperty('height', `${Math.max(1, Math.round(anchorRect.height))}px`, 'important');
-    target.style.setProperty('right', 'auto', 'important');
-    target.style.setProperty('bottom', 'auto', 'important');
-    target.style.setProperty('margin', '0', 'important');
-    target.style.setProperty('transform', 'none', 'important');
-    target.style.setProperty('opacity', '0', 'important');
-    target.style.setProperty('pointer-events', 'none', 'important');
-    target.style.setProperty('z-index', '-1', 'important');
-
-    return () => {
-      if (previousStyle == null || previousStyle.length === 0) {
-        target.removeAttribute('style');
-      } else {
-        target.setAttribute('style', previousStyle);
-      }
-    };
+    return this.hostMenuPositioning.temporarilyAnchorHostActionTarget(target, anchor);
   }
 
   private scheduleHostActionTargetRestore(restore: () => void, frames: number): void {
-    if (frames <= 0) {
-      restore();
-      return;
-    }
-
-    const step = (remaining: number): void => {
-      if (remaining <= 0) {
-        restore();
-        return;
-      }
-
-      requestAnimationFrameCompat(this.win, () => {
-        step(remaining - 1);
-      });
-    };
-
-    step(frames);
+    this.hostMenuPositioning.scheduleHostActionTargetRestore(restore, frames);
   }
 
   private clearPendingHostMoreActionRestore(): void {
@@ -3733,391 +2542,27 @@ export class TurboRenderController {
     restore?.();
   }
 
-  private resolveHostMenuPositionTarget(menu: HTMLElement): HTMLElement {
-    const wrapper = menu.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
-    if (wrapper != null && !isTurboRenderUiNode(wrapper)) {
-      return wrapper;
-    }
-    return menu;
-  }
-
   private positionVisibleHostMenuToAnchor(menu: HTMLElement, anchor: HTMLElement): void {
-    const anchorRect = anchor.getBoundingClientRect();
-    const positionTarget = this.resolveHostMenuPositionTarget(menu);
-    const menuRect = positionTarget.getBoundingClientRect();
-    if (anchorRect.width <= 0 || anchorRect.height <= 0 || menuRect.width <= 0 || menuRect.height <= 0) {
-      return;
-    }
-
-    const gap = 8;
-    const viewportPadding = 8;
-    const topChromeOffset = this.statusBar?.getTopPageChromeOffset?.() ?? 0;
-    const topLimit = Math.max(viewportPadding, topChromeOffset + viewportPadding);
-    const viewportLeft = anchorRect.left;
-    const aboveTop = anchorRect.top - menuRect.height - gap;
-    const belowTop = anchorRect.bottom + gap;
-    const spaceAbove = anchorRect.top - topLimit;
-    const placeAbove = spaceAbove >= menuRect.height + gap;
-    const viewportTop = placeAbove ? Math.max(topLimit, aboveTop) : belowTop;
-
-    this.captureAnchoredHostMenuStyle(positionTarget, menu);
-    positionTarget.style.setProperty('position', 'fixed', 'important');
-    positionTarget.style.setProperty('inset', 'auto', 'important');
-    positionTarget.style.setProperty('left', `${Math.round(viewportLeft)}px`, 'important');
-    positionTarget.style.setProperty('top', `${Math.round(viewportTop)}px`, 'important');
-    positionTarget.style.setProperty('right', 'auto', 'important');
-    positionTarget.style.setProperty('bottom', 'auto', 'important');
-    positionTarget.style.setProperty('transform', 'none', 'important');
-    positionTarget.style.setProperty('margin', '0', 'important');
-    positionTarget.style.setProperty('z-index', '60', 'important');
-    positionTarget.dataset.turboRenderHostMenuAnchored = 'true';
-    positionTarget.dataset.turboRenderHostMenuPlacement = placeAbove ? 'above' : 'below';
-    menu.dataset.turboRenderHostMenuAnchored = 'true';
-    menu.dataset.turboRenderHostMenuPlacement = placeAbove ? 'above' : 'below';
-  }
-
-  private captureAnchoredHostMenuStyle(target: HTMLElement, menu: HTMLElement): void {
-    if (this.anchoredHostMenu?.target === target) {
-      return;
-    }
-    this.restoreAnchoredHostMenuStyle();
-    this.anchoredHostMenu = {
-      target,
-      menu,
-      previousInlineStyle: target.getAttribute('style'),
-    };
+    this.hostMenuPositioning.positionVisibleHostMenuToAnchor(menu, anchor);
   }
 
   private restoreAnchoredHostMenuStyle(): void {
-    const anchored = this.anchoredHostMenu;
-    this.anchoredHostMenu = null;
-    if (anchored == null) {
-      return;
-    }
-
-    const { target, menu, previousInlineStyle } = anchored;
-    delete target.dataset.turboRenderHostMenuAnchored;
-    delete target.dataset.turboRenderHostMenuPlacement;
-    delete menu.dataset.turboRenderHostMenuAnchored;
-    delete menu.dataset.turboRenderHostMenuPlacement;
-    if (previousInlineStyle == null || previousInlineStyle.length === 0) {
-      target.removeAttribute('style');
-    } else {
-      target.setAttribute('style', previousInlineStyle);
-    }
+    this.hostMenuPositioning.restoreAnchoredHostMenuStyle();
   }
 
   private findHostMoreMenuAction(menu: ParentNode, action: EntryMoreMenuAction): HTMLElement | null {
-    const exactSelectors =
-      action === 'branch'
-        ? [
-            'button[data-testid="branch-in-new-chat-turn-action-button"]',
-            '[role="menuitem"][data-testid="branch-in-new-chat-turn-action-button"]',
-            '[data-testid="branch-in-new-chat-turn-action-button"]',
-          ]
-        : action === 'stop-read-aloud'
-          ? [
-              '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
-              '[role="menuitem"][aria-label="停止"]',
-              'button[data-testid="voice-stop-turn-action-button"]',
-              'button[data-testid="stop-read-aloud-turn-action-button"]',
-              'div[data-testid="voice-play-turn-action-button"]',
-              'div[data-testid="stop-read-aloud-turn-action-button"]',
-            ]
-          : [
-            'button[data-testid="voice-play-turn-action-button"]',
-            'button[data-testid="read-aloud-turn-action-button"]',
-            '[role="menuitem"][data-testid="voice-play-turn-action-button"]',
-            '[role="menuitem"][data-testid="read-aloud-turn-action-button"]',
-            'div[data-testid="voice-play-turn-action-button"]',
-            'div[data-testid="read-aloud-turn-action-button"]',
-          ];
-    const exactMatch = exactSelectors
-      .map((selector) => menu.querySelector<HTMLElement>(selector))
-      .find((candidate): candidate is HTMLElement => candidate != null && !isTurboRenderUiNode(candidate));
-    if (exactMatch != null) {
-      return exactMatch;
-    }
-
-    const labelPatterns =
-      action === 'branch'
-        ? [/branch in new chat/i, /new chat/i, /分支到新聊天/i]
-        : action === 'stop-read-aloud'
-          ? [/stop reading/i, /stop read aloud/i, /停止朗读/i]
-          : [/read aloud/i, /朗读/i];
-
-    return (
-      [...menu.querySelectorAll<HTMLElement>('button, [role="menuitem"], [role="button"], a')].find((candidate) => {
-        if (isTurboRenderUiNode(candidate)) {
-          return false;
-        }
-
-        const label = [
-          candidate.getAttribute('aria-label'),
-          candidate.getAttribute('title'),
-          candidate.textContent,
-        ]
-          .filter((value): value is string => value != null && value.trim().length > 0)
-          .join(' ')
-          .trim();
-
-        return labelPatterns.some((pattern) => pattern.test(label));
-      }) ?? null
-    );
+    return findHostMoreMenuActionInMenu(menu, action);
   }
 
   private readHostEntryActionSelection(
     groupId: string,
     entry: ManagedHistoryEntry,
   ): { matched: boolean; selection: EntryActionSelection | null } {
-    const searchRoots = this.collectHostSearchRootsForEntry(groupId, entry);
-    if (searchRoots.length === 0) {
-      return { matched: false, selection: null };
-    }
-
-    const likeButton = searchRoots
-      .map((root) => findHostActionButton(root, 'like'))
-      .find((candidate): candidate is HTMLElement => candidate != null && !isTurboRenderUiNode(candidate));
-    const dislikeButton = searchRoots
-      .map((root) => findHostActionButton(root, 'dislike'))
-      .find((candidate): candidate is HTMLElement => candidate != null && !isTurboRenderUiNode(candidate));
-
-    if (likeButton == null && dislikeButton == null) {
-      return { matched: false, selection: null };
-    }
-
-    const isPressed = (candidate: HTMLElement | undefined): boolean => {
-      if (candidate == null) {
-        return false;
-      }
-
-      return (
-        candidate.getAttribute('aria-pressed') === 'true' ||
-        candidate.classList.contains('text-token-text-primary') ||
-        candidate.dataset.state === 'on'
-      );
-    };
-
-    if (isPressed(likeButton)) {
-      return { matched: true, selection: 'like' };
-    }
-    if (isPressed(dislikeButton)) {
-      return { matched: true, selection: 'dislike' };
-    }
-
-    return { matched: true, selection: null };
+    return readHostEntryActionSelectionFromRoots(this.collectHostSearchRootsForEntry(groupId, entry));
   }
 
   private dispatchHumanClick(target: HTMLElement): void {
-    if (this.dispatchReactLikeClick(target)) {
-      return;
-    }
-
-    const rect = target.getBoundingClientRect();
-    const centerX = rect.x + rect.width / 2;
-    const centerY = rect.y + rect.height / 2;
-
-    const dispatchPointer = (type: string, buttons: number): void => {
-      const eventInit = {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-      } as PointerEventInit;
-      if (typeof PointerEvent === 'function') {
-        target.dispatchEvent(new PointerEvent(type, eventInit));
-        return;
-      }
-      target.dispatchEvent(new MouseEvent(type, eventInit));
-    };
-
-    dispatchPointer('pointerover', 0);
-    dispatchPointer('pointerenter', 0);
-    target.dispatchEvent(
-      new MouseEvent('mouseover', {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 0,
-      }),
-    );
-    target.dispatchEvent(
-      new MouseEvent('mouseenter', {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 0,
-      }),
-    );
-    dispatchPointer('pointerdown', 1);
-    target.dispatchEvent(
-      new MouseEvent('mousedown', {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 1,
-      }),
-    );
-    dispatchPointer('pointerup', 0);
-    target.dispatchEvent(
-      new MouseEvent('mouseup', {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 0,
-      }),
-    );
-    target.dispatchEvent(
-      new MouseEvent('click', {
-        bubbles: true,
-        cancelable: true,
-        clientX: centerX,
-        clientY: centerY,
-        button: 0,
-        buttons: 0,
-      }),
-    );
-  }
-
-  private dispatchReactLikeClick(target: HTMLElement): boolean {
-    const reactProps = this.getReactProps(target);
-    if (reactProps == null) {
-      return false;
-    }
-
-    const rect = target.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
-      return false;
-    }
-
-    const createEvent = (buttons: number) => {
-      const clientX = rect.x + rect.width / 2;
-      const clientY = rect.y + rect.height / 2;
-      let defaultPrevented = false;
-      const event = {
-        isTrusted: true,
-        get defaultPrevented(): boolean {
-          return defaultPrevented;
-        },
-        button: 0,
-        buttons,
-        clientX,
-        clientY,
-        ctrlKey: false,
-        metaKey: false,
-        altKey: false,
-        shiftKey: false,
-        pointerType: 'mouse',
-        detail: 1,
-        target,
-        currentTarget: target,
-        nativeEvent: undefined as unknown,
-        preventDefault(): void {
-          defaultPrevented = true;
-        },
-        stopPropagation(): void {
-          // No-op for the synthetic host bridge.
-        },
-      } as {
-        isTrusted: boolean;
-        defaultPrevented: boolean;
-        button: number;
-        buttons: number;
-        clientX: number;
-        clientY: number;
-        ctrlKey: boolean;
-        metaKey: boolean;
-        altKey: boolean;
-        shiftKey: boolean;
-        pointerType: string;
-        detail: number;
-        target: EventTarget | null;
-        currentTarget: EventTarget | null;
-        nativeEvent: unknown;
-        preventDefault(): void;
-        stopPropagation(): void;
-      };
-      event.nativeEvent = {
-        isTrusted: true,
-        button: event.button,
-        buttons: event.buttons,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey,
-        altKey: event.altKey,
-        shiftKey: event.shiftKey,
-        pointerType: event.pointerType,
-        detail: event.detail,
-        target,
-        currentTarget: target,
-        get defaultPrevented(): boolean {
-          return defaultPrevented;
-        },
-        preventDefault(): void {
-          defaultPrevented = true;
-        },
-        stopPropagation(): void {
-          // No-op for the synthetic host bridge.
-        },
-      } as unknown;
-      return event;
-    };
-
-    const invoke = (name: string, event: ReturnType<typeof createEvent>): boolean => {
-      const handler = reactProps[name];
-      if (typeof handler !== 'function') {
-        return false;
-      }
-
-      try {
-        handler(event);
-      } catch {
-        // Fall through to the DOM event bridge below when React props misbehave.
-      }
-      return true;
-    };
-
-    const pointerMoveEvent = createEvent(1);
-    const pointerDownEvent = createEvent(1);
-    const pointerUpEvent = createEvent(0);
-    const clickEvent = createEvent(0);
-    let invoked = false;
-    invoked = invoke('onPointerMove', pointerMoveEvent) || invoked;
-    invoked = invoke('onPointerDown', pointerDownEvent) || invoked;
-    invoked = invoke('onPointerUp', pointerUpEvent) || invoked;
-    invoked = invoke('onClick', clickEvent) || invoked;
-
-    return invoked;
-  }
-
-  private getReactProps(target: HTMLElement): Record<string, unknown> | null {
-    const propsKey = Reflect.ownKeys(target).find(
-      (key): key is string => typeof key === 'string' && key.startsWith('__reactProps'),
-    );
-    if (propsKey == null) {
-      return null;
-    }
-
-    const props = (target as unknown as Record<string, unknown>)[propsKey];
-    if (props == null || typeof props !== 'object') {
-      return null;
-    }
-
-    return props as Record<string, unknown>;
+    dispatchHostHumanClick(target);
   }
 
   private refreshRuntimeStatusFromCurrentMetrics(archiveState = this.collectArchiveState()): void {
@@ -4346,99 +2791,6 @@ export class TurboRenderController {
       this.restoreAllParking(0);
     }
 
-    // Priority 1: Check for fixture replay mode first (origin fixture replay)
-    const fixtureData = getFixtureData(this.doc);
-    if (fixtureData?.conversation != null) {
-      console.log(`[TurboRender] Fixture replay mode detected: ${fixtureData.fixtureId}`);
-      // Use fixture data to build turns, bypassing normal DOM scanning
-      const fixtureTurns = buildTurnsFromFixture(fixtureData.conversation, this.doc);
-      console.log(`[TurboRender] Built ${fixtureTurns.length} turns from fixture`);
-      if (fixtureTurns.length > 0) {
-        // Check version compatibility
-        const compatibilityWarning = checkFixtureCompatibility(fixtureData.version);
-        if (compatibilityWarning != null) {
-          console.warn(`[TurboRender] Fixture compatibility warning: ${compatibilityWarning}`);
-        }
-        // Build InitialTrimSession from fixture turns
-        const now = Date.now();
-        const initialTrimSession: InitialTrimSession = {
-          chatId: `chat:${fixtureData.conversationId}`,
-          routeKind: 'chat',
-          routeId: fixtureData.conversationId,
-          conversationId: fixtureData.conversationId,
-          applied: true,
-          reason: 'fixture-replay',
-          mode: 'compatibility',
-          totalMappingNodes: fixtureTurns.length,
-          totalVisibleTurns: fixtureTurns.length,
-          activeBranchLength: fixtureTurns.length,
-          hotVisibleTurns: 0,
-          coldVisibleTurns: fixtureTurns.length,
-          initialHotPairs: 0,
-          hotPairCount: 0,
-          archivedPairCount: Math.floor(fixtureTurns.length / 2),
-          initialHotTurns: 0,
-          hotStartIndex: 0,
-          hotTurnCount: 0,
-          archivedTurnCount: fixtureTurns.length,
-          activeNodeId: null,
-          turns: fixtureTurns.map((turn, index) => ({
-            id: turn.id,
-            index,
-            role: turn.role,
-            isStreaming: turn.isStreaming,
-            parked: true,
-            messageId: turn.messageId,
-            parts: [],
-            renderKind: 'markdown-text',
-            contentType: null,
-            snapshotHtml: null,
-            structuredDetails: null,
-            hiddenFromConversation: false,
-            createTime: now / 1000,
-          })),
-          coldTurns: [],
-          capturedAt: now,
-        };
-        this.setInitialTrimSession(initialTrimSession);
-        this.turnContainer = null;
-        // Find a suitable mount target in the DOM
-        // Try main content area first, then look for specific ChatGPT containers
-        const main = this.doc.querySelector('main');
-        const article = this.doc.querySelector('article');
-        const firstSection = this.doc.querySelector('section');
-        const mountTarget = main ?? article ?? firstSection ?? this.doc.body;
-        this.historyMountTarget = mountTarget;
-        console.log(`[TurboRender] Debug: mountTarget set to ${mountTarget?.tagName ?? 'null'}, main=${!!main}, article=${!!article}, section=${!!firstSection}`);
-        this.active = !this.paused && this.settings.enabled;
-        this.setObservedMutationRoot(
-          this.historyMountTarget.parentElement ?? this.historyMountTarget ?? this.doc.body,
-          'archive-only-root',
-        );
-        this.setScrollTarget(this.doc.scrollingElement as HTMLElement | null);
-        this.updateBatchSearchState();
-        // For fixture mode: force hotPairCount to 0 to ensure all turns become archive groups
-        const totalPairs = this.managedHistory.getTotalPairs();
-        const archiveState = this.collectArchiveStateForFixture(totalPairs);
-        console.log(`[TurboRender] Archive groups: ${archiveState.archiveGroups.length}, totalPairs: ${totalPairs}`);
-        this.runtimeStatus = this.buildStatus({
-          supported: true,
-          reason: null,
-          totalTurns: this.managedHistory.getTotalTurns(),
-          totalPairs: totalPairs,
-          finalizedTurns: this.managedHistory.getTotalTurns(),
-          liveDescendantCount: 0,
-          visibleRange: null,
-        }, archiveState);
-        console.log(`[TurboRender] Debug: statusBar=${this.statusBar != null}, mountTarget=${this.historyMountTarget?.tagName}, active=${this.active}`);
-        this.updateStatusBar(archiveState);
-        this.primeConversationMetadataIfNeeded(archiveState);
-        console.log(`[TurboRender] Loaded ${fixtureTurns.length} turns from fixture ${fixtureData.fixtureId}`);
-        return;
-      }
-    }
-
-    // Priority 2: Normal DOM scanning for live ChatGPT pages
     const snapshot = scanChatPage(this.doc);
     const totalTurnsBeforeScan = this.managedHistory.getTotalTurns();
     const totalPairsBeforeScan = this.managedHistory.getTotalPairs();
@@ -4676,28 +3028,11 @@ export class TurboRenderController {
     );
   }
 
-  private getResidentArchivePageIndexes(archiveState: ArchiveUiState): Set<number> {
-    const residentPageIndexes = new Set<number>();
-    if (archiveState.archivePageCount <= 0) {
-      return residentPageIndexes;
-    }
-
-    if (archiveState.currentArchivePageIndex == null) {
-      residentPageIndexes.add(archiveState.archivePageCount - 1);
-      return residentPageIndexes;
-    }
-
-    const start = Math.max(0, archiveState.currentArchivePageIndex - 1);
-    const end = Math.min(archiveState.archivePageCount - 1, archiveState.currentArchivePageIndex + 1);
-    for (let index = start; index <= end; index += 1) {
-      residentPageIndexes.add(index);
-    }
-
-    return residentPageIndexes;
-  }
-
   private syncArchivePageCache(archiveState: ArchiveUiState): void {
-    const residentPageIndexes = this.getResidentArchivePageIndexes(archiveState);
+    const residentPageIndexes = resolveResidentArchivePageIndexes(
+      archiveState.archivePageCount,
+      archiveState.currentArchivePageIndex,
+    );
 
     for (const summary of this.parkingLot.getSummaries()) {
       const pageIndex = summary.archivePageIndex;
@@ -4787,96 +3122,21 @@ export class TurboRenderController {
   }
 
   private computeVisibleRange(scrollContainer: HTMLElement): IndexRange | null {
-    if (this.turnContainer == null) {
-      return null;
-    }
-
-    const containerRect = scrollContainer.getBoundingClientRect();
-    let hasRealLayout = false;
-    let start = Number.POSITIVE_INFINITY;
-    let end = Number.NEGATIVE_INFINITY;
-    let encounteredVisible = false;
-
-    for (const child of this.turnContainer.children) {
-      if (!(child instanceof HTMLElement)) {
-        continue;
-      }
-
-      const rect = child.getBoundingClientRect();
-      if (rect.height > 0 || rect.width > 0 || rect.top !== 0 || rect.bottom !== 0) {
-        hasRealLayout = true;
-      }
-
-      if (rect.bottom < containerRect.top) {
-        continue;
-      }
-
-      if (rect.top > containerRect.bottom) {
-        if (encounteredVisible) {
-          break;
-        }
-        continue;
-      }
-
-      const intersects = rect.bottom >= containerRect.top && rect.top <= containerRect.bottom;
-      if (!intersects) {
-        continue;
-      }
-      encounteredVisible = true;
-
-      const turnId = child.dataset[TURN_ID_DATASET];
-      if (turnId == null) {
-        continue;
-      }
-      const record = this.records.get(turnId);
-      if (record != null) {
-        if (record.index < start) {
-          start = record.index;
-        }
-        if (record.index > end) {
-          end = record.index;
-        }
-      }
-    }
-
-    if (!hasRealLayout && containerRect.height === 0 && containerRect.width === 0) {
-      return null;
-    }
-
-    if (!Number.isFinite(start) || !Number.isFinite(end)) {
-      return null;
-    }
-
-    return {
-      start,
-      end,
-    };
+    return computeVisibleRangeFromTurnContainer(
+      this.turnContainer,
+      scrollContainer,
+      (turnId) => this.records.get(turnId)?.index ?? null,
+    );
   }
 
   private isProtectedTurn(node: HTMLElement | null): boolean {
-    if (node == null) {
-      return false;
-    }
-
-    const activeElement = this.doc.activeElement;
-    if (activeElement != null && node.contains(activeElement)) {
-      return true;
-    }
-
-    const selection = this.win.getSelection();
-    if (selection != null && selection.rangeCount > 0) {
-      const anchorNode = selection.anchorNode;
-      const focusNode = selection.focusNode;
-      if ((anchorNode != null && node.contains(anchorNode)) || (focusNode != null && node.contains(focusNode))) {
-        return true;
-      }
-    }
-
-    return (
-      this.lastInteractionNode != null &&
-      this.win.performance.now() - this.lastInteractionAt < 1500 &&
-      node.contains(this.lastInteractionNode)
-    );
+    return isProtectedTurnNode({
+      node,
+      doc: this.doc,
+      win: this.win,
+      lastInteractionNode: this.lastInteractionNode,
+      lastInteractionAt: this.lastInteractionAt,
+    });
   }
 
   private collectArchiveState(totalPairs = this.managedHistory.getTotalPairs()): ArchiveUiState {
@@ -4884,34 +3144,6 @@ export class TurboRenderController {
     this.pruneExpandedArchiveBatches(totalPairs);
     const archivePageCount = this.managedHistory.getArchivedPageCount(ARCHIVE_PAGE_PAIR_COUNT, hotPairCount);
     const currentArchivePageIndex = this.resolveArchivePageIndex(totalPairs);
-    const currentArchivePageMeta =
-      currentArchivePageIndex != null
-        ? this.managedHistory.getArchivedPageMeta(currentArchivePageIndex, ARCHIVE_PAGE_PAIR_COUNT, hotPairCount)
-        : null;
-    const archiveGroups = this.getAllArchiveGroups(totalPairs, hotPairCount);
-    const currentPageGroups = this.getCurrentPageArchiveGroups(totalPairs, currentArchivePageIndex);
-    return {
-      archivePageCount,
-      currentArchivePageIndex,
-      currentArchivePageMeta,
-      isRecentView: currentArchivePageIndex == null,
-      archiveGroups,
-      currentPageGroups,
-      collapsedBatchCount: currentPageGroups.filter((group) => !group.expanded).length,
-      expandedBatchCount: currentPageGroups.filter((group) => group.expanded).length,
-    };
-  }
-
-  /**
-   * Special version for fixture mode: forces all pairs to be archived (hotPairCount=0)
-   * so that archive groups are created and UI becomes visible.
-   */
-  private collectArchiveStateForFixture(totalPairs: number): ArchiveUiState {
-    const hotPairCount = 0;
-    this.pruneExpandedArchiveBatches(totalPairs);
-    const archivePageCount = this.managedHistory.getArchivedPageCount(ARCHIVE_PAGE_PAIR_COUNT, hotPairCount);
-    const currentArchivePageIndex =
-      this.archivePager.currentPageIndex ?? (archivePageCount > 0 ? archivePageCount - 1 : null);
     const currentArchivePageMeta =
       currentArchivePageIndex != null
         ? this.managedHistory.getArchivedPageMeta(currentArchivePageIndex, ARCHIVE_PAGE_PAIR_COUNT, hotPairCount)
@@ -4944,48 +3176,29 @@ export class TurboRenderController {
   ): TabRuntimeStatus {
     const hotPairCount = this.getHotPairCount(input.totalPairs);
 
-    return {
-      supported: input.supported,
-      chatId: this.chatId,
-      routeKind: getRouteKindFromRuntimeId(this.chatId),
-      reason: input.reason,
-      archiveOnly: !input.supported && input.totalTurns > 0,
+    return buildRuntimeStatus({
+      ...input,
+      hotPairCount,
+      handledTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
+      archivedTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
       active: this.active,
       paused: this.paused,
       mode: this.settings.mode,
       softFallback: this.softFallbackSession || this.settings.softFallback,
-      initialTrimApplied: this.initialTrimSession?.applied ?? false,
-      initialTrimmedTurns: this.initialTrimSession?.coldVisibleTurns ?? 0,
-      totalMappingNodes: this.initialTrimSession?.totalMappingNodes ?? 0,
-      activeBranchLength: this.initialTrimSession?.activeBranchLength ?? 0,
-      totalTurns: input.totalTurns,
-      totalPairs: input.totalPairs,
-      hotPairsVisible: hotPairCount,
-      finalizedTurns: input.finalizedTurns,
-      handledTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
-      historyPanelOpen: false,
-      archivePageCount: archiveState.archivePageCount,
-      currentArchivePageIndex: archiveState.currentArchivePageIndex,
-      archivedTurnsTotal: this.managedHistory.getArchivedTurnsTotal(hotPairCount),
-      expandedArchiveGroups: archiveState.currentPageGroups.filter((group) => group.expanded).length,
-      historyAnchorMode: 'hidden',
-      slotBatchCount: archiveState.currentPageGroups.length,
-      collapsedBatchCount: archiveState.currentPageGroups.filter((group) => !group.expanded).length,
-      expandedBatchCount: archiveState.currentPageGroups.filter((group) => group.expanded).length,
-      parkedTurns: this.parkingLot.getTotalParkedTurns(),
-      parkedGroups: this.parkingLot.getSummaries().length,
-      residentParkedGroups: this.parkingLot.getResidentGroupCount(),
-      serializedParkedGroups: this.parkingLot.getSerializedGroupCount(),
-      liveDescendantCount: input.liveDescendantCount,
-      visibleRange: input.visibleRange,
+      initialTrimSession: this.initialTrimSession,
+      chatId: this.chatId,
       observedRootKind: this.observedRootKind,
       refreshCount: this.refreshCount,
       spikeCount: this.frameSpikeMonitor.getSpikeCount(),
       lastError: this.lastError,
       contentScriptInstanceId: this.contentScriptInstanceId,
       contentScriptStartedAt: this.contentScriptStartedAt,
-      buildSignature: BUILD_SIGNATURE,
-    };
+      parkedTurns: this.parkingLot.getTotalParkedTurns(),
+      parkedGroups: this.parkingLot.getSummaries().length,
+      residentParkedGroups: this.parkingLot.getResidentGroupCount(),
+      serializedParkedGroups: this.parkingLot.getSerializedGroupCount(),
+      archiveState,
+    });
   }
 
   private setObservedMutationRoot(
@@ -5065,7 +3278,7 @@ export class TurboRenderController {
         collapsedBatchCount: currentPageGroups.filter((group) => !group.expanded).length,
         expandedBatchCount: currentPageGroups.filter((group) => group.expanded).length,
         entryActionAvailability,
-        entryActionSelection: this.buildEntryActionSelectionMap(currentPageGroups),
+        entryActionSelection: this.buildEntryActionSelectionMap(currentPageGroups, entryActionAvailability),
         entryActionTemplates: this.buildEntryActionTemplateMap(),
         entryHostMessageIds: this.buildEntryHostMessageIdMap(currentPageGroups),
         entryActionMenu: this.entryActionMenu,
@@ -5077,14 +3290,17 @@ export class TurboRenderController {
     );
   }
 
-  private buildEntryActionSelectionMap(archiveGroups: ManagedHistoryGroup[]): EntryActionSelectionMap {
+  private buildEntryActionSelectionMap(
+    archiveGroups: ManagedHistoryGroup[],
+    entryActionAvailability: EntryActionAvailabilityMap,
+  ): EntryActionSelectionMap {
     const selections: EntryActionSelectionMap = Object.fromEntries(this.entryActionSelectionByEntryId);
     if (!this.shouldPreferHostMorePopover()) {
       return selections;
     }
 
     for (const group of archiveGroups) {
-      if (!this.shouldResolveEntryMetadataForGroup(group)) {
+      if (!shouldResolveEntryMetadataForGroup(group)) {
         continue;
       }
       for (const entry of group.entries) {
@@ -5099,6 +3315,10 @@ export class TurboRenderController {
         }
 
         const entryKey = getArchiveEntrySelectionKey(entry);
+        const availability = entryActionAvailability[entryKey];
+        if (availability?.like !== 'host-bound' && availability?.dislike !== 'host-bound') {
+          continue;
+        }
         const hostSelection = this.readHostEntryActionSelection(group.id, entry);
         if (!hostSelection.matched) {
           continue;
@@ -5115,24 +3335,76 @@ export class TurboRenderController {
     return selections;
   }
 
-  private shouldResolveEntryMetadataForGroup(group: ManagedHistoryGroup): boolean {
-    return group.expanded;
-  }
-
   private buildEntryActionTemplateMap(): EntryActionTemplateMap {
-    return Object.fromEntries(this.entryActionTemplateByLane);
+    return buildEntryActionTemplateMap(this.entryActionTemplateByLane);
   }
 
-  private resolveEntryHostMessageIdFromConversationPayload(
+  private resolveBackendFeedbackMessageId(groupId: string, entry: ManagedHistoryEntry): string | null {
+    const conversationId = this.getConversationIdForReadAloud();
+    const conversationPayload = this.getConversationPayloadForReadAloud(conversationId);
+    const messageId =
+      resolveEntryHostMessageIdFromConversationPayload(entry, conversationPayload) ??
+      this.findRenderedArchiveMessageIdForEntry(groupId, entry) ??
+      this.entryHostMessageIdCache.get(getArchiveEntrySelectionKey(entry)) ??
+      this.findHostMessageIdForEntry(entry, groupId) ??
+      resolvePreferredMessageId(entry.messageId, entry.liveTurnId, entry.turnId);
+    const normalized = messageId?.trim() ?? '';
+    return normalized.length > 0 && !isSyntheticMessageId(normalized) ? normalized : null;
+  }
+
+  private canUseBackendFeedbackForEntry(groupId: string, entry: ManagedHistoryEntry): boolean {
+    return (
+      this.runtimeStatus.routeKind === 'chat' &&
+      entry.role === 'assistant' &&
+      this.getConversationIdForReadAloud() != null &&
+      this.resolveBackendFeedbackMessageId(groupId, entry) != null
+    );
+  }
+
+  private async sendBackendMessageFeedback(
+    groupId: string,
     entry: ManagedHistoryEntry,
-    conversationPayload: ConversationPayload | null,
-  ): string | null {
-    return resolveReadAloudMessageIdFromPayload(conversationPayload, {
-      entryRole: entry.role === 'user' ? 'user' : entry.role === 'assistant' ? 'assistant' : null,
-      entryText: resolveArchiveCopyText(entry),
-      entryMessageId: entry.messageId ?? entry.liveTurnId ?? entry.turnId ?? null,
-      syntheticMessageId: entry.messageId ?? entry.liveTurnId ?? entry.turnId ?? null,
-    });
+    selection: EntryActionSelection,
+  ): Promise<boolean> {
+    if (!this.canUseBackendFeedbackForEntry(groupId, entry)) {
+      return false;
+    }
+
+    const conversationId = this.getConversationIdForReadAloud();
+    if (conversationId == null) {
+      return false;
+    }
+
+    await this.ensureConversationSnapshotForReadAloud(conversationId);
+    const messageId = this.resolveBackendFeedbackMessageId(groupId, entry);
+    if (messageId == null) {
+      return false;
+    }
+
+    const headers = await this.readAloudBackend.buildJsonHeaders();
+
+    const url = new URL('/backend-api/conversation/message_feedback', this.win.location.origin);
+    try {
+      const response = await this.win.fetch(url.toString(), {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+        body: JSON.stringify({
+          message_id: messageId,
+          conversation_id: conversationId,
+          rating: selection === 'like' ? 'thumbsUp' : 'thumbsDown',
+        }),
+      });
+      if (!response.ok) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+
+    this.entryActionSelectionByEntryId.set(getArchiveEntrySelectionKey(entry), selection);
+    this.updateStatusBar(this.collectArchiveState());
+    return true;
   }
 
   private buildEntryHostMessageIdMap(archiveGroups: ManagedHistoryGroup[]): Record<string, string> {
@@ -5140,7 +3412,7 @@ export class TurboRenderController {
     const conversationPayload = this.getConversationPayloadForReadAloud(this.getConversationIdForReadAloud());
     const activeEntryKeys = new Set<string>();
     for (const group of archiveGroups) {
-      if (!this.shouldResolveEntryMetadataForGroup(group)) {
+      if (!shouldResolveEntryMetadataForGroup(group)) {
         continue;
       }
       for (const entry of group.entries) {
@@ -5154,7 +3426,7 @@ export class TurboRenderController {
         activeEntryKeys.add(entryKey);
         const cachedHostMessageId = this.entryHostMessageIdCache.get(entryKey) ?? null;
         const hostMessageId =
-          this.resolveEntryHostMessageIdFromConversationPayload(entry, conversationPayload) ??
+          resolveEntryHostMessageIdFromConversationPayload(entry, conversationPayload) ??
           this.findRenderedArchiveMessageIdForEntry(group.id, entry) ??
           cachedHostMessageId ??
           this.findHostMessageIdForEntry(entry, group.id, group) ??
@@ -5176,38 +3448,11 @@ export class TurboRenderController {
   }
 
   private buildEntryActionAvailability(groups: ManagedHistoryGroup[]): EntryActionAvailabilityMap {
-    const availability: EntryActionAvailabilityMap = {};
-    const activeEntryIds = new Set<string>();
-
-    for (const group of groups) {
-      for (const entry of group.entries) {
-        const entryKey = getArchiveEntrySelectionKey(entry);
-        activeEntryIds.add(entryKey);
-        if (isSupplementalHistoryEntry(entry)) {
-          availability[entryKey] = {
-            copy: 'unavailable',
-            like: 'unavailable',
-            dislike: 'unavailable',
-            share: 'unavailable',
-            more: 'unavailable',
-          };
-          continue;
-        }
-        const assistantActionBinding = (action: ArchiveEntryAction): EntryActionAvailability['copy'] =>
-          entry.role === 'assistant' && this.resolveHostArchiveActionBinding(group.id, entry, action) != null
-            ? 'host-bound'
-            : 'unavailable';
-        const copyMode: EntryActionAvailability['copy'] =
-          this.resolveHostArchiveActionBinding(group.id, entry, 'copy') != null ? 'host-bound' : 'local-fallback';
-        availability[entryKey] = {
-          copy: copyMode,
-          like: assistantActionBinding('like'),
-          dislike: assistantActionBinding('dislike'),
-          share: assistantActionBinding('share'),
-          more: entry.role === 'assistant' ? 'local-fallback' : 'unavailable',
-        };
-      }
-    }
+    const { availability, activeEntryIds } = buildEntryActionAvailabilityMap(groups, {
+      resolveHostArchiveActionBinding: (groupId, entry, action) =>
+        this.resolveHostArchiveActionBinding(groupId, entry, action),
+      canUseBackendFeedbackForEntry: (groupId, entry) => this.canUseBackendFeedbackForEntry(groupId, entry),
+    });
 
     for (const entryId of [...this.entryActionSelectionByEntryId.keys()]) {
       if (!activeEntryIds.has(entryId)) {

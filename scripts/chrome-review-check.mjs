@@ -149,7 +149,6 @@ function createBaseSettings() {
     initialTrimEnabled: true,
     initialHotTurns: 10,
     liveHotTurns: 10,
-    coldRestoreMode: 'placeholder',
     softFallback: false,
     frameSpikeThresholdMs: 48,
     frameSpikeCount: 4,

@@ -35,7 +35,6 @@ function readPatchFromForm() {
     language: normalizeLanguagePreference(document.querySelector<HTMLSelectElement>('#language')!.value),
     mode: document.querySelector<HTMLSelectElement>('#mode')!.value as Settings['mode'],
     initialTrimEnabled: document.querySelector<HTMLInputElement>('#initialTrimEnabled')!.checked,
-    coldRestoreMode: document.querySelector<HTMLSelectElement>('#coldRestoreMode')!.value as Settings['coldRestoreMode'],
     softFallback: document.querySelector<HTMLInputElement>('#softFallback')!.checked,
     minFinalizedBlocks: Number(document.querySelector<HTMLInputElement>('#minFinalizedBlocks')!.value),
     minDescendants: Number(document.querySelector<HTMLInputElement>('#minDescendants')!.value),
@@ -94,13 +93,6 @@ function render(settings: Settings, statusKey?: TranslationKey): void {
             <select id="mode">
               <option value="performance" ${settings.mode === 'performance' ? 'selected' : ''}>${t('labelPerformance')}</option>
               <option value="compatibility" ${settings.mode === 'compatibility' ? 'selected' : ''}>${t('labelCompatibility')}</option>
-            </select>
-          </label>
-          <label>
-            ${t('labelColdRestoreMode')}
-            <select id="coldRestoreMode">
-              <option value="placeholder" ${settings.coldRestoreMode === 'placeholder' ? 'selected' : ''}>${t('labelColdRestorePlaceholder')}</option>
-              <option value="readOnly" ${settings.coldRestoreMode === 'readOnly' ? 'selected' : ''}>${t('labelColdRestoreReadOnly')}</option>
             </select>
           </label>
         </div>

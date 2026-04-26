@@ -60,15 +60,15 @@ export function parseExactChatTargetUrl(rawUrl) {
     throw new Error(`Unsupported ChatGPT host for live testing: ${normalized.hostname}`);
   }
 
-  const match = normalized.pathname.match(/^\/c\/([^/]+)$/);
+  const match = normalized.pathname.match(/^\/(c|share)\/([^/]+)$/);
   if (match == null) {
     throw new Error(`Unsupported ChatGPT route for live testing: ${normalized.pathname}`);
   }
 
   return {
     url: normalized.href,
-    routeKind: 'chat',
-    conversationId: match[1],
+    routeKind: match[1] === 'c' ? 'chat' : 'share',
+    conversationId: match[2],
   };
 }
 

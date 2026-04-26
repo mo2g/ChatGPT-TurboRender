@@ -23,8 +23,12 @@ describe('chatgpt live target parsing', () => {
     });
   });
 
-  it('rejects share routes', () => {
-    expect(() => parseLiveTargetUrl('https://chatgpt.com/share/demo-id')).toThrow(/Unsupported ChatGPT route/);
+  it('parses a share route into a share target', () => {
+    expect(parseLiveTargetUrl('https://chatgpt.com/share/demo-id')).toEqual({
+      url: 'https://chatgpt.com/share/demo-id',
+      routeKind: 'share',
+      conversationId: 'demo-id',
+    });
   });
 
   it('rejects unsupported hosts', () => {
@@ -54,13 +58,16 @@ describe('live input validation', () => {
     ).toThrow(/requires --chat-url or --use-active-tab/);
   });
 
-  it('rejects a share URL passed into the live chat inputs', () => {
-    expect(() =>
+  it('accepts a share URL passed into the live chat inputs', () => {
+    expect(
       validateConfiguredLiveInputs({
         chatUrl: 'https://chatgpt.com/share/demo-id',
         useActiveTab: false,
       }),
-    ).toThrow(/Unsupported ChatGPT route/);
+    ).toEqual({
+      chatUrl: 'https://chatgpt.com/share/demo-id',
+      useActiveTab: false,
+    });
   });
 
   it('rejects ambiguous active-tab plus explicit URL resolution', () => {

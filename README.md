@@ -2,7 +2,7 @@
 
 Keep long ChatGPT conversations responsive without replacing the native UI.
 
-[中文说明](./README.zh-CN.md) | [Architecture Notes](./docs/architecture.md) | [架构说明](./docs/architecture.zh-CN.md) | [CDP Live Guide](./docs/plan/cdp-connected-development.md) | [Controlled Chrome Cookbook](./docs/cookbook-controlled-chrome.md) | [受控 Chrome Cookbook](./docs/cookbook-controlled-chrome.zh-CN.md)
+[中文说明](./README.zh-CN.md) | [Architecture Notes](./docs/architecture.md) | [架构说明](./docs/architecture.zh-CN.md) | [Refactor Design and Pitfalls](./docs/refactor-design-and-pitfalls.zh-CN.md) | [Archive Action Reuse Map](./docs/action-reuse-map.zh-CN.md) | [CDP Live Guide](./docs/plan/cdp-connected-development.md) | [Controlled Chrome Cookbook](./docs/cookbook-controlled-chrome.md) | [受控 Chrome Cookbook](./docs/cookbook-controlled-chrome.zh-CN.md)
 
 ChatGPT TurboRender is a Chromium-first browser extension that reduces UI jank in very long ChatGPT threads by trimming cold history before first render, preserving a hot interaction window, and restoring old turns on demand.
 
@@ -43,7 +43,7 @@ TurboRender focuses on the rendering bottleneck instead of changing your workflo
 - Storage model: local only
 - Network model: page-layer interception of the initial conversation payload in the main world, no backend, no cloud sync
 - Developer mainline: `pnpm debug:mcp-chrome` + `pnpm reload:mcp-chrome` + `pnpm test:e2e` against a logged-in controlled browser on real `chatgpt.com` (defaults to `https://chatgpt.com/c/ceb4ea77-5357-49fb-b35c-607b533846f1`)
-- Historical fixture note: offline fixture scripts remain under explicit `pnpm legacy:fixtures:*` maintenance commands only; fake-host browser replay is no longer part of E2E
+- Historical fixture note: offline fixture scripts and fake-host browser replay have been removed from the active test surface
 
 ## How folded history works
 
@@ -81,7 +81,7 @@ pnpm package:edge
 pnpm package:firefox
 ```
 
-`pnpm test:e2e:live` remains available as an explicit alias for the same real-page smoke suite. `pnpm test:all` runs `pnpm test:unit` first and then forwards the same live-host arguments to that runner. Historical fixture maintenance commands remain available as `pnpm legacy:fixtures:capture`, `pnpm legacy:fixtures:check`, `pnpm legacy:fixtures:diagnose`, and `pnpm legacy:fixtures:update-id`.
+`pnpm test:e2e:live` remains available as an explicit alias for the same real-page smoke suite. `pnpm test:all` runs `pnpm test:unit` first and then forwards the same live-host arguments to that runner.
 
 ## Browser releases
 
@@ -111,18 +111,14 @@ After each change, use `pnpm build` followed by `pnpm reload:mcp-chrome`, then r
 
 The launcher starts a dedicated Chromium-based browser on `http://127.0.0.1:9222` with `.output/chrome-mv3` preloaded. It prefers the repo-managed Playwright browser (`Google Chrome for Testing`) or a local Chromium build, because stable Google Chrome no longer honors `--load-extension` for unpacked extensions. After launching it, restart Codex in this repo so the project-level `[.codex/config.toml](./.codex/config.toml)` can point `chrome-devtools` MCP at that browser. For the full guide, see [docs/plan/cdp-connected-development.md](./docs/plan/cdp-connected-development.md).
 
-## Legacy Offline Fixtures
+## Removed Offline Fixtures
 
-Offline fixture material remains in the repo as historical reference only. It is no longer the primary development or acceptance workflow, and fake-host browser replay specs have been removed from the E2E path.
+Offline fixture scripts, manifests, fake-host replay helpers, and local mock-server helpers have been removed from the active repository. They had become stale after the project moved acceptance back to a signed-in real ChatGPT host.
 
 - `pnpm test:e2e` is the mainline signed-in real-page smoke path
 - `pnpm test:e2e:live` remains as an explicit alias for that same real-page smoke suite
 - popup and other extension-owned UI remain outside host E2E and are covered through unit/integration tests plus manual checks
-- `pnpm legacy:fixtures:capture`, `pnpm legacy:fixtures:check`, `pnpm legacy:fixtures:diagnose`, and `pnpm legacy:fixtures:update-id` remain available for historical local maintenance
-- Historical fixture capture is no longer treated as host-compatibility evidence
-- Historical background lives in [docs/offline-development.md](./docs/offline-development.md) and [docs/requirements/offline-chatgpt-environment.md](./docs/requirements/offline-chatgpt-environment.md)
-
-Each fixture bundle contains `replay.har.zip`, `page.mhtml`, `conversation.json`, `storage-state.json`, and `metadata.json` under `tests/fixtures-local/chatgpt` by default. That directory is gitignored and intended for the current machine only.
+- Historical background remains in [docs/offline-development.md](./docs/offline-development.md) and [docs/requirements/offline-chatgpt-environment.md](./docs/requirements/offline-chatgpt-environment.md), but those documents are not current test instructions
 
 ## Repository map
 

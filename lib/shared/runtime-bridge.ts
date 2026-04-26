@@ -1,5 +1,4 @@
 import type {
-  ColdRestoreMode,
   InitialTrimSession,
   Settings,
   TurboRenderMode,
@@ -13,7 +12,6 @@ export interface TurboRenderPageConfig {
   initialTrimEnabled: boolean;
   initialHotPairs: number;
   minFinalizedBlocks: number;
-  coldRestoreMode: ColdRestoreMode;
 }
 
 export interface TurboRenderConfigBridgeMessage {
@@ -44,7 +42,7 @@ export type TurboRenderBridgeMessage =
 export function toPageConfig(
   settings: Pick<
     Settings,
-    'enabled' | 'mode' | 'initialTrimEnabled' | 'initialHotPairs' | 'minFinalizedBlocks' | 'coldRestoreMode'
+    'enabled' | 'mode' | 'initialTrimEnabled' | 'initialHotPairs' | 'minFinalizedBlocks'
   >,
 ): TurboRenderPageConfig {
   return {
@@ -53,7 +51,6 @@ export function toPageConfig(
     initialTrimEnabled: settings.initialTrimEnabled,
     initialHotPairs: settings.initialHotPairs,
     minFinalizedBlocks: settings.minFinalizedBlocks,
-    coldRestoreMode: settings.coldRestoreMode,
   };
 }
 
