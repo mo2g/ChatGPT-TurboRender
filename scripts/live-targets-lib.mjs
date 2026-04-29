@@ -45,15 +45,6 @@ export function classifyChatgptRouteKind(rawUrl) {
   }
 }
 
-export function isSupportedChatgptConversationUrl(rawUrl) {
-  try {
-    const normalized = normalizeLiveTargetUrl(rawUrl);
-    return LIVE_HOSTNAMES.has(normalized.hostname) && /^\/(c|share)\/[^/]+$/.test(normalized.pathname);
-  } catch {
-    return false;
-  }
-}
-
 export function parseExactChatTargetUrl(rawUrl) {
   const normalized = normalizeLiveTargetUrl(rawUrl);
   if (!LIVE_HOSTNAMES.has(normalized.hostname)) {

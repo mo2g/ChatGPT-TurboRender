@@ -2,6 +2,7 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import { BUILD_SIGNATURE, DEFAULT_SETTINGS } from '../../lib/shared/constants';
 import { isRuntimeMessage } from '../../lib/shared/messages';
+import { isSlidingWindowMode } from '../../lib/shared/types';
 import { isTurboRenderBridgeMessage, postBridgeMessage, toPageConfig } from '../../lib/shared/runtime-bridge';
 import { shouldReplaceSession } from '../../lib/shared/session-precedence';
 import {
@@ -10,9 +11,27 @@ import {
   isChatPaused,
   setChatPaused,
 } from '../../lib/shared/settings';
-import { createDisposableBag } from '../../lib/content/runtime-disposers';
-import { TurboRenderController } from '../../lib/content/turbo-render-controller';
-import type { InitialTrimSession, Settings } from '../../lib/shared/types';
+import { createDisposableBag } from '../../lib/content/utils/runtime-disposers';
+import { TurboRenderController } from '../../lib/content/core/turbo-render-controller';
+import { SlidingWindowController } from '../../lib/content/sliding-window';
+import type { InitialTrimSession, Settings, TabRuntimeStatus } from '../../lib/shared/types';
+import { areSettingsEquivalent } from '../../lib/content/utils/turbo-render-controller-utils';
+import {mwLogger} from "@/lib/main-world/logger";
+
+const INITIAL_SETTINGS_TIMEOUT_MS = 1_500;
+
+interface ContentController {
+  start(): void;
+  stop(): void;
+  getStatus(): TabRuntimeStatus | null;
+  refreshForRuntimeStatusRequest?(): void;
+  setSettings(settings: Settings): void;
+  setPaused(paused: boolean): void;
+  setInitialTrimSession(session: InitialTrimSession | null): void;
+  resetForChatChange(chatId: string): void;
+  restoreNearby(): void;
+  restoreAll(): void;
+}
 
 type RuntimeMessageEventTarget = {
   addListener(handler: (...args: unknown[]) => unknown): void;
@@ -122,31 +141,6 @@ function createContentScriptInstanceId(): string {
   return `turborender-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function areSettingsEquivalent(left: Settings, right: Settings): boolean {
-  return (
-    left.enabled === right.enabled &&
-    left.autoEnable === right.autoEnable &&
-    left.language === right.language &&
-    left.mode === right.mode &&
-    left.minFinalizedBlocks === right.minFinalizedBlocks &&
-    left.minDescendants === right.minDescendants &&
-    left.keepRecentPairs === right.keepRecentPairs &&
-    left.batchPairCount === right.batchPairCount &&
-    left.initialHotPairs === right.initialHotPairs &&
-    left.liveHotPairs === right.liveHotPairs &&
-    left.keepRecentTurns === right.keepRecentTurns &&
-    left.viewportBufferTurns === right.viewportBufferTurns &&
-    left.groupSize === right.groupSize &&
-    left.initialTrimEnabled === right.initialTrimEnabled &&
-    left.initialHotTurns === right.initialHotTurns &&
-    left.liveHotTurns === right.liveHotTurns &&
-    left.softFallback === right.softFallback &&
-    left.frameSpikeThresholdMs === right.frameSpikeThresholdMs &&
-    left.frameSpikeCount === right.frameSpikeCount &&
-    left.frameSpikeWindowMs === right.frameSpikeWindowMs
-  );
-}
-
 function isHydrationPlaceholderChatId(chatId: string): boolean {
   return chatId === 'chat:unknown';
 }
@@ -183,18 +177,52 @@ function writeRuntimeMarkers(): void {
   document.body?.setAttribute('data-turbo-render-extension-id', extensionId);
 }
 
+function withTimeoutFallback<T>(promise: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (value: T) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(fallback), timeoutMs);
+
+    void promise.then(finish).catch(() => finish(fallback));
+  });
+}
+
+function readInitialRuntimeSnapshot(chatId: string): Promise<{ settings: Settings; paused: boolean }> {
+  return withTimeoutFallback(
+    Promise.all([getSettings(), isChatPaused(chatId)]).then(([settings, paused]) => ({
+      settings,
+      paused,
+    })),
+    {
+      settings: DEFAULT_SETTINGS,
+      paused: false,
+    },
+    INITIAL_SETTINGS_TIMEOUT_MS,
+  );
+}
+
 const contentScript = defineContentScript({
   matches: ['https://chatgpt.com/*', 'https://chat.openai.com/*'],
   runAt: 'document_start',
   async main(ctx: ContentScriptContext) {
     writeRuntimeMarkers();
-    console.info(`[TurboRender] content-script build ${BUILD_SIGNATURE}`);
+    mwLogger.info(`[TurboRender] content-script build ${BUILD_SIGNATURE}`);
 
     const contentScriptStartedAt = Date.now();
     const contentScriptInstanceId = createContentScriptInstanceId();
     let settings = DEFAULT_SETTINGS;
     let paused = false;
-    let controller: TurboRenderController | null = null;
+    let controller: ContentController | null = null;
+    let controllerMode: Settings['mode'] | null = null;
     const trimSessions = new Map<string, InitialTrimSession>();
     let lastChatId = getCurrentChatId();
     let pendingChatId: string | null = null;
@@ -223,13 +251,17 @@ const contentScript = defineContentScript({
     };
 
     const syncPausedState = (chatId: string) => {
-      void isChatPaused(chatId).then((nextPaused) => {
-        if (!isAlive() || chatId !== lastChatId) {
-          return;
-        }
-        paused = nextPaused;
-        controller?.setPaused(nextPaused);
-      });
+      void isChatPaused(chatId)
+        .then((nextPaused) => {
+          if (!isAlive() || chatId !== lastChatId) {
+            return;
+          }
+          paused = nextPaused;
+          controller?.setPaused(nextPaused);
+        })
+        .catch(() => {
+          // Keep the current pause state if extension storage is temporarily unavailable.
+        });
     };
 
     const requestSessionReplay = (chatId: string) => {
@@ -259,7 +291,11 @@ const contentScript = defineContentScript({
           const settingsChanged = !areSettingsEquivalent(settings, nextSettings);
           settings = nextSettings;
           if (settingsChanged) {
-            controller?.setSettings(nextSettings);
+            if (controller != null && controllerMode !== nextSettings.mode) {
+              restartController();
+            } else {
+              controller?.setSettings(nextSettings);
+            }
             syncPageConfig(nextSettings);
           }
 
@@ -271,6 +307,9 @@ const contentScript = defineContentScript({
             paused = nextPaused;
             controller?.setPaused(nextPaused);
           }
+        })
+        .catch(() => {
+          // Retry on the next storage poll.
         })
         .finally(() => {
           storageSyncInFlight = false;
@@ -302,6 +341,7 @@ const contentScript = defineContentScript({
       disposables.dispose();
       controller?.stop();
       controller = null;
+      controllerMode = null;
     };
 
     ctx.onInvalidated(cleanup);
@@ -367,52 +407,68 @@ const contentScript = defineContentScript({
     syncPageConfig(settings);
     requestSessionReplay(lastChatId);
 
-    const ensureController = () => {
-      if (!isAlive() || controller != null) {
-        return;
+    const createController = (): ContentController => {
+      controllerMode = settings.mode;
+      if (isSlidingWindowMode(settings.mode)) {
+        return new SlidingWindowController({
+          settings,
+          paused,
+          contentScriptInstanceId,
+          contentScriptStartedAt,
+        });
       }
 
-      controller = new TurboRenderController({
+      return new TurboRenderController({
         settings,
         paused,
         contentScriptInstanceId,
         contentScriptStartedAt,
         onPauseToggle: (nextPaused, chatId) => setChatPaused(chatId, nextPaused),
       });
+    };
+
+    const ensureController = () => {
+      if (!isAlive() || controller != null) {
+        return;
+      }
+
+      controller = createController();
       controller.start();
       controller.resetForChatChange(lastChatId);
       syncKnownSession(lastChatId);
     };
 
-    whenDocumentReady(() => {
-      writeRuntimeMarkers();
-      ensureController();
-    }, ctx);
-
-    void (async () => {
-      const chatIdAtLoad = lastChatId;
-      const [nextSettings, nextPaused] = await Promise.all([
-        getSettings(),
-        isChatPaused(chatIdAtLoad),
-      ]);
-
+    const restartController = () => {
       if (!isAlive()) {
         return;
       }
 
-      const settingsChanged = !areSettingsEquivalent(settings, nextSettings);
-      settings = nextSettings;
-      if (chatIdAtLoad === lastChatId) {
-        paused = nextPaused;
-      }
-      if (settingsChanged) {
-        syncPageConfig(settings);
-        (controller as TurboRenderController | null)?.setSettings(settings);
-      }
-      if (chatIdAtLoad === lastChatId) {
-        (controller as TurboRenderController | null)?.setPaused(paused);
-      }
-    })();
+      controller?.stop();
+      controller = null;
+      controllerMode = null;
+      ensureController();
+    };
+
+    const chatIdAtLoad = lastChatId;
+    const {
+      settings: nextSettings,
+      paused: nextPaused,
+    } = await readInitialRuntimeSnapshot(chatIdAtLoad);
+
+    if (!isAlive()) {
+      return;
+    }
+
+    settings = nextSettings;
+    if (chatIdAtLoad === lastChatId) {
+      paused = nextPaused;
+    }
+    syncPageConfig(settings);
+
+    whenDocumentReady(() => {
+      writeRuntimeMarkers();
+      ensureController();
+    }, ctx);
 
     const handleRuntimeMessage = (message: unknown) => {
       if (!isAlive()) {
@@ -424,8 +480,7 @@ const contentScript = defineContentScript({
 
       switch (message.type) {
         case 'GET_RUNTIME_STATUS':
-          (controller as (TurboRenderController & { refreshForRuntimeStatusRequest?: () => void }) | null)
-            ?.refreshForRuntimeStatusRequest?.();
+          controller?.refreshForRuntimeStatusRequest?.();
           return controller?.getStatus() ?? null;
         case 'GET_TAB_STATUS':
           return undefined;

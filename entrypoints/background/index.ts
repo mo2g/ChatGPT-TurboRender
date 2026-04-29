@@ -144,6 +144,9 @@ export default defineBackground(() => {
     async forwardToTab(tabId, message) {
       return safeSendMessage(tabId, message);
     },
+    async openOptionsPage() {
+      await browser.runtime.openOptionsPage();
+    },
   });
 
   browser.runtime.onInstalled.addListener(() => {

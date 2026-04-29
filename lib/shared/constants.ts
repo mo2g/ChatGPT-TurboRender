@@ -1,6 +1,6 @@
 import type { Settings } from './types';
 
-export const EXTENSION_NAME = 'ChatGPT TurboRender';
+
 export const BUILD_SIGNATURE = '2026-03-28-1650-hot-transcript-archive-zone';
 export const TURBO_RENDER_UI_ROOT_ATTRIBUTE = 'data-turbo-render-ui-root';
 export const TURBO_RENDER_UI_ROOT_VALUE = 'true';
@@ -9,7 +9,7 @@ export const TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_QUERY = 'turbo-render-debug-a
 export const TURBO_RENDER_DEBUG_SHOW_SHARE_ACTIONS_STORAGE_KEY = 'turboRenderDebugShowShareActions';
 
 export const TURN_ID_DATASET = 'turboRenderTurnId';
-export const PLACEHOLDER_GROUP_ATTRIBUTE = 'data-turbo-render-group-id';
+
 
 export const STORAGE_KEYS = {
   settings: 'turboRender.settings',
@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS: Settings = {
   minDescendants: 2500,
   keepRecentPairs: 5,
   batchPairCount: 5,
+  slidingWindowPairs: 5,
   initialHotPairs: 5,
   liveHotPairs: 5,
   keepRecentTurns: 10,
@@ -54,9 +55,12 @@ export const DEFAULT_SETTINGS: Settings = {
   initialHotTurns: 10,
   liveHotTurns: 10,
   softFallback: false,
+  enableTimeoutFallback: false,
   frameSpikeThresholdMs: 48,
   frameSpikeCount: 4,
   frameSpikeWindowMs: 5000,
+  debugEnabled: false,
+  debugVerbose: false,
 };
 
 export const UI_CLASS_NAMES = {

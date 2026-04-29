@@ -53,7 +53,7 @@ export function selectExactChatgptExtensionTab<TTab extends ExtensionTabLike>(ta
 export function createLivePerformanceSample(phase: string, runtime: Record<string, unknown> | null): LivePerformanceSample | null;
 export function validateLivePerformanceSample(sample: LivePerformanceSample | null): string[];
 export function formatLivePerformanceSample(sample: LivePerformanceSample | null): string;
-export function inspectChatgptPage(page: PageLike): Promise<ChatgptPageInspection>;
+
 export function hasTurboRenderInjection(
   inspection: Pick<
     ChatgptPageInspection,
@@ -66,9 +66,3 @@ export function hasArchiveAccess(
     'visibleBoundaryRoots' | 'batchAnchors' | 'visibleInlineHistoryRoots' | 'boundaryButtons'
   >,
 ): boolean;
-export function waitForInspection(
-  page: PageLike,
-  predicate: (inspection: ChatgptPageInspection) => boolean,
-  timeoutMs?: number,
-  intervalMs?: number,
-): Promise<ChatgptPageInspection | null>;

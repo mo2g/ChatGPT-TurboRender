@@ -3,7 +3,11 @@ export type ConversationRouteKind = 'chat' | 'share' | 'home' | 'unknown';
 
 export type ParkingMode = 'hard' | 'soft';
 export type ParkingState = 'resident' | 'serialized';
-export type TurboRenderMode = 'performance' | 'compatibility';
+export type TurboRenderMode = 'performance' | 'sliding-window' | 'sliding-window-inplace';
+
+export function isSlidingWindowMode(mode: TurboRenderMode): mode is 'sliding-window' | 'sliding-window-inplace' {
+  return mode === 'sliding-window' || mode === 'sliding-window-inplace';
+}
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN';
 export type ManagedHistorySource = 'initial-trim' | 'parked-group';
 export type HistoryAnchorMode = 'host-share' | 'safe-top' | 'hidden';
@@ -27,6 +31,7 @@ export interface Settings {
   minDescendants: number;
   keepRecentPairs: number;
   batchPairCount: number;
+  slidingWindowPairs: number;
   initialHotPairs: number;
   liveHotPairs: number;
   keepRecentTurns: number;
@@ -36,9 +41,12 @@ export interface Settings {
   initialHotTurns: number;
   liveHotTurns: number;
   softFallback: boolean;
+  enableTimeoutFallback: boolean;
   frameSpikeThresholdMs: number;
   frameSpikeCount: number;
   frameSpikeWindowMs: number;
+  debugEnabled: boolean;
+  debugVerbose: boolean;
 }
 
 export interface TurnRecord {
@@ -263,9 +271,3 @@ export interface TabStatusResponse {
   activeTabRouteKind: ConversationRouteKind | null;
 }
 
-export interface TurnGroupPlan {
-  id: string;
-  startIndex: number;
-  endIndex: number;
-  turnIds: string[];
-}

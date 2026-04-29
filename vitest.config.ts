@@ -2,9 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    globals: true,
     environment: 'jsdom',
-    include: ['tests/**/*.test.ts'],
-    restoreMocks: true,
-    testTimeout: 30_000,
+    include: ['tests/unit/**/*.test.ts'],
   },
 });

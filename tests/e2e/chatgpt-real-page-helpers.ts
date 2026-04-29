@@ -362,20 +362,6 @@ export async function resolveConfiguredLiveTarget(
   };
 }
 
-export async function withChatgptLiveTargetPage(
-  browserHandle: ControlledBrowserHandle,
-  target: ResolvedLiveChatTarget,
-  callback: (page: Page) => Promise<void>,
-): Promise<void> {
-  const page = await openChatgptLiveTargetPage(browserHandle, target);
-
-  try {
-    await callback(page);
-  } finally {
-    await releaseChatgptLiveTargetPage(page);
-  }
-}
-
 export async function openChatgptLiveTargetPage(
   browserHandle: ControlledBrowserHandle,
   target: ResolvedLiveChatTarget,
@@ -491,10 +477,6 @@ export async function goOlderArchivePage(page: Page): Promise<void> {
   await clickArchiveBoundaryAction(page, 'go-archive-older');
 }
 
-export async function goNewerArchivePage(page: Page): Promise<void> {
-  await clickArchiveBoundaryAction(page, 'go-archive-newer');
-}
-
 export async function goToRecentArchiveView(page: Page): Promise<void> {
   await clickArchiveBoundaryAction(page, 'go-archive-recent');
   await expect(page.locator('[data-turbo-render-batch-anchor="true"]')).toHaveCount(0, { timeout: 30_000 });
@@ -601,39 +583,6 @@ export async function findFirstAssistantArchiveEntry(page: Page, scope?: Locator
   }
 
   throw lastError ?? new Error('Unable to locate the first assistant archive entry.');
-}
-
-export async function expectLiveTargetRuntimeStatus(
-  browserHandle: ControlledBrowserHandle,
-  target: ResolvedLiveChatTarget,
-): Promise<TabStatusResponse> {
-  const startedAt = Date.now();
-  const timeoutMs = 45_000;
-  let lastStatus: TabStatusResponse | null = null;
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const status = await getTabStatusForUrl(browserHandle, target.url);
-    lastStatus = status;
-
-    const runtime = status.runtime;
-    const routeMatches = runtime?.routeKind === target.routeKind;
-    const chatMatches = target.conversationId == null || (runtime?.chatId ?? '').includes(target.conversationId);
-
-    if (runtime != null && routeMatches && chatMatches) {
-      return status;
-    }
-
-    await waitForDelay(500);
-  }
-
-  expect(lastStatus?.runtime).not.toBeNull();
-  expect(lastStatus?.runtime?.routeKind).toBe(target.routeKind);
-
-  if (target.conversationId != null) {
-    expect(lastStatus?.runtime?.chatId ?? '').toContain(target.conversationId);
-  }
-
-  return lastStatus!;
 }
 
 export async function expectLiveTargetRuntimeStatusForPage(
@@ -746,18 +695,6 @@ export async function expectArchivedEntryReadAloudMenu(
   };
 }
 
-export async function expectHostReadAloudMenu(page: Page): Promise<{
-  archiveEntry: Locator;
-  moreButton: Locator;
-  menu: ReturnType<Page['locator']>;
-  readAloudButton: Locator;
-  moreButtonBox: { x: number; y: number; width: number; height: number };
-  menuBox: { x: number; y: number; width: number; height: number } | null;
-  openLatencyMs: number;
-}> {
-  return await expectArchivedEntryReadAloudMenu(page);
-}
-
 export async function openReadAloudMenuFromMoreButtons(
   page: Page,
   moreButtons: Locator,
@@ -852,17 +789,6 @@ export async function openReadAloudMenuFromMoreButtons(
   }
 
   return null;
-}
-
-export async function getTabStatusForUrl(
-  browserHandle: ControlledBrowserHandle,
-  targetUrl: string,
-): Promise<TabStatusResponse> {
-  return await withExtensionPopupPage(browserHandle, async (extensionPage) => {
-    const tabs = await queryTabs(extensionPage, {});
-    const target = tabs.find((tab) => matchesTargetUrl(tab.url ?? '', targetUrl)) ?? null;
-    return await requestTabStatus(extensionPage, target?.id);
-  });
 }
 
 export async function getTabStatusForActivePage(
