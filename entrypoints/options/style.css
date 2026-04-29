@@ -50,12 +50,14 @@ label {
 }
 
 .support-copy,
-.support-note {
+.support-note,
+.options-note {
   margin: 0;
   color: #475569;
 }
 
-.support-note {
+.support-note,
+.options-note {
   color: #64748b;
   font-size: 13px;
 }

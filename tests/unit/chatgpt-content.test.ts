@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_SETTINGS } from '../../lib/shared/constants';
 import { mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
 declare global {
@@ -10,11 +11,18 @@ describe('chatgpt content entrypoint', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllGlobals();
+    vi.doUnmock('../../lib/shared/settings');
+    vi.doUnmock('../../lib/content/sliding-window');
+    vi.doUnmock('../../lib/content/core/turbo-render-controller');
     mountTranscriptFixture(document, { turnCount: 12, streaming: false });
     Object.defineProperty(document, 'readyState', {
       configurable: true,
       value: 'complete',
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('starts and cleans up without crashing when extension APIs are unavailable', async () => {
@@ -48,12 +56,6 @@ describe('chatgpt content entrypoint', () => {
         options?: AddEventListenerOptions,
       ) {
         target.addEventListener(type, listener, options);
-      },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval() {
-        return 1;
       },
       isInvalid: false,
     };
@@ -111,19 +113,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession() {}
-        restoreNearby() {}
-        restoreAll() {}
-        resetForChatChange() {}
-        getStatus() {
-          return statusPayload;
-        }
       },
     }));
     vi.stubGlobal('chrome', {
@@ -163,12 +157,6 @@ describe('chatgpt content entrypoint', () => {
       ) {
         target.addEventListener(type, listener, options);
       },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval() {
-        return 1;
-      },
       isInvalid: false,
     };
 
@@ -188,6 +176,160 @@ describe('chatgpt content entrypoint', () => {
     await Promise.resolve();
 
     expect(sendResponse).toHaveBeenCalledWith(statusPayload);
+    invalidations.forEach((callback) => callback());
+  });
+
+  it.each(['sliding-window', 'sliding-window-inplace'] as const)(
+    'starts the sliding-window controller when stored settings select %s mode',
+    async (mode) => {
+    const invalidations: Array<() => void> = [];
+    const resetCalls: string[] = [];
+    let slidingStartCalls = 0;
+    let turboStartCalls = 0;
+    let slidingOptions: unknown = null;
+    const slidingSettings = {
+      ...DEFAULT_SETTINGS,
+      mode,
+      slidingWindowPairs: 3,
+    };
+
+    vi.doMock('wxt/browser', () => ({
+      browser: {},
+    }));
+    vi.doMock('../../lib/shared/settings', () => ({
+      getCurrentChatId: () => 'chat:abc',
+      getSettings: vi.fn().mockResolvedValue(slidingSettings),
+      isChatPaused: vi.fn().mockResolvedValue(false),
+      setChatPaused: vi.fn(),
+    }));
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
+      TurboRenderController: class {
+        start() {
+          turboStartCalls += 1;
+        }
+        stop() {}
+        setSettings() {}
+      },
+    }));
+    vi.doMock('../../lib/content/sliding-window', () => ({
+      SlidingWindowController: class {
+        constructor(options: unknown) {
+          slidingOptions = options;
+        }
+        start() {
+          slidingStartCalls += 1;
+        }
+        stop() {}
+        setSettings() {}
+      },
+    }));
+    vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
+    history.replaceState({}, '', '/c/abc');
+
+    const module = await import('../../entrypoints/chatgpt.content/index');
+    const script = module.default as {
+      main(ctx: {
+        addEventListener(
+          target: Window | Document,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions,
+        ): void;
+        onInvalidated(callback: () => void): void;
+        setInterval(callback: () => void, ms: number): number;
+        isInvalid: boolean;
+      }): Promise<void>;
+    };
+
+    const ctx = {
+      addEventListener(
+        target: Window | Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) {
+        target.addEventListener(type, listener, options);
+      },
+      isInvalid: false,
+    };
+
+    await expect(script.main(ctx)).resolves.toBeUndefined();
+
+    expect(slidingStartCalls).toBe(1);
+    expect(turboStartCalls).toBe(0);
+    expect(resetCalls).toEqual(['chat:abc']);
+    expect(slidingOptions).toMatchObject({
+      settings: {
+        mode,
+        slidingWindowPairs: 3,
+      },
+      paused: false,
+    });
+
+    invalidations.forEach((callback) => callback());
+  });
+
+  it('falls back to default settings when the initial storage read stalls', async () => {
+    vi.useFakeTimers();
+    const invalidations: Array<() => void> = [];
+    const resetCalls: string[] = [];
+    let turboStartCalls = 0;
+
+    vi.doMock('wxt/browser', () => ({
+      browser: {},
+    }));
+    vi.doMock('../../lib/shared/settings', () => ({
+      getCurrentChatId: () => 'chat:abc',
+      getSettings: vi.fn(() => new Promise(() => undefined)),
+      isChatPaused: vi.fn(() => new Promise(() => undefined)),
+      setChatPaused: vi.fn(),
+    }));
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
+      TurboRenderController: class {
+        start() {
+          turboStartCalls += 1;
+        }
+        stop() {}
+        setSettings() {}
+      },
+    }));
+    vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
+    history.replaceState({}, '', '/c/abc');
+
+    const module = await import('../../entrypoints/chatgpt.content/index');
+    const script = module.default as {
+      main(ctx: {
+        addEventListener(
+          target: Window | Document,
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: AddEventListenerOptions,
+        ): void;
+        onInvalidated(callback: () => void): void;
+        setInterval(callback: () => void, ms: number): number;
+        isInvalid: boolean;
+      }): Promise<void>;
+    };
+
+    const ctx = {
+      addEventListener(
+        target: Window | Document,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: AddEventListenerOptions,
+      ) {
+        target.addEventListener(type, listener, options);
+      },
+      isInvalid: false,
+    };
+
+    const mainPromise = script.main(ctx);
+    await vi.advanceTimersByTimeAsync(1_600);
+    await expect(mainPromise).resolves.toBeUndefined();
+
+    expect(turboStartCalls).toBe(1);
+    expect(resetCalls).toEqual(['chat:abc']);
+
     invalidations.forEach((callback) => callback());
   });
 
@@ -239,19 +381,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession() {}
-        restoreNearby() {}
-        restoreAll() {}
-        resetForChatChange() {}
-        getStatus() {
-          return statusPayload;
-        }
       },
     }));
     vi.stubGlobal('browser', {
@@ -299,12 +433,6 @@ describe('chatgpt content entrypoint', () => {
         options?: AddEventListenerOptions,
       ) {
         target.addEventListener(type, listener, options);
-      },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval() {
-        return 1;
       },
       isInvalid: false,
     };
@@ -367,12 +495,6 @@ describe('chatgpt content entrypoint', () => {
 
         target.addEventListener(type, listener, options);
       },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval() {
-        return 1;
-      },
       isInvalid: false,
     };
 
@@ -400,21 +522,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession() {}
-        restoreNearby() {}
-        restoreAll() {}
-        getStatus() {
-          return null;
-        }
-        resetForChatChange(chatId: string) {
-          resetCalls.push(chatId);
-        }
       },
     }));
     vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
@@ -443,13 +555,6 @@ describe('chatgpt content entrypoint', () => {
         options?: AddEventListenerOptions,
       ) {
         target.addEventListener(type, listener, options);
-      },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval(callback: () => void) {
-        poll = callback;
-        return 1;
       },
       isInvalid: false,
     };
@@ -474,21 +579,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession() {}
-        restoreNearby() {}
-        restoreAll() {}
-        getStatus() {
-          return null;
-        }
-        resetForChatChange(chatId: string) {
-          resetCalls.push(chatId);
-        }
       },
     }));
     vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
@@ -517,13 +612,6 @@ describe('chatgpt content entrypoint', () => {
         options?: AddEventListenerOptions,
       ) {
         target.addEventListener(type, listener, options);
-      },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval(callback: () => void) {
-        poll = callback;
-        return 1;
       },
       isInvalid: false,
     };
@@ -552,21 +640,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession() {}
-        restoreNearby() {}
-        restoreAll() {}
-        getStatus() {
-          return null;
-        }
-        resetForChatChange(chatId: string) {
-          resetCalls.push(chatId);
-        }
       },
     }));
     vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
@@ -596,13 +674,6 @@ describe('chatgpt content entrypoint', () => {
       ) {
         target.addEventListener(type, listener, options);
       },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval(callback: () => void) {
-        poll = callback;
-        return 1;
-      },
       isInvalid: false,
     };
 
@@ -623,23 +694,11 @@ describe('chatgpt content entrypoint', () => {
     vi.doMock('wxt/browser', () => ({
       browser: {},
     }));
-    vi.doMock('../../lib/content/turbo-render-controller', () => ({
+    vi.doMock('../../lib/content/core/turbo-render-controller', () => ({
       TurboRenderController: class {
         start() {}
         stop() {}
         setSettings() {}
-        setPaused() {}
-        setInitialTrimSession(session: { applied: boolean } | null) {
-          if (session != null) {
-            sessionAppliedFlags.push(session.applied);
-          }
-        }
-        restoreNearby() {}
-        restoreAll() {}
-        getStatus() {
-          return null;
-        }
-        resetForChatChange() {}
       },
     }));
     vi.stubGlobal('defineContentScript', <T>(definition: T) => definition);
@@ -668,12 +727,6 @@ describe('chatgpt content entrypoint', () => {
         options?: AddEventListenerOptions,
       ) {
         target.addEventListener(type, listener, options);
-      },
-      onInvalidated(callback: () => void) {
-        invalidations.push(callback);
-      },
-      setInterval() {
-        return 1;
       },
       isInvalid: false,
     };

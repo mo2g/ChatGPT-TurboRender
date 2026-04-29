@@ -18,6 +18,22 @@ import {
   type TurboRenderPageConfig,
 } from '../shared/runtime-bridge';
 import type { InitialTrimSession, ResolvedConversationRoute } from '../shared/types';
+import {
+  tryCreateSlidingWindowResponseAfterNativeFetch,
+  tryCreateSlidingWindowResponseBeforeNativeFetch,
+} from './sliding-window/fetch-strategy';
+import { markSlidingWindowDirtyForWrite } from './sliding-window/dirty-tracker';
+import {
+  clearSlidingWindowCache,
+  emitCurrentSlidingWindowState,
+  navigateSlidingWindow,
+  searchSlidingWindowCache,
+} from './sliding-window/reload-command';
+import { navigateSlidingWindowInPlace } from './sliding-window/inplace-command';
+import { clearAllSlidingWindowRuntimeState } from './sliding-window/runtime-status';
+import { clearAllSlidingWindowRenderTickets } from './sliding-window/render-ticket';
+import { consumeSlidingWindowSessionState } from './sliding-window/session-state';
+import { mwLogger, updateMainWorldDebugState } from './logger';
 
 interface BootstrapWindow extends Window {
   __turboRenderConversationBootstrapInstalled__?: boolean;
@@ -342,6 +358,7 @@ export function installConversationBootstrap(
   const conversationSnapshots = new Map<string, ConversationSnapshotRecord>();
   const conversationPayloadCache = ((bootstrapWindow as BootstrapWindow).__turboRenderConversationPayloadCache ??= {});
   const shareSignatures = new Map<string, string>();
+  const slidingWindowCacheTicket = consumeSlidingWindowSessionState(win);
   let shareSyncHandle: number | null = null;
   let shareSyncAttempts = 0;
 
@@ -522,7 +539,64 @@ export function installConversationBootstrap(
 
     if (event.data.type === 'TURBO_RENDER_CONFIG') {
       config = event.data.payload;
+      // 初始化 main-world 的调试状态
+      updateMainWorldDebugState(config);
+      mwLogger.debug('Config received:', { mode: config.mode, enabled: config.enabled });
       scheduleShareSync();
+      return;
+    }
+
+    if (event.data.type === 'TURBO_RENDER_SLIDING_WINDOW_REQUEST_STATE') {
+      void emitCurrentSlidingWindowState({
+        win,
+        conversationId: event.data.payload.conversationId,
+        windowPairs: config.slidingWindowPairs,
+        cacheTicket: slidingWindowCacheTicket,
+      });
+      return;
+    }
+
+    if (event.data.type === 'TURBO_RENDER_SLIDING_WINDOW_NAVIGATE') {
+      const payload = event.data.payload;
+      const navigationInput = {
+        win,
+        conversationId: payload.conversationId,
+        windowPairs: config.slidingWindowPairs,
+        direction: payload.direction,
+        ...('targetPairIndex' in payload ? { targetPairIndex: payload.targetPairIndex } : {}),
+        ...('targetPage' in payload ? { targetPage: payload.targetPage } : {}),
+      };
+      if (config.mode === 'sliding-window-inplace') {
+        void navigateSlidingWindowInPlace({
+          ...navigationInput,
+          doc,
+          enableTimeoutFallback: config.enableTimeoutFallback,
+        });
+      } else {
+        void navigateSlidingWindow({
+          ...navigationInput,
+          useCache: payload.useCache ?? true,
+        });
+      }
+      return;
+    }
+
+    if (event.data.type === 'TURBO_RENDER_SLIDING_WINDOW_SEARCH') {
+      void searchSlidingWindowCache({
+        win,
+        conversationId: event.data.payload.conversationId,
+        requestId: event.data.payload.requestId,
+        query: event.data.payload.query,
+      });
+      return;
+    }
+
+    if (event.data.type === 'TURBO_RENDER_SLIDING_WINDOW_CLEAR_CACHE') {
+      void clearSlidingWindowCache({
+        win,
+        conversationId: event.data.payload.conversationId,
+        scope: event.data.payload.scope,
+      });
       return;
     }
 
@@ -582,7 +656,42 @@ export function installConversationBootstrap(
       }
     }
 
+    await markSlidingWindowDirtyForWrite({
+      win,
+      doc,
+      config,
+      requestUrl,
+      requestInput: input,
+      init,
+    });
+
+    const slidingWindowPreflightResponse = await tryCreateSlidingWindowResponseBeforeNativeFetch({
+      win,
+      doc,
+      config,
+      requestUrl,
+      requestInput: input,
+      init,
+      cacheTicket: slidingWindowCacheTicket,
+    });
+    if (slidingWindowPreflightResponse != null) {
+      return slidingWindowPreflightResponse;
+    }
+
     const response = await nativeFetch(input, init);
+    const slidingWindowNetworkResponse = await tryCreateSlidingWindowResponseAfterNativeFetch({
+      win,
+      doc,
+      config,
+      requestUrl,
+      requestInput: input,
+      init,
+      response,
+      cacheTicket: slidingWindowCacheTicket,
+    });
+    if (slidingWindowNetworkResponse != null) {
+      return slidingWindowNetworkResponse;
+    }
 
     if (!isConversationEndpoint(requestUrl)) {
       return response;
@@ -673,6 +782,8 @@ export function installConversationBootstrap(
 
   return () => {
     clearShareSync();
+    clearAllSlidingWindowRuntimeState();
+    clearAllSlidingWindowRenderTickets();
     win.removeEventListener('message', handleBridgeMessage);
     win.fetch = nativeFetch;
     XMLHttpRequest.prototype.open = xhrOpen;

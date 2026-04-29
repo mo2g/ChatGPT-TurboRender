@@ -244,6 +244,16 @@ function formatStartedAt(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
 
+function getModeLabelKey(mode: TabStatusResponse['settings']['mode']): 'labelPerformance' | 'labelSlidingWindow' | 'labelSlidingWindowInplace' {
+  if (mode === 'sliding-window') {
+    return 'labelSlidingWindow';
+  }
+  if (mode === 'sliding-window-inplace') {
+    return 'labelSlidingWindowInplace';
+  }
+  return 'labelPerformance';
+}
+
 function renderSupportRules(t: Translator): string {
   return `
     <div class="popup-rules">
@@ -299,6 +309,7 @@ function renderCurrentTabGrid(status: TabStatusResponse, t: Translator): string 
     <div class="popup-grid">
       <span>${escapeHtml(t('labelTotalTurns'))}</span><span>${escapeHtml(String(runtime.totalTurns))}</span>
       <span>${escapeHtml(t('labelTotalPairs'))}</span><span>${escapeHtml(String(runtime.totalPairs))}</span>
+      <span>${escapeHtml(t('labelMode'))}</span><span>${escapeHtml(t(getModeLabelKey(runtime.mode)))}</span>
       <span>${escapeHtml(t('labelHotPairsVisible'))}</span><span>${escapeHtml(String(runtime.hotPairsVisible))}</span>
       <span>${escapeHtml(t('labelFinalized'))}</span><span>${escapeHtml(String(runtime.finalizedTurns))}</span>
       <span>${escapeHtml(t('labelInitialTrim'))}</span><span>${escapeHtml(runtime.initialTrimApplied ? t('statusHistoryYes', { count: runtime.initialTrimmedTurns }) : t('statusHistoryNo'))}</span>
@@ -352,6 +363,14 @@ function renderSettingsSection(status: TabStatusResponse, t: Translator): string
             <option value="auto" ${status.settings.language === 'auto' ? 'selected' : ''}>${escapeHtml(t('languageAuto'))}</option>
             <option value="en" ${status.settings.language === 'en' ? 'selected' : ''}>${escapeHtml(t('languageEnglish'))}</option>
             <option value="zh-CN" ${status.settings.language === 'zh-CN' ? 'selected' : ''}>${escapeHtml(t('languageChinese'))}</option>
+          </select>
+        </label>
+        <label>
+          <span>${escapeHtml(t('labelMode'))}</span>
+          <select id="mode-select">
+            <option value="performance" ${status.settings.mode === 'performance' ? 'selected' : ''}>${escapeHtml(t('labelPerformance'))}</option>
+            <option value="sliding-window" ${status.settings.mode === 'sliding-window' ? 'selected' : ''}>${escapeHtml(t('labelSlidingWindow'))}</option>
+            <option value="sliding-window-inplace" ${status.settings.mode === 'sliding-window-inplace' ? 'selected' : ''}>${escapeHtml(t('labelSlidingWindowInplace'))}</option>
           </select>
         </label>
       </div>
@@ -554,6 +573,14 @@ document.addEventListener('change', async (event) => {
     await sendActionAndRenderStatus({
       type: 'UPDATE_SETTINGS',
       patch: { language: normalizeLanguagePreference(target.value) },
+    });
+    return;
+  }
+
+  if (target instanceof HTMLSelectElement && target.id === 'mode-select') {
+    await sendActionAndRenderStatus({
+      type: 'UPDATE_SETTINGS',
+      patch: { mode: target.value },
     });
   }
 });

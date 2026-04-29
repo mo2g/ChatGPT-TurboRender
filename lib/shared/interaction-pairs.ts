@@ -200,15 +200,3 @@ export function buildInteractionBatches<T extends PairableTurn>(
   return batches;
 }
 
-export function findPairIndexForTurnIndex<T extends PairableTurn>(
-  pairs: InteractionPair<T>[],
-  turnIndex: number,
-): number | null {
-  for (const pair of pairs) {
-    if (pair.startTurnIndex <= turnIndex && turnIndex <= pair.endTurnIndex) {
-      return pair.pairIndex;
-    }
-  }
-
-  return null;
-}

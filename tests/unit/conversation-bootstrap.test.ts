@@ -2,7 +2,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installConversationBootstrap } from '../../lib/main-world/conversation-bootstrap';
-import type { TurboRenderSessionStateBridgeMessage } from '../../lib/shared/runtime-bridge';
+import { createSlidingWindowCacheEntry } from '../../lib/main-world/sliding-window/idb-cache';
+import { SLIDING_WINDOW_SESSION_STATE_KEY } from '../../lib/main-world/sliding-window/session-state';
+import type {
+  SlidingWindowStateBridgeMessage,
+  TurboRenderSessionStateBridgeMessage,
+} from '../../lib/shared/runtime-bridge';
 
 function createConversationPayload() {
   return {
@@ -148,7 +153,64 @@ describe('conversation bootstrap', () => {
 
   afterEach(() => {
     window.fetch = originalFetch;
+    window.sessionStorage.clear();
+    delete (window as typeof window & { __turboRenderSlidingWindowCache?: unknown }).__turboRenderSlidingWindowCache;
+    delete (window as typeof window & { __reactRouterDataRouter?: unknown }).__reactRouterDataRouter;
   });
+
+  function dispatchConfig(payload: Record<string, unknown>): void {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_CONFIG',
+          payload,
+        },
+      }),
+    );
+  }
+
+  function installFakeSlidingWindowCache(initialEntry = null) {
+    let currentEntry = initialEntry;
+    const cache = {
+      read: vi.fn(async () => currentEntry),
+      write: vi.fn(async (entry) => {
+        currentEntry = entry;
+      }),
+      markDirty: vi.fn(async () => {
+        if (currentEntry != null) {
+          currentEntry = {
+            ...currentEntry,
+            meta: {
+              ...currentEntry.meta,
+              dirty: true,
+            },
+          };
+        }
+      }),
+      clearConversation: vi.fn(async () => {
+        currentEntry = null;
+      }),
+      clearAll: vi.fn(async () => {
+        currentEntry = null;
+      }),
+    };
+    (window as typeof window & { __turboRenderSlidingWindowCache?: typeof cache }).__turboRenderSlidingWindowCache = cache;
+    return cache;
+  }
+
+  function renderPayloadToTranscript(payload: ReturnType<typeof createConversationPayload>) {
+    const html = Object.values(payload.mapping)
+      .filter((node) => node.message != null)
+      .map((node) => {
+        const role = node.message.author.role;
+        const text = node.message.content.parts.join(' ');
+        return `<div data-message-author-role="${role}" data-message-id="${node.message.id}">${text}</div>`;
+      })
+      .join('');
+    document.body.innerHTML = `<main>${html}</main>`;
+  }
 
   it('rewrites long conversation payloads before the page consumes them', async () => {
     const messages: TurboRenderSessionStateBridgeMessage[] = [];
@@ -212,6 +274,353 @@ describe('conversation bootstrap', () => {
     ]);
 
     cleanup();
+  });
+
+  it('serves sliding-window cache hits for the current page load and clears the persisted ticket', async () => {
+    const entry = createSlidingWindowCacheEntry('abc', createConversationPayload());
+    const cache = installFakeSlidingWindowCache(entry);
+    const sessionState = {
+      conversationId: 'abc',
+      targetRange: { startPairIndex: 0, endPairIndex: 1 },
+      requestedAt: Date.now(),
+      reloadReason: 'first',
+      useCache: true,
+    };
+    window.sessionStorage.setItem(SLIDING_WINDOW_SESSION_STATE_KEY, JSON.stringify(sessionState));
+    const states: SlidingWindowStateBridgeMessage[] = [];
+    window.addEventListener('message', (event: MessageEvent) => {
+      if (event.data?.type === 'TURBO_RENDER_SLIDING_WINDOW_STATE') {
+        states.push(event.data as SlidingWindowStateBridgeMessage);
+      }
+    });
+    const nativeFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(createConversationPayload()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const payload = await response.json();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(cache.read).toHaveBeenCalledWith('abc');
+    expect(nativeFetch).not.toHaveBeenCalled();
+    expect(Object.keys(payload.mapping)).toEqual(['root', 'user1', 'assistant1', 'user2', 'assistant2']);
+    expect(payload.current_node).toBe('assistant2');
+    expect(window.sessionStorage.getItem(SLIDING_WINDOW_SESSION_STATE_KEY)).toBeNull();
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_SLIDING_WINDOW_REQUEST_STATE',
+          payload: { conversationId: 'abc' },
+        },
+      }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(states.at(-1)?.payload).toMatchObject({
+      conversationId: 'abc',
+      range: { startPairIndex: 0, endPairIndex: 1 },
+      pairCount: 2,
+      isLatestWindow: false,
+    });
+
+    const sameLoadResponse = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const sameLoadPayload = await sameLoadResponse.json();
+
+    expect(nativeFetch).not.toHaveBeenCalled();
+    expect(sameLoadPayload.current_node).toBe('assistant2');
+    expect(Object.keys(sameLoadPayload.mapping)).toEqual(['root', 'user1', 'assistant1', 'user2', 'assistant2']);
+
+    cleanup();
+
+    const refreshCleanup = installConversationBootstrap(window, document);
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    const refreshedResponse = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const refreshedPayload = await refreshedResponse.json();
+
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    expect(refreshedPayload.current_node).toBe('assistant5');
+    expect(Object.keys(refreshedPayload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+
+    refreshCleanup();
+  });
+
+  it('renders sliding-window-inplace navigation through router revalidation and synthetic cached fetch', async () => {
+    const entry = createSlidingWindowCacheEntry('abc', createConversationPayload());
+    const cache = installFakeSlidingWindowCache(entry);
+    const states: SlidingWindowStateBridgeMessage[] = [];
+    renderPayloadToTranscript({
+      ...createConversationPayload(),
+      current_node: 'assistant5',
+      mapping: {
+        root: createConversationPayload().mapping.root,
+        user3: createConversationPayload().mapping.user3,
+        assistant3: createConversationPayload().mapping.assistant3,
+        user4: createConversationPayload().mapping.user4,
+        assistant5: createConversationPayload().mapping.assistant5,
+      },
+    });
+    history.replaceState({}, '', '/c/abc');
+    window.addEventListener('message', (event: MessageEvent) => {
+      if (event.data?.type === 'TURBO_RENDER_SLIDING_WINDOW_STATE') {
+        states.push(event.data as SlidingWindowStateBridgeMessage);
+      }
+    });
+    const nativeFetch = vi.fn(async () => {
+      throw new Error('native conversation fetch should not run during in-place navigation');
+    }) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const router = {
+      revalidate: vi.fn(async () => {
+        const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+        renderPayloadToTranscript(await response.json());
+      }),
+    };
+    (window as typeof window & { __reactRouterDataRouter?: typeof router }).__reactRouterDataRouter = router;
+
+    const cleanup = installConversationBootstrap(window, document);
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window-inplace',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        source: window,
+        data: {
+          namespace: 'chatgpt-turborender',
+          type: 'TURBO_RENDER_SLIDING_WINDOW_NAVIGATE',
+          payload: { direction: 'first', conversationId: 'abc' },
+        },
+      }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+
+    expect(router.revalidate).toHaveBeenCalledTimes(1);
+    expect(cache.read).toHaveBeenCalledWith('abc');
+    expect(nativeFetch).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(SLIDING_WINDOW_SESSION_STATE_KEY)).toBeNull();
+    expect(document.body.textContent).toContain('assistant-2');
+    expect(document.body.textContent).not.toContain('assistant-5');
+    expect(states.at(-1)?.payload).toMatchObject({
+      conversationId: 'abc',
+      range: { startPairIndex: 0, endPairIndex: 1 },
+      pairCount: 2,
+      isLatestWindow: false,
+    });
+
+    cleanup();
+    history.replaceState({}, '', '/');
+  });
+
+  it('skips an explicit no-cache ticket and falls back to the live conversation', async () => {
+    const entry = createSlidingWindowCacheEntry('abc', createConversationPayload());
+    const cache = installFakeSlidingWindowCache(entry);
+    const sessionState = {
+      conversationId: 'abc',
+      targetRange: { startPairIndex: 0, endPairIndex: 1 },
+      requestedAt: Date.now(),
+      reloadReason: 'refresh',
+      useCache: false,
+    };
+    window.sessionStorage.setItem(SLIDING_WINDOW_SESSION_STATE_KEY, JSON.stringify(sessionState));
+    const nativeFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(createConversationPayload()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const payload = await response.json();
+
+    expect(cache.read).not.toHaveBeenCalled();
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    expect(Object.keys(payload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+    expect(window.sessionStorage.getItem(SLIDING_WINDOW_SESSION_STATE_KEY)).toBeNull();
+
+    cleanup();
+  });
+
+  it.each(['sliding-window', 'sliding-window-inplace'] as const)(
+    'falls back to network before opening a conversation without a reload window in %s mode',
+    async (mode) => {
+      const cache = installFakeSlidingWindowCache(createSlidingWindowCacheEntry('abc', createConversationPayload()));
+      const nativeFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(createConversationPayload()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ) as typeof window.fetch;
+      window.fetch = nativeFetch;
+
+      const cleanup = installConversationBootstrap(window, document);
+      dispatchConfig({
+        enabled: true,
+        mode,
+        initialTrimEnabled: true,
+        initialHotPairs: 2,
+        slidingWindowPairs: 2,
+        minFinalizedBlocks: 4,
+      });
+
+      const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+      const payload = await response.json();
+
+      expect(cache.clearConversation).not.toHaveBeenCalled();
+      expect(cache.read).not.toHaveBeenCalled();
+      expect(nativeFetch).toHaveBeenCalledTimes(1);
+      expect(cache.write).toHaveBeenCalledTimes(1);
+      expect(cache.write.mock.calls[0]?.[0].meta).toMatchObject({
+        conversationId: 'abc',
+        dirty: false,
+        pairCount: 4,
+      });
+      expect(Object.keys(payload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+
+      cleanup();
+    },
+  );
+
+  it('bypasses a dirty sliding-window cache entry and refreshes from network', async () => {
+    const dirtyEntry = createSlidingWindowCacheEntry('abc', createConversationPayload(), { dirty: true });
+    const cache = installFakeSlidingWindowCache(dirtyEntry);
+    const sessionState = {
+      conversationId: 'abc',
+      targetRange: { startPairIndex: 2, endPairIndex: 3 },
+      requestedAt: Date.now(),
+      reloadReason: 'newer',
+      useCache: true,
+    };
+    window.sessionStorage.setItem(SLIDING_WINDOW_SESSION_STATE_KEY, JSON.stringify(sessionState));
+    const nativeFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(createConversationPayload()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const payload = await response.json();
+
+    expect(cache.read).toHaveBeenCalledWith('abc');
+    expect(cache.clearConversation).not.toHaveBeenCalled();
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    expect(cache.write).toHaveBeenCalledTimes(1);
+    expect(cache.write.mock.calls[0]?.[0].meta.dirty).toBe(false);
+    expect(Object.keys(payload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+    expect(window.sessionStorage.getItem(SLIDING_WINDOW_SESSION_STATE_KEY)).toBeNull();
+
+    cleanup();
+  });
+
+  it('does not mark the sliding-window cache dirty for conversation init reload probes', async () => {
+    const entry = createSlidingWindowCacheEntry('abc', createConversationPayload());
+    const cache = installFakeSlidingWindowCache(entry);
+    const sessionState = {
+      conversationId: 'abc',
+      targetRange: { startPairIndex: 2, endPairIndex: 3 },
+      requestedAt: Date.now(),
+      reloadReason: 'newer',
+      useCache: true,
+    };
+    window.sessionStorage.setItem(SLIDING_WINDOW_SESSION_STATE_KEY, JSON.stringify(sessionState));
+    const nativeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input instanceof Request
+              ? input.url
+              : String(input);
+
+      if (requestUrl.endsWith('/backend-api/conversation/init')) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      throw new Error(`native fetch should not be called for ${requestUrl}`);
+    }) as typeof window.fetch;
+    window.fetch = nativeFetch;
+
+    const cleanup = installConversationBootstrap(window, document);
+    history.replaceState({}, '', '/c/abc');
+    dispatchConfig({
+      enabled: true,
+      mode: 'sliding-window',
+      initialTrimEnabled: true,
+      initialHotPairs: 2,
+      slidingWindowPairs: 2,
+      minFinalizedBlocks: 4,
+    });
+
+    await window.fetch('https://chatgpt.com/backend-api/conversation/init', { method: 'POST' });
+    expect(cache.markDirty).not.toHaveBeenCalled();
+
+    const response = await window.fetch('https://chatgpt.com/backend-api/conversation/abc');
+    const payload = await response.json();
+
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    expect(cache.read).toHaveBeenCalledWith('abc');
+    expect(Object.keys(payload.mapping)).toEqual(['root', 'user3', 'assistant3', 'user4', 'assistant5']);
+    expect(window.sessionStorage.getItem(SLIDING_WINDOW_SESSION_STATE_KEY)).toBeNull();
+
+    cleanup();
+    history.replaceState({}, '', '/');
   });
 
   it('keeps the last applied session when a later replay is non-applied', async () => {

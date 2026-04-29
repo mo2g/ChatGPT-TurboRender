@@ -21,6 +21,7 @@ export interface BackgroundDeps {
     tabId: number,
     message: Extract<RuntimeMessage, { type: 'RESTORE_NEARBY' | 'RESTORE_ALL' }>,
   ): Promise<TabRuntimeStatus | null>;
+  openOptionsPage(): Promise<void>;
 }
 
 const CHATGPT_HOSTS = new Set(['chatgpt.com', 'chat.openai.com']);
@@ -184,6 +185,11 @@ export function createBackgroundService(deps: BackgroundDeps) {
             return null;
           }
           return deps.forwardToTab(tab.id, message);
+        }
+
+        case 'OPEN_OPTIONS_PAGE': {
+          await deps.openOptionsPage();
+          return { ok: true };
         }
 
         default:

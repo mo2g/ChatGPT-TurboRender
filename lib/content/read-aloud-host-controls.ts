@@ -1,4 +1,4 @@
-import { isTurboRenderUiNode } from './chatgpt-adapter';
+import { isTurboRenderUiNode } from './utils/chatgpt-adapter';
 
 const STOP_READ_ALOUD_EXACT_SELECTORS = [
   'button[data-testid="voice-stop-turn-action-button"]',
