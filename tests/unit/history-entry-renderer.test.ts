@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderManagedHistoryEntryBody } from '../../lib/content/history-entry-renderer';
-import { ManagedHistoryStore } from '../../lib/content/managed-history';
+import { renderManagedHistoryEntryBody } from '../../lib/content/rendering/history-entry-renderer';
+import { ManagedHistoryStore } from '../../lib/content/core/managed-history';
 import { createTranslator } from '../../lib/shared/i18n';
 import type { ManagedHistoryCitation } from '../../lib/shared/types';
 

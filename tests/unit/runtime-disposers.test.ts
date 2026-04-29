@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createDisposableBag, registerOptionalListener } from '../../lib/content/runtime-disposers';
+import { createDisposableBag, registerOptionalListener } from "../../lib/content/utils/runtime-disposers";
 
 describe('runtime disposers', () => {
   it('ignores missing extension listeners and disposes idempotently', () => {

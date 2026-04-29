@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ParkingLot } from '../../lib/content/parking-lot';
+import { ParkingLot } from "../../lib/content/managers/parking-lot";
 
 function createParkedNode(messageId: string, text: string): HTMLElement {
   const node = document.createElement('article');

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ArchivePager } from '../../lib/content/archive-pager';
+import { ArchivePager } from '../../lib/content/managers/archive-pager';
 
 describe('ArchivePager', () => {
   it('starts in recent view and clamps empty histories to null', () => {

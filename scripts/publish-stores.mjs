@@ -251,22 +251,6 @@ function sleep(ms) {
   });
 }
 
-function runCommand(command, args, description) {
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: 'inherit',
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  if (result.status !== 0) {
-    throw new Error(`${description} failed with exit code ${result.status ?? 'unknown'}`);
-  }
-}
-
 function runCommandCapture(command, args) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,

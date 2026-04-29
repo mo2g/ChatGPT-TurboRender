@@ -3174,19 +3174,8 @@ describe('TurboRenderController', () => {
     const originalMediaSource = (window as Window & { MediaSource?: typeof MediaSource }).MediaSource;
     const originalFetch = window.fetch;
     const appendedChunks: Uint8Array[] = [];
-    class FakeSourceBuffer extends EventTarget {
-      updating = false;
 
-      appendBuffer(chunk: BufferSource): void {
-        appendedChunks.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk as ArrayBuffer));
-        this.updating = true;
-        window.setTimeout(() => {
-          this.updating = false;
-          this.dispatchEvent(new Event('updateend'));
-        }, 0);
-      }
-    }
-    class FakeMediaSource extends EventTarget {
+      class FakeMediaSource extends EventTarget {
       static isTypeSupported(type: string): boolean {
         return type === 'audio/aac';
       }
@@ -3201,13 +3190,6 @@ describe('TurboRenderController', () => {
         }, 0);
       }
 
-      addSourceBuffer(): SourceBuffer {
-        return new FakeSourceBuffer() as SourceBuffer;
-      }
-
-      endOfStream(): void {
-        this.readyState = 'ended';
-      }
     }
     Object.defineProperty(window, 'MediaSource', {
       configurable: true,

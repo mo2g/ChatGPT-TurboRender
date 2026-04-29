@@ -2,7 +2,7 @@ import type { ConversationPayload } from '../shared/conversation-trim';
 import { resolveReadAloudMessageIdFromPayload } from '../shared/conversation-trim';
 import type { ManagedHistoryEntry } from '../shared/types';
 
-import { resolveArchiveCopyText, type EntryMoreMenuAction } from './message-actions';
+import { resolveArchiveCopyText, type EntryMoreMenuAction } from './core/message-actions';
 
 const BACKEND_SESSION_TIMEOUT_MS = 3_000;
 const READ_ALOUD_VOICE = 'cove';

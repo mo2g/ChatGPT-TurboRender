@@ -4,21 +4,16 @@ import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 export function getAppBundlePath(binaryPath) {
-  if (!binaryPath) {
-    return null;
+  // macOS app bundle detection: /Applications/Foo.app/Contents/MacOS/Foo
+  if (binaryPath.includes('.app/')) {
+    const parts = binaryPath.split('.app/');
+    return parts[0] + '.app';
   }
-
+  // Handle paths ending with .app (e.g., /Applications/Microsoft Edge.app)
   if (binaryPath.endsWith('.app')) {
     return binaryPath;
   }
-
-  const marker = '.app/';
-  const markerIndex = binaryPath.indexOf(marker);
-  if (markerIndex === -1) {
-    return null;
-  }
-
-  return binaryPath.slice(0, markerIndex + '.app'.length);
+  return null;
 }
 
 export function classifyBrowserBinary(binaryPath) {
@@ -68,7 +63,7 @@ export function buildChromeArgs({ debugPort, userDataDir, extensionPath, targetU
   ];
 }
 
-export function buildLaunchCommand({ platform, binaryPath, chromeArgs }) {
+export function buildLaunchCommand({ binaryPath, chromeArgs }) {
   // Launch the browser executable directly so environment overrides
   // (HOME/XDG paths) take effect. `open -na` discards these overrides.
   return {
@@ -156,31 +151,6 @@ export async function resolveLaunchableChromiumBinary({ repoRoot = process.cwd()
   throw new Error('[TurboRender] No supported Chromium-based browser was found for unpacked extension debugging.');
 }
 
-async function findFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (address == null || typeof address === 'string') {
-        reject(new Error('Unable to reserve a local debugging port.'));
-        return;
-      }
-
-      const { port } = address;
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(port);
-      });
-    });
-  });
-}
-
 export async function waitForRemoteDebugEndpoint(port, timeoutMs = 60_000) {
   const startedAt = Date.now();
   const statusUrl = `http://127.0.0.1:${port}/json/version`;
@@ -208,7 +178,7 @@ export async function spawnLaunchableChromium({
   userDataDir,
   waitForReady = true,
   browserBinary,
-  extensionPath,
+
 } = {}) {
   const resolvedBrowserBinary = browserBinary ?? (await resolveLaunchableChromiumBinary({ repoRoot }));
   const browserKind = classifyBrowserBinary(resolvedBrowserBinary);

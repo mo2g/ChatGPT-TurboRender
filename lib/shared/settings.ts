@@ -2,7 +2,7 @@ import { DEFAULT_SETTINGS, STORAGE_KEYS } from './constants';
 import { getChatIdFromPathname } from './chat-id';
 import { safeStorageGet, safeStorageSet } from './extension-api';
 import { normalizeLanguagePreference } from './i18n';
-import type { Settings } from './types';
+import { isSlidingWindowMode, type Settings } from './types';
 
 interface LegacySettings {
   keepRecentTurns?: number;
@@ -33,6 +33,12 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
     1,
     50,
   );
+  const slidingWindowPairs = clampNumber(
+    candidate?.slidingWindowPairs,
+    DEFAULT_SETTINGS.slidingWindowPairs,
+    1,
+    50,
+  );
   const initialHotPairs = clampNumber(
     candidate?.initialHotPairs ?? (typeof legacy.initialHotTurns === 'number' ? Math.ceil(legacy.initialHotTurns / 2) : undefined),
     DEFAULT_SETTINGS.initialHotPairs,
@@ -51,7 +57,8 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
     autoEnable: candidate?.autoEnable ?? DEFAULT_SETTINGS.autoEnable,
     language: normalizeLanguagePreference(candidate?.language),
     mode:
-      candidate?.mode === 'compatibility' || candidate?.mode === 'performance'
+      candidate?.mode === 'performance' ||
+      (candidate?.mode != null && isSlidingWindowMode(candidate.mode))
         ? candidate.mode
         : DEFAULT_SETTINGS.mode,
     minFinalizedBlocks: clampNumber(
@@ -68,6 +75,7 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
     ),
     keepRecentPairs,
     batchPairCount,
+    slidingWindowPairs,
     initialHotPairs,
     liveHotPairs,
     keepRecentTurns: keepRecentPairs * 2,
@@ -82,6 +90,7 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
     initialHotTurns: initialHotPairs * 2,
     liveHotTurns: liveHotPairs * 2,
     softFallback: candidate?.softFallback ?? DEFAULT_SETTINGS.softFallback,
+    enableTimeoutFallback: candidate?.enableTimeoutFallback ?? DEFAULT_SETTINGS.enableTimeoutFallback,
     frameSpikeThresholdMs: clampNumber(
       candidate?.frameSpikeThresholdMs,
       DEFAULT_SETTINGS.frameSpikeThresholdMs,
@@ -100,6 +109,8 @@ export function normalizeSettings(candidate: Partial<Settings> | null | undefine
       500,
       15_000,
     ),
+    debugEnabled: candidate?.debugEnabled ?? DEFAULT_SETTINGS.debugEnabled,
+    debugVerbose: candidate?.debugVerbose ?? DEFAULT_SETTINGS.debugVerbose,
   };
 }
 

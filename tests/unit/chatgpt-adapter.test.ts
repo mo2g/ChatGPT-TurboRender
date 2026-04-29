@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { scanChatPage } from '../../lib/content/chatgpt-adapter';
-import { resolveHistoryAnchor } from '../../lib/content/history-anchor';
+import { scanChatPage } from '../../lib/content/utils/chatgpt-adapter';
 import { mountGroupedTranscriptFixture } from '../../lib/testing/transcript-fixture';
 
 describe('chatgpt adapter', () => {
@@ -17,27 +16,6 @@ describe('chatgpt adapter', () => {
     expect(snapshot.reason).toBe('split-parents');
     expect(snapshot.historyMountTarget).toBe(fixture.dayGroups[0]);
     expect(snapshot.scrollContainer).toBe(fixture.scroller);
-  });
-
-  it('anchors to the host share button when an action bar exists', () => {
-    const fixture = mountGroupedTranscriptFixture(document, {
-      turnCount: 8,
-      daySizes: [4, 4],
-      streaming: false,
-    });
-
-    const anchor = resolveHistoryAnchor(document);
-    expect(anchor.mode).toBe('host-share');
-    expect(anchor.shareButton).toBe(fixture.shareButton);
-    expect(anchor.actionBar).toBe(fixture.headerActions);
-  });
-
-  it('falls back to safe-top when no host action bar is available', () => {
-    document.body.innerHTML = '<main><section><p>No toolbar here.</p></section></main>';
-
-    const anchor = resolveHistoryAnchor(document);
-    expect(anchor.mode).toBe('safe-top');
-    expect(anchor.shareButton).toBeNull();
   });
 
   it('uses the first main child as the archive-only mount target', () => {

@@ -36,6 +36,10 @@ export interface UpdateSettingsMessage {
   patch: Partial<Settings>;
 }
 
+export interface OpenOptionsPageMessage {
+  type: 'OPEN_OPTIONS_PAGE';
+}
+
 export type RuntimeMessage =
   | GetTabStatusMessage
   | GetRuntimeStatusMessage
@@ -43,13 +47,8 @@ export type RuntimeMessage =
   | PauseChatMessage
   | RestoreNearbyMessage
   | RestoreAllMessage
-  | UpdateSettingsMessage;
-
-export type RuntimeMessageResult =
-  | TabStatusResponse
-  | TabRuntimeStatus
-  | { ok: true }
-  | null;
+  | UpdateSettingsMessage
+  | OpenOptionsPageMessage;
 
 export function isRuntimeMessage(value: unknown): value is RuntimeMessage {
   return (

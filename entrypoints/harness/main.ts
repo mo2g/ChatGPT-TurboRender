@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS } from '../../lib/shared/constants';
-import { TurboRenderController } from '../../lib/content/turbo-render-controller';
+import { TurboRenderController } from '../../lib/content/core/turbo-render-controller';
 import { mountTranscriptFixture } from '../../lib/testing/transcript-fixture';
 import './style.css';
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { waitForHostElement } from '../../lib/content/host-action-wait';
+import { waitForHostElement } from "../../lib/content/host-integration/host-action-wait";
 
 describe('host action wait', () => {
   it('resolves an already available host element', async () => {
