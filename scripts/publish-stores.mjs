@@ -34,10 +34,10 @@ Usage:
 
 Options:
   --check-chrome           Validate Chrome Web Store credentials and read-only access.
-  --target                 Store target to publish to. Defaults to "all".
-  --version                Release version without the leading "v".
-  --chrome-zip             Path to the Chrome ZIP package.
-  --edge-zip               Path to the Edge ZIP package.
+  --target                  Store target to publish to. Defaults to "all".
+  --version                 Release version without the leading "v".
+  --chrome-zip              Path to the Chrome ZIP package.
+  --edge-zip                Path to the Edge ZIP package.
   --firefox-source-dir     Path to the built Firefox source directory.
   --firefox-amo-metadata   Path to the AMO metadata JSON file for Firefox.
   --firefox-artifacts-dir  Directory where web-ext should write signed Firefox artifacts.
@@ -52,7 +52,7 @@ Legacy alias accepted for Chrome:
   CHROME_WEB_STORE_ITEM_ID
 
 Required environment variables for Edge:
-  EDGE_ADDONS_API_KEY
+  EDGE_ADD_ONS_API_KEY
   EDGE_ADDONS_CLIENT_ID
   EDGE_ADDONS_PRODUCT_ID
 
@@ -200,7 +200,7 @@ function base64UrlEncode(input) {
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
-    .replace(/=+$/g, '');
+    .replace(/=+$/, '');
 }
 
 function signJwt(privateKey, payload) {
@@ -223,7 +223,7 @@ async function assertFileExists(filePath, label) {
   try {
     await stat(filePath);
   } catch {
-    throw new Error(`${label} does not exist: ${filePath}`);
+    throw new Error("${label} does not exist: ${filePath}");
   }
 }
 
@@ -423,6 +423,89 @@ async function fetchChromeStatus(accessToken, publisherId, extensionId, fetchImp
   }
 }
 
+function buildChromeCancelSubmissionUrl(publisherId, extensionId) {
+  return `https://chromewebstore.googleapis.com/v2/publishers/${publisherId}/items/${extensionId}:cancelSubmission`;
+}
+
+export function getChromeSubmittedRevisionState(statusPayload) {
+  const state = statusPayload?.submittedItemRevisionStatus?.state;
+  return typeof state === 'string' && state.length > 0 ? state : null;
+}
+
+export function hasChromePendingSubmission(statusPayload) {
+  return getChromeSubmittedRevisionState(statusPayload) === 'PENDING_REVIEW';
+}
+
+async function cancelChromePendingSubmission(accessToken, publisherId, extensionId, fetchImpl = fetch) {
+  const cancelUrl = buildChromeCancelSubmissionUrl(publisherId, extensionId);
+  const cancelResponse = await fetchImpl(cancelUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const cancelBody = await cancelResponse.text();
+  if (!cancelResponse.ok) {
+    throw new Error(
+      `Chrome cancelSubmission failed (${cancelResponse.status} ${cancelResponse.statusText}): ${cancelBody || '<empty response>'}`,
+    );
+  }
+
+  if (cancelBody.trim().length > 0) {
+    console.log(`Chrome cancelSubmission response: ${cancelBody}`);
+  } else {
+    console.log('Chrome pending submission cancelled.');
+  }
+}
+
+async function waitForChromePendingSubmissionClear(accessToken, publisherId, extensionId) {
+  const deadline = Date.now() + CHROME_STATUS_POLL_TIMEOUT_MS;
+  let lastState = null;
+
+  while (Date.now() < deadline) {
+    const statusPayload = await fetchChromeStatus(accessToken, publisherId, extensionId);
+    lastState = getChromeSubmittedRevisionState(statusPayload);
+    console.log(`Chrome submitted revision state: ${lastState ?? 'none'}`);
+
+    if (lastState == null || lastState === 'CANCELLED') {
+      return statusPayload;
+    }
+
+    if (lastState !== 'PENDING_REVIEW') {
+      return statusPayload;
+    }
+
+    await sleep(CHROME_STATUS_POLL_INTERVAL_MS);
+  }
+
+  throw new Error(
+    `Timed out waiting for Chrome pending submission to clear. Last submitted revision state: ${lastState ?? 'none'}`,
+  );
+}
+
+async function ensureChromeReadyForUpload(accessToken, publisherId, extensionId) {
+  const statusPayload = await fetchChromeStatus(accessToken, publisherId, extensionId);
+  const submittedState = getChromeSubmittedRevisionState(statusPayload);
+
+  if (submittedState !== 'PENDING_REVIEW') {
+    console.log(
+      `Chrome has no pending review submission to cancel. Current submitted revision state: ${submittedState ?? 'none'}`,
+    );
+    return statusPayload;
+  }
+
+  const submittedVersion =
+    statusPayload?.submittedItemRevisionStatus?.distributionChannels?.[0]?.crxVersion ?? null;
+
+  console.log(
+    `Chrome has a pending review submission${submittedVersion ? ` for version ${submittedVersion}` : ''}; cancelling before upload.`,
+  );
+
+  await cancelChromePendingSubmission(accessToken, publisherId, extensionId);
+  return await waitForChromePendingSubmissionClear(accessToken, publisherId, extensionId);
+}
+
 function isChromePermissionDeniedError(error) {
   if (!(error instanceof Error)) {
     return false;
@@ -455,7 +538,10 @@ async function publishChrome({ zipPath, version }) {
   const { extensionId, publisherId } = resolveChromeResourceIds();
   const accessToken = await getGoogleAccessToken();
   const zip = await readFile(zipPath);
-  const uploadUrl = `https://chromewebstore.googleapis.com/upload/v2/publishers/${publisherId}/items/${extensionId}:upload`;
+
+  await ensureChromeReadyForUpload(accessToken, publisherId, extensionId);
+
+  const uploadUrl = `https://chromewebstore.googleapis.com/upload/v2/publishers/${publisherId}/items/${extensionId}:upload`
 
   const uploadResponse = await fetch(uploadUrl, {
     method: 'POST',
@@ -566,8 +652,8 @@ export function isBenignEdgePublishFailure(errorCode) {
 }
 
 async function publishEdge({ zipPath, version }) {
-  const apiKey = requireEnv('EDGE_ADDONS_API_KEY');
-  const clientId = requireEnv('EDGE_ADDONS_CLIENT_ID');
+  const apiKey = requireEnv('EDGE_ADD_ONS_API_KEY');
+  const clientId = requireEnv('EDGE_ADD=ONS_CLIENT_ID');
   const productId = requireEnv('EDGE_ADDONS_PRODUCT_ID');
   const zip = await readFile(zipPath);
   const authHeaders = {
